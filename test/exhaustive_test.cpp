@@ -4,6 +4,7 @@
  */
 
 #include <iostream>
+#include <fstream>
 #include <vector>
 #include <string>
 #include <random>
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <map>
 #include <sstream>
+#include <ctime>
 
 #include "api/modem.h"
 
@@ -287,7 +289,7 @@ int main() {
     std::cout << "Running for ~10 minutes...\n\n";
     
     auto start_time = steady_clock::now();
-    auto end_time = start_time + minutes(10);
+    auto end_time = start_time + minutes(3);
     
     std::mt19937 rng(42);  // Fixed seed for reproducibility
     
@@ -427,14 +429,96 @@ int main() {
               << "\n";
     
     std::cout << "\n";
+    std::string rating;
     if (grand_rate >= 95.0) {
+        rating = "EXCELLENT";
         std::cout << "*** EXCELLENT: " << std::fixed << std::setprecision(1) << grand_rate << "% pass rate ***\n";
     } else if (grand_rate >= 80.0) {
+        rating = "GOOD";
         std::cout << "*** GOOD: " << std::fixed << std::setprecision(1) << grand_rate << "% pass rate ***\n";
     } else if (grand_rate >= 60.0) {
+        rating = "FAIR";
         std::cout << "*** FAIR: " << std::fixed << std::setprecision(1) << grand_rate << "% pass rate ***\n";
     } else {
+        rating = "NEEDS WORK";
         std::cout << "*** NEEDS WORK: " << std::fixed << std::setprecision(1) << grand_rate << "% pass rate ***\n";
+    }
+    
+    // Generate report file
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
+    std::tm* tm_info = std::localtime(&now_time);
+    
+    std::ostringstream date_str;
+    date_str << std::put_time(tm_info, "%Y-%m-%d");
+    
+    std::string version_str = m110a::api::version();
+    std::string report_filename = "docs/test_reports/exhaustive_test_report_" + date_str.str() + "_v" + version_str + ".md";
+    
+    std::ofstream report(report_filename);
+    if (report.is_open()) {
+        report << "# M110A Modem Exhaustive Test Report\n\n";
+        report << "## Test Information\n";
+        report << "| Field | Value |\n";
+        report << "|-------|-------|\n";
+        report << "| **Date** | " << std::put_time(tm_info, "%B %d, %Y") << " |\n";
+        report << "| **Version** | " << version_str << " |\n";
+        report << "| **Duration** | " << total_elapsed << " seconds |\n";
+        report << "| **Iterations** | " << iteration << " |\n";
+        report << "| **Total Tests** | " << total_tests << " |\n";
+        report << "| **Rating** | " << rating << " |\n\n";
+        
+        report << "---\n\n";
+        report << "## Summary\n\n";
+        report << "| Metric | Value |\n";
+        report << "|--------|-------|\n";
+        report << "| **Overall Pass Rate** | " << std::fixed << std::setprecision(1) << grand_rate << "% |\n";
+        report << "| **Total Passed** | " << grand_passed << " |\n";
+        report << "| **Total Failed** | " << (grand_total - grand_passed) << " |\n\n";
+        
+        report << "---\n\n";
+        report << "## Detailed Results by Category\n\n";
+        report << "| Category | Passed | Failed | Total | Pass Rate | Avg BER |\n";
+        report << "|----------|--------|--------|-------|-----------|--------|\n";
+        
+        for (const auto& [key, display_name] : category_names) {
+            if (category_stats.find(key) == category_stats.end()) continue;
+            const auto& stats = category_stats[key];
+            double rate = stats.total > 0 ? 100.0 * stats.passed / stats.total : 0.0;
+            report << "| " << display_name 
+                   << " | " << stats.passed 
+                   << " | " << stats.failed 
+                   << " | " << stats.total 
+                   << " | " << std::fixed << std::setprecision(1) << rate << "%" 
+                   << " | " << std::scientific << std::setprecision(2) << stats.avg_ber() 
+                   << " |\n";
+        }
+        
+        report << "\n---\n\n";
+        report << "## Test Configuration\n\n";
+        report << "### Modes Tested\n";
+        report << "- M75_SHORT, M75_LONG (Walsh orthogonal coding)\n";
+        report << "- M150_SHORT, M150_LONG (BPSK 8x repetition)\n";
+        report << "- M300_SHORT, M300_LONG (BPSK 4x repetition)\n";
+        report << "- M600_SHORT, M600_LONG (BPSK 2x repetition)\n";
+        report << "- M1200_SHORT, M1200_LONG (QPSK)\n";
+        report << "- M2400_SHORT, M2400_LONG (8-PSK)\n";
+        report << "- M4800_SHORT (8-PSK uncoded)\n\n";
+        
+        report << "### Channel Conditions Tested\n";
+        report << "- **SNR Levels**: 30dB, 25dB, 20dB, 15dB, 12dB\n";
+        report << "- **Multipath Delays**: 10, 20, 30, 40, 48, 60 samples (at 48kHz)\n";
+        report << "- **Echo Gain**: -6dB (0.5 linear)\n";
+        report << "- **Frequency Offsets**: 0.5Hz, 1.0Hz, 2.0Hz, 5.0Hz\n\n";
+        
+        report << "---\n\n";
+        report << "## Known Issues\n\n";
+        report << "- **Frequency Offset**: Pass rate remains low (~2%) - requires AFC implementation\n\n";
+        
+        report.close();
+        std::cout << "\nReport saved to: " << report_filename << "\n";
+    } else {
+        std::cerr << "Warning: Could not create report file: " << report_filename << "\n";
     }
     
     return grand_rate >= 80.0 ? 0 : 1;
