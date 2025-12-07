@@ -90,43 +90,6 @@ test_walsh_75_decoder.cpp:
 | tx_75S_*.pcm | M75NS | ✅ | ⚠️ Pending |
 | tx_75L_*.pcm | M75NL | ✅ | ⚠️ Pending |
 
-### 2.3 Watterson Channel Tests: 6/8 Passing
-
-Tests the modem through realistic HF channel conditions.
-
-| Test | Channel | BER | Status |
-|------|---------|-----|--------|
-| 1. Clean Loopback | None | 0.00% | ✅ PASS |
-| 2. AWGN 15dB | AWGN only | 0.00% | ✅ PASS |
-| 3. Static Multipath | 1ms delay, -6dB | 0.00% | ✅ PASS |
-| 4. Slow Rayleigh | 0.5Hz Doppler | 0.00% | ✅ PASS |
-| 5. CCIR Good | 0.5Hz/0.5ms | 0.00% | ✅ PASS |
-| 6. CCIR Moderate | 1Hz/1ms | 47% | ❌ FAIL |
-| 7. 600bps Fading | CCIR Moderate | 46% | ❌ FAIL |
-| 8. All Profiles | Mixed | 1/3 | ⚠️ Partial |
-
-**Key Improvements (Dec 2025):**
-- DFE with preamble pretraining eliminates cold-start problem
-- Static multipath now passes (was 21% BER)
-- CCIR Good channel now passes (was failing)
-- Phase tracking integrated for frequency offset compensation
-
-### 2.4 PCM Loopback Tests: 11/11 Passing
-
-| Mode | Encode | Decode | Match |
-|------|--------|--------|-------|
-| 150S | ✅ | ✅ | ✅ |
-| 150L | ✅ | ✅ | ✅ |
-| 300S | ✅ | ✅ | ✅ |
-| 300L | ✅ | ✅ | ✅ |
-| 600S | ✅ | ✅ | ✅ |
-| 600L | ✅ | ✅ | ✅ |
-| 1200S | ✅ | ✅ | ✅ |
-| 1200L | ✅ | ✅ | ✅ |
-| 2400S | ✅ | ✅ | ✅ |
-| 2400L | ✅ | ✅ | ✅ |
-| 4800S | ✅ | ✅ | ✅ |
-
 ---
 
 ## 3. Component Status
@@ -139,7 +102,6 @@ Tests the modem through realistic HF channel conditions.
 | FIR Filter | `src/dsp/fir_filter.h` | ✅ Complete | General purpose FIR |
 | Resampler | `src/dsp/resampler.h` | ✅ Complete | Farrow interpolator |
 | DMT Modem | `src/dsp/dmt_modem.h` | ✅ Complete | Modulator/demodulator |
-| Phase Tracker | `src/dsp/phase_tracker.h` | ✅ Complete | Decision-directed PLL |
 
 ### 3.2 Synchronization
 

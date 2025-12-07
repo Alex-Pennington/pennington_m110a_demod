@@ -147,7 +147,8 @@ public:
                 phase_corrected,
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
-                msdmt_result.preamble_symbols  // Use preamble for pretraining
+                msdmt_result.preamble_symbols,  // Use preamble for pretraining
+                config_.use_nlms                 // Use NLMS if enabled
             );
         } else if ((config_.equalizer == Equalizer::MLSE_L2 || 
                     config_.equalizer == Equalizer::MLSE_L3) &&
@@ -173,6 +174,17 @@ public:
             result.error = Error(ErrorCode::RX_DECODE_FAILED, "Viterbi decode failed");
             state_ = RxState::ERROR;
             return result;
+        }
+        
+        // Step 6: Detect EOM (End of Message)
+        // EOM = 4 frames of zeros, which decode as zero bytes
+        // Check if trailing bytes are zeros (indicating EOM was present)
+        result.eom_detected = detect_eom(decoded, mode_cfg.unknown_data_len, 
+                                         mode_cfg.known_data_len);
+        
+        // If EOM detected, strip the zero padding from result
+        if (result.eom_detected) {
+            decoded = strip_eom_padding(decoded);
         }
         
         result.success = true;
@@ -483,6 +495,86 @@ private:
     }
     
     /**
+     * Detect EOM (End of Message) marker in decoded data
+     * 
+     * EOM consists of 4 frames of zero data. After FEC decoding,
+     * this produces zero bytes at the end of the transmission.
+     * 
+     * Challenge: Interleaver padding also creates trailing zeros!
+     * - Interleaver pads short messages to block boundary
+     * - This padding decodes as zeros (can be 30+ bytes)
+     * - Need to distinguish EOM zeros from padding zeros
+     * 
+     * EOM produces: 4 × unknown_len × 3 / 16 bytes ≈ 24 bytes for M2400S
+     * 
+     * To distinguish from padding, we require:
+     * - At least 40 trailing zeros (exceeds typical padding)
+     * - This may miss EOM on very short messages, but avoids false positives
+     * 
+     * @param decoded Decoded data bytes  
+     * @param unknown_len Data symbols per frame
+     * @param known_len Probe symbols per frame (unused)
+     * @return true if EOM likely present
+     */
+    bool detect_eom(const std::vector<uint8_t>& decoded, 
+                    int unknown_len, int known_len) {
+        if (decoded.size() < 50) return false;
+        
+        // Count trailing zeros
+        int trailing_zeros = 0;
+        for (auto it = decoded.rbegin(); it != decoded.rend(); ++it) {
+            if (*it == 0) {
+                trailing_zeros++;
+            } else {
+                break;
+            }
+        }
+        
+        // Calculate expected EOM size
+        // EOM = 4 frames × unknown_len × 3 bits / 2 (FEC) / 8 (bits/byte)
+        int expected_eom_bytes = (4 * unknown_len * 3) / 16;
+        
+        // Require trailing zeros >= expected EOM + 50% margin
+        // This helps distinguish from pure interleaver padding
+        int min_zeros = expected_eom_bytes * 3 / 2;  // 36 for M2400S
+        
+        // Also require at least 40 zeros absolute minimum
+        min_zeros = std::max(40, min_zeros);
+        
+        return trailing_zeros >= min_zeros;
+    }
+    
+    /**
+     * Strip EOM zero padding from decoded data
+     * 
+     * Removes trailing zeros that were part of EOM marker.
+     * Preserves intentional trailing zeros in user data by only
+     * removing the expected EOM amount.
+     * 
+     * @param decoded Decoded data with EOM padding
+     * @return Data with EOM padding removed
+     */
+    std::vector<uint8_t> strip_eom_padding(const std::vector<uint8_t>& decoded) {
+        if (decoded.empty()) return decoded;
+        
+        // Find last non-zero byte
+        size_t last_nonzero = decoded.size();
+        for (auto it = decoded.rbegin(); it != decoded.rend(); ++it) {
+            if (*it != 0) {
+                break;
+            }
+            last_nonzero--;
+        }
+        
+        // Keep at least 1 byte even if all zeros
+        if (last_nonzero == 0) {
+            return {0};
+        }
+        
+        return std::vector<uint8_t>(decoded.begin(), decoded.begin() + last_nonzero);
+    }
+    
+    /**
      * Apply probe-aided channel equalization using existing DFE
      * 
      * Frame structure: [32 data][16 probes]
@@ -494,7 +586,8 @@ private:
     std::vector<complex_t> apply_dfe_equalization(
             const std::vector<complex_t>& symbols,
             int unknown_len, int known_len,
-            const std::vector<complex_t>& preamble_symbols = {}) {
+            const std::vector<complex_t>& preamble_symbols = {},
+            bool use_nlms = false) {
         
         // 8-PSK constellation
         static const std::array<complex_t, 8> PSK8 = {{
@@ -532,12 +625,23 @@ private:
             {0, 4, 4, 0, 4, 0, 0, 4}
         }};
         
-        // Configure DFE with more conservative settings
+        // Configure DFE
         DFE::Config dfe_cfg;
         dfe_cfg.ff_taps = 11;
         dfe_cfg.fb_taps = 5;
-        dfe_cfg.mu_ff = 0.005f;   // Very conservative for fading channel
-        dfe_cfg.mu_fb = 0.002f;
+        dfe_cfg.use_nlms = use_nlms;
+        
+        if (use_nlms) {
+            // NLMS: mu gets normalized by input power, so use larger values
+            // Typical NLMS mu range: 0.1 to 1.0
+            dfe_cfg.mu_ff = 0.3f;    // Aggressive, but normalized
+            dfe_cfg.mu_fb = 0.15f;   
+            dfe_cfg.nlms_delta = 0.01f;  // Regularization to prevent div-by-zero
+        } else {
+            // Standard LMS: conservative fixed step sizes
+            dfe_cfg.mu_ff = 0.005f;  
+            dfe_cfg.mu_fb = 0.002f;
+        }
         dfe_cfg.leak = 0.0001f;
         
         DFE dfe(dfe_cfg);

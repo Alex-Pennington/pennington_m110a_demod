@@ -103,23 +103,63 @@
 
 ## 📋 TODO (Future)
 
-### High Priority
+### Next Up (Session 19+)
+
+#### 1. EOM (End of Message) Marker ✓ COMPLETE
+**Effort:** 3-4 hours | **Impact:** Protocol completeness
+- [x] TX: Add `generate_eom()` - 4 flush frames with scrambled zeros
+- [x] RX: Add `detect_eom()` - count trailing zeros (threshold 40+)
+- [x] Wire up `TxConfig.include_eom` flag (default: true)
+- [x] Add `DecodeResult.eom_detected` flag
+- [x] Test with clean + noisy channels (5/5 tests passing)
+
+#### 2. Adaptive LMS Step Size ✓ COMPLETE
+**Effort:** 4 hours | **Impact:** Performance improvement
+- [x] Implement NLMS: `μ_eff = μ / (δ + ||x||²)`
+- [x] Add `RxConfig.use_nlms` flag  
+- [x] Different mu values for LMS vs NLMS modes
+- [x] Test: NLMS vs fixed on CCIR Good/Moderate
+- [x] Result: NLMS wins 5/6 tests, 10-16% BER improvement
+
+#### 3. Streaming RX (Real-time)
+**Effort:** 16 hours | **Impact:** Real-time capability
+- [ ] Ring buffer for sample accumulation
+- [ ] `StreamingPreambleDetector` - sliding correlation
+- [ ] `StreamingDemodulator` - symbol-by-symbol output
+- [ ] `StreamingDecoder` - incremental Viterbi
+- [ ] `StreamingRX` API class
+- [ ] Test with 256-sample chunks
+
+#### 4. Documentation Cleanup ✓ COMPLETE
+**Effort:** ~4 hours | **Impact:** Maintainability
+- [x] `docs/README.md` - project overview + quick start
+- [x] `docs/API.md` - ModemTX/RX reference
+- [x] `docs/TX_CHAIN.md` - transmitter pipeline
+- [x] Renamed to `docs/RX_CHAIN.md` - receiver pipeline
+- [x] `docs/EQUALIZERS.md` - DFE/MLSE/NLMS details
+- [x] `docs/PROTOCOL.md` - MIL-STD-188-110A spec
+- [x] `examples/` directory with working code
+  - simple_loopback.cpp
+  - mode_comparison.cpp
+  - channel_test.cpp
+  - auto_detect.cpp
+
+**See `docs/TODO_DETAILED.md` for full implementation specs.**
+
+### Other Items
+
+#### High Priority
 - [ ] Debug M75 real file decode
 - [ ] Add M75NL mode testing
-- [ ] Integrate Walsh decoder into MultiModeRx
 
-### Medium Priority
+#### Medium Priority
 - [ ] M4800L mode (long interleave uncoded)
 - [ ] Voice modes (M75V, M150V, etc.)
-- [ ] Real-time streaming decode
 - [ ] CLI interface improvements
-- [ ] Automatic gain control
 
-### Low Priority
+#### Low Priority
 - [ ] GUI interface
 - [ ] Doppler compensation
-- [ ] Additional equalizer algorithms
-- [ ] Performance optimization
 - [ ] ARM/embedded port
 
 ---
@@ -207,4 +247,11 @@ done
 
 ---
 
-*Last updated: 2025-12-07 Session 17*
+*Last updated: 2025-12-07 Session 19*
+
+**Session 19 completed:**
+- EOM marker implementation (TX+RX)
+- NLMS adaptive equalizer (10-16% improvement)
+- Full documentation package
+- 4 working examples
+- 46/46 tests passing

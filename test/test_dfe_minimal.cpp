@@ -13,7 +13,6 @@
 #endif
 
 #include "api/modem.h"
-#include "src/equalizer/channel_estimator.h"
 #include "src/equalizer/dfe.h"
 #include <iostream>
 #include <iomanip>

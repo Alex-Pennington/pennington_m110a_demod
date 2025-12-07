@@ -70,10 +70,6 @@ struct MSDMTDecodeResult {
     
     // Decoded data
     std::vector<uint8_t> data;
-    
-    // Phase tracking info (for diagnostics)
-    float final_phase = 0.0f;           // Phase at end of data
-    bool phase_tracking_enabled = false; // STUB: false until implemented
 };
 
 /**
@@ -191,9 +187,6 @@ private:
     
     /**
      * Find preamble with sample-level timing optimization
-     * Uses correlation phase directly instead of discrete phase search
-     * 
-     * Enhanced with early-stop threshold to prevent false peaks from noise
      */
     void find_preamble(const std::vector<complex_t>& filtered, MSDMTDecodeResult& result) {
         float best_corr = 0.0f;
@@ -209,10 +202,11 @@ private:
         // Use "first strong peak" detection to avoid false peaks from noise
         // Once we find correlation > threshold, refine locally and stop
         const float early_stop_threshold = 0.90f;
+        bool found_strong = false;
         
         // Search over sample positions
         for (int start = 0; start < max_search; start++) {
-            // Correlate with no rotation - extract phase from correlation result
+            // Compute correlation without rotation
             complex_t corr(0, 0);
             float power = 0;
             
@@ -230,14 +224,14 @@ private:
             if (c > best_corr) {
                 best_corr = c;
                 best_start = start;
-                // Extract phase from complex correlation
-                // The correlation phase tells us how much to rotate to align
-                // Negate because we want to rotate received symbols back to reference
+                // Extract phase directly from correlation using atan2
+                // This gives continuous phase estimate robust to quantization
                 best_phase = -std::atan2(corr.imag(), corr.real());
                 
                 // Early termination: first strong peak wins
                 // This prevents later spurious noise peaks from winning
                 if (c > early_stop_threshold) {
+                    found_strong = true;
                     // Search a small window around this peak to find true maximum
                     int local_end = std::min(start + sps_ * 2, max_search);
                     for (int s2 = start + 1; s2 < local_end; s2++) {
@@ -387,14 +381,12 @@ private:
     }
     
     /**
-     * Extract data symbols (after preamble) with optional data-aided phase tracking
-     * 
-     * Note: Currently uses fixed phase from preamble correlation.
-     * Phase tracking using probes is disabled until scrambler synchronization
-     * is verified to match the TX side.
+     * Extract data symbols (after preamble)
      */
     void extract_data_symbols(const std::vector<complex_t>& filtered,
                                MSDMTDecodeResult& result) {
+        complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
+        
         // Determine preamble length based on mode
         // Short interleave: 3 frames × 480 = 1440 symbols
         // Long interleave: 24 frames × 480 = 11520 symbols
@@ -406,19 +398,10 @@ private:
         // Data starts after preamble
         int data_start = result.start_sample + preamble_symbols * sps_;
         
-        // Use fixed phase from preamble correlation
-        float current_phase = result.phase_offset;
-        complex_t phase_rot(std::cos(current_phase), std::sin(current_phase));
-        
-        // Extract all data symbols
-        result.data_symbols.clear();
+        // Extract data symbols
         for (int idx = data_start; idx < static_cast<int>(filtered.size()); idx += sps_) {
-            result.data_symbols.push_back(filtered[idx] * phase_rot);
+            result.data_symbols.push_back(filtered[idx] * rot);
         }
-        
-        // Store phase tracking info for diagnostics
-        result.final_phase = current_phase;
-        result.phase_tracking_enabled = false;  // Phase tracking disabled for now
     }
     
     /**

@@ -95,6 +95,11 @@ struct RxConfig {
     /// Equalizer algorithm
     Equalizer equalizer = Equalizer::DFE;
     
+    /// Use Normalized LMS (NLMS) for DFE adaptation
+    /// NLMS normalizes step size by input power for faster convergence
+    /// on time-varying channels. Recommended for fading conditions.
+    bool use_nlms = false;
+    
     /// Enable adaptive phase tracking (decision-directed PLL)
     bool phase_tracking = true;
     

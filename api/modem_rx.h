@@ -32,6 +32,9 @@ struct DecodeResult {
     /// Decoded data bytes
     std::vector<uint8_t> data;
     
+    /// Whether EOM (End of Message) was detected
+    bool eom_detected = false;
+    
     /// Estimated SNR in dB
     float snr_db = 0.0f;
     

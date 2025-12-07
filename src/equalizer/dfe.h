@@ -35,13 +35,17 @@ public:
         float mu_ff;          // LMS step size for feedforward
         float mu_fb;          // LMS step size for feedback
         float leak;           // Leaky LMS coefficient (0 = no leak)
+        bool use_nlms;        // Use Normalized LMS (power-normalized step)
+        float nlms_delta;     // NLMS regularization (prevents div-by-zero)
         
         Config()
             : ff_taps(11)      // Center tap + 5 on each side
             , fb_taps(5)       // 5 feedback taps
             , mu_ff(0.01f)     // Conservative step size
             , mu_fb(0.005f)    // Smaller for feedback
-            , leak(0.0001f) {} // Small leak for stability
+            , leak(0.0001f)    // Small leak for stability
+            , use_nlms(false)  // Default: standard LMS
+            , nlms_delta(0.001f) {} // NLMS regularization
     };
     
     explicit DFE(const Config& config = Config{})
@@ -245,21 +249,46 @@ private:
     }
     
     /**
-     * LMS tap adaptation
+     * LMS/NLMS tap adaptation
+     * 
+     * Standard LMS: w[k] += μ * error * conj(x[k])
+     * NLMS:         w[k] += μ / (δ + ||x||²) * error * conj(x[k])
+     * 
+     * NLMS normalizes by input power, giving faster convergence
+     * on time-varying channels and better stability.
      */
     void adapt(complex_t error, int center) {
-        // Feedforward adaptation: w[k] += mu * error * conj(x[delay])
+        float mu_ff_eff = config_.mu_ff;
+        float mu_fb_eff = config_.mu_fb;
+        
+        if (config_.use_nlms) {
+            // Compute feedforward input power
+            float ff_power = 0.0f;
+            for (int i = 0; i < config_.ff_taps; i++) {
+                ff_power += std::norm(ff_delay_[i]);
+            }
+            mu_ff_eff = config_.mu_ff / (config_.nlms_delta + ff_power);
+            
+            // Compute feedback input power  
+            float fb_power = 0.0f;
+            for (int i = 0; i < config_.fb_taps; i++) {
+                fb_power += std::norm(fb_delay_[i]);
+            }
+            mu_fb_eff = config_.mu_fb / (config_.nlms_delta + fb_power);
+        }
+        
+        // Feedforward adaptation: w[k] += mu_eff * error * conj(x[delay])
         for (int i = 0; i < config_.ff_taps; i++) {
             int delay = center - i;
             int idx = (ff_idx_ - delay + config_.ff_taps) % config_.ff_taps;
-            ff_taps_[i] += config_.mu_ff * error * std::conj(ff_delay_[idx]);
+            ff_taps_[i] += mu_ff_eff * error * std::conj(ff_delay_[idx]);
             ff_taps_[i] *= (1.0f - config_.leak);  // Leaky LMS
         }
         
         // Feedback adaptation
         for (int i = 0; i < config_.fb_taps; i++) {
             int idx = (fb_idx_ - i - 1 + config_.fb_taps) % config_.fb_taps;
-            fb_taps_[i] += config_.mu_fb * error * std::conj(fb_delay_[idx]);
+            fb_taps_[i] += mu_fb_eff * error * std::conj(fb_delay_[idx]);
             fb_taps_[i] *= (1.0f - config_.leak);
         }
     }

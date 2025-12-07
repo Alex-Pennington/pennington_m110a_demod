@@ -406,60 +406,43 @@ public:
     
 private:
     /**
-     * Detect phase offset using probe symbols (full 8-way 45° resolution)
-     * 
-     * Tests all 8 possible phase offsets (0°, 45°, 90°, ... 315°) and returns
-     * the one that best matches expected probe descrambling to 0.
-     * 
-     * @return Phase offset 0-7 corresponding to 0°, 45°, 90°, etc.
+     * Detect 180° phase offset using probe symbols
+     * Returns 0 if no inversion needed, 4 if 180° inversion needed
      */
     int detect_phase_offset(const std::vector<complex_t>& symbols, 
                             int unknown_len, int known_len) const {
         int pattern_len = unknown_len + known_len;
         
-        // Count matches for each of 8 possible phase offsets
-        std::array<int, 8> match_counts = {0};
+        // Check first few probe patterns
+        DataScramblerFixed scrambler;
+        int zeros_count = 0, fours_count = 0;
+        int patterns_checked = 0;
         const int max_patterns = 5;
         
-        for (int phase_try = 0; phase_try < 8; phase_try++) {
-            DataScramblerFixed scrambler;
-            int patterns_checked = 0;
+        size_t idx = 0;
+        while (idx + pattern_len <= symbols.size() && patterns_checked < max_patterns) {
+            // Skip data symbols in scrambler
+            for (int i = 0; i < unknown_len; i++) scrambler.next();
             
-            size_t idx = 0;
-            while (idx + pattern_len <= symbols.size() && patterns_checked < max_patterns) {
-                // Skip data symbols in scrambler
-                for (int i = 0; i < unknown_len; i++) scrambler.next();
+            // Check probe symbols
+            for (int i = 0; i < known_len && idx + unknown_len + i < symbols.size(); i++) {
+                complex_t sym = symbols[idx + unknown_len + i];
+                int pos = symbol_to_position(sym);
+                int scr = scrambler.next();
+                int descr = (pos - scr + 8) & 7;
                 
-                // Check probe symbols with this phase offset
-                for (int i = 0; i < known_len && idx + unknown_len + i < symbols.size(); i++) {
-                    complex_t sym = symbols[idx + unknown_len + i];
-                    int pos = (symbol_to_position(sym) + phase_try) & 7;
-                    int scr = scrambler.next();
-                    int descr = (pos - scr + 8) & 7;
-                    
-                    // Probes should descramble to 0 if phase is correct
-                    // Allow ±1 tolerance for noise
-                    if (descr == 0 || descr == 1 || descr == 7) {
-                        match_counts[phase_try]++;
-                    }
-                }
-                
-                idx += pattern_len;
-                patterns_checked++;
+                // Probes should be 0 if phase is correct
+                if (descr == 0 || descr == 1 || descr == 7) zeros_count++;
+                // If they're near 4, we have 180° phase error
+                if (descr == 3 || descr == 4 || descr == 5) fours_count++;
             }
+            
+            idx += pattern_len;
+            patterns_checked++;
         }
         
-        // Find best phase offset
-        int best_phase = 0;
-        int best_count = match_counts[0];
-        for (int i = 1; i < 8; i++) {
-            if (match_counts[i] > best_count) {
-                best_count = match_counts[i];
-                best_phase = i;
-            }
-        }
-        
-        return best_phase;
+        // If more probes are near 4 than 0, we need 180° correction
+        return (fours_count > zeros_count) ? 4 : 0;
     }
     
     /**
@@ -745,7 +728,7 @@ private:
      */
     static int symbol_to_position(complex_t sym) {
         float angle = std::atan2(sym.imag(), sym.real());
-        int pos = static_cast<int>(std::round(angle * 4.0f / PI));
+        int pos = static_cast<int>(std::round(angle * 4.0f / M_PI));
         return ((pos % 8) + 8) % 8;
     }
     
