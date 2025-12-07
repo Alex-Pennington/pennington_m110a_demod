@@ -1,0 +1,161 @@
+/**
+ * Decode the reference .wav file
+ */
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <cmath>
+#include <complex>
+#include "m110a/msdmt_decoder.h"
+#include "modem/viterbi.h"
+
+using namespace m110a;
+using namespace std;
+
+const int mgd3[8] = {0,1,3,2,7,6,4,5};
+int inv_mgd3[8];
+
+class RefDataScrambler {
+public:
+    RefDataScrambler() { reset(); }
+    void reset() {
+        sreg[0]=1; sreg[1]=0; sreg[2]=1; sreg[3]=1;
+        sreg[4]=0; sreg[5]=1; sreg[6]=0; sreg[7]=1;
+        sreg[8]=1; sreg[9]=1; sreg[10]=0; sreg[11]=1;
+    }
+    int next() {
+        for (int j = 0; j < 8; j++) {
+            int c = sreg[11];
+            for (int k = 11; k > 0; k--) sreg[k] = sreg[k-1];
+            sreg[0] = c;
+            sreg[6] ^= c; sreg[4] ^= c; sreg[1] ^= c;
+        }
+        return (sreg[2] << 2) + (sreg[1] << 1) + sreg[0];
+    }
+private:
+    int sreg[12];
+};
+
+class RefDeinterleaver {
+public:
+    RefDeinterleaver(int rows, int cols, int row_inc, int col_inc)
+        : rows_(rows), cols_(cols), row_inc_(row_inc), col_inc_(col_inc) {
+        array_.resize(rows * cols, 0.0f);
+        load_row_ = load_col_ = load_col_last_ = fetch_row_ = fetch_col_ = 0;
+    }
+    void load(float bit) {
+        array_[load_row_ * cols_ + load_col_] = bit;
+        load_row_ = (load_row_ + 1) % rows_;
+        load_col_ = (load_col_ + col_inc_) % cols_;
+        if (load_row_ == 0) { load_col_ = (load_col_last_ + 1) % cols_; load_col_last_ = load_col_; }
+    }
+    float fetch() {
+        float bit = array_[fetch_row_ * cols_ + fetch_col_];
+        fetch_row_ = (fetch_row_ + row_inc_) % rows_;
+        if (fetch_row_ == 0) fetch_col_ = (fetch_col_ + 1) % cols_;
+        return bit;
+    }
+private:
+    int rows_, cols_, row_inc_, col_inc_;
+    vector<float> array_;
+    int load_row_, load_col_, load_col_last_, fetch_row_, fetch_col_;
+};
+
+vector<float> read_wav(const string& filename) {
+    ifstream file(filename, ios::binary);
+    if (!file) return {};
+    
+    // Skip WAV header (44 bytes standard)
+    file.seekg(0, ios::end);
+    size_t file_size = file.tellg();
+    file.seekg(44);  // Skip header
+    
+    size_t data_size = file_size - 44;
+    size_t num_samples = data_size / 2;
+    
+    vector<int16_t> raw(num_samples);
+    file.read(reinterpret_cast<char*>(raw.data()), data_size);
+    
+    vector<float> samples(num_samples);
+    for (size_t i = 0; i < num_samples; i++) {
+        samples[i] = raw[i] / 32768.0f;
+    }
+    return samples;
+}
+
+int decode_8psk_position(complex<float> sym) {
+    float angle = atan2(sym.imag(), sym.real());
+    int pos = static_cast<int>(round(angle * 4.0f / M_PI));
+    return ((pos % 8) + 8) % 8;
+}
+
+int main() {
+    for (int i = 0; i < 8; i++) inv_mgd3[mgd3[i]] = i;
+    
+    string filename = "/mnt/user-data/uploads/MIL-STD-188-110A_2400bps_Short.wav";
+    auto samples = read_wav(filename);
+    
+    cout << "Loaded " << samples.size() << " samples from WAV" << endl;
+    
+    MSDMTDecoderConfig cfg;
+    MSDMTDecoder decoder(cfg);
+    auto result = decoder.decode(samples);
+    
+    cout << "Mode: " << result.mode_name << endl;
+    cout << "Correlation: " << result.correlation << endl;
+    cout << "Preamble accuracy: " << result.accuracy << "%" << endl;
+    cout << "Data symbols: " << result.data_symbols.size() << endl;
+    
+    if (result.data_symbols.empty()) {
+        cout << "No data to decode" << endl;
+        return 1;
+    }
+    
+    // Decode
+    const int ROWS = 40, COLS = 72;
+    const int ROW_INC = 9, COL_INC = 55;
+    const int BLOCK_BITS = ROWS * COLS;
+    const int BLOCK_SYMBOLS = BLOCK_BITS / 3;
+    
+    RefDataScrambler scr;
+    RefDeinterleaver deint(ROWS, COLS, ROW_INC, COL_INC);
+    
+    int idx = 0;
+    int data_count = 0;
+    
+    while (data_count < BLOCK_SYMBOLS && idx < (int)result.data_symbols.size()) {
+        for (int i = 0; i < 32 && data_count < BLOCK_SYMBOLS && idx < (int)result.data_symbols.size(); i++) {
+            int position = decode_8psk_position(result.data_symbols[idx++]);
+            int scr_val = scr.next();
+            int gray = (position - scr_val + 8) % 8;
+            int tribit = inv_mgd3[gray];
+            deint.load((tribit & 4) ? -1.0f : 1.0f);
+            deint.load((tribit & 2) ? -1.0f : 1.0f);
+            deint.load((tribit & 1) ? -1.0f : 1.0f);
+            data_count++;
+        }
+        for (int i = 0; i < 16 && idx < (int)result.data_symbols.size(); i++) {
+            idx++;
+            scr.next();
+        }
+    }
+    
+    vector<int8_t> soft;
+    for (int i = 0; i < BLOCK_BITS; i++)
+        soft.push_back(deint.fetch() > 0 ? 127 : -127);
+    
+    ViterbiDecoder viterbi;
+    vector<uint8_t> decoded;
+    viterbi.decode_block(soft, decoded, true);
+    
+    string output;
+    for (size_t i = 0; i + 8 <= decoded.size(); i += 8) {
+        uint8_t byte = 0;
+        for (int j = 0; j < 8; j++) byte = (byte << 1) | (decoded[i + j] & 1);
+        output += (byte >= 32 && byte < 127) ? (char)byte : '.';
+    }
+    
+    cout << "\nDecoded output: " << output.substr(0, 80) << endl;
+    
+    return 0;
+}

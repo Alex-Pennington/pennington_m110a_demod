@@ -1,0 +1,500 @@
+#ifndef M110A_MODE_DETECTOR_H
+#define M110A_MODE_DETECTOR_H
+
+/**
+ * MIL-STD-188-110A Mode Auto-Detection
+ * 
+ * Detects the incoming mode from preamble structure:
+ *   - Symbol rate detection via correlation peak spacing
+ *   - Mode ID extraction from 64 mode symbols in preamble
+ * 
+ * Preamble structure (per MIL-STD-188-110A):
+ *   - 288 common symbols (scrambled, known pattern)
+ *   - 64 mode symbols (encode mode ID)
+ *   - 96 count symbols (block count)
+ *   - 32 zero symbols
+ * 
+ * Detection strategy:
+ *   1. Try correlation at each supported symbol rate
+ *   2. Find best match (highest correlation)
+ *   3. Extract mode symbols after common preamble
+ *   4. Decode mode ID from mode symbols
+ */
+
+#include "common/types.h"
+#include "common/constants.h"
+#include "m110a/mode_config.h"
+#include "m110a/multimode_rx.h"
+#include "modem/scrambler.h"
+#include "modem/symbol_mapper.h"
+#include "dsp/nco.h"
+#include "dsp/fir_filter.h"
+#include <vector>
+#include <map>
+#include <algorithm>
+#include <cmath>
+#include <memory>
+#include <iostream>
+
+namespace m110a {
+
+// Preamble structure constants (from MIL-STD-188-110A)
+constexpr int PREAMBLE_COMMON_SYMBOLS = 288;
+constexpr int PREAMBLE_MODE_SYMBOLS = 64;
+constexpr int PREAMBLE_COUNT_SYMBOLS = 96;
+constexpr int PREAMBLE_ZERO_SYMBOLS = 32;
+
+/**
+ * Mode detection result
+ */
+struct ModeDetectResult {
+    bool detected;
+    ModeId mode;
+    int symbol_rate;
+    float freq_offset_hz;
+    float correlation_peak;
+    float confidence;      // 0.0 to 1.0
+    int sample_offset;     // Start of data
+    
+    ModeDetectResult()
+        : detected(false)
+        , mode(ModeId::M2400S)
+        , symbol_rate(0)
+        , freq_offset_hz(0.0f)
+        , correlation_peak(0.0f)
+        , confidence(0.0f)
+        , sample_offset(0) {}
+};
+
+/**
+ * Symbol rate detection result
+ */
+struct SymbolRateResult {
+    int symbol_rate;
+    float correlation;
+    float freq_offset_hz;
+    int peak_sample;
+};
+
+/**
+ * Mode Auto-Detector
+ */
+class ModeDetector {
+public:
+    struct Config {
+        float sample_rate;
+        float carrier_freq;
+        float freq_search_range;  // Hz
+        float freq_step;          // Hz
+        float detection_threshold;
+        
+        Config()
+            : sample_rate(48000.0f)
+            , carrier_freq(1800.0f)
+            , freq_search_range(50.0f)
+            , freq_step(10.0f)
+            , detection_threshold(0.05f) {}
+    };
+    
+    explicit ModeDetector(const Config& cfg = Config{})
+        : config_(cfg) {
+        
+        // Supported symbol rates
+        symbol_rates_ = {75, 150, 300, 600, 800, 1600};
+        
+        // Generate reference preambles for each symbol rate
+        generate_references();
+    }
+    
+    /**
+     * Detect mode from RF samples
+     */
+    ModeDetectResult detect(const std::vector<float>& rf_samples) {
+        ModeDetectResult result;
+        
+        // Step 1: Try each symbol rate and find best match
+        std::vector<SymbolRateResult> rate_results;
+        
+        for (int rate : symbol_rates_) {
+            auto sr_result = try_symbol_rate(rf_samples, rate);
+            rate_results.push_back(sr_result);
+        }
+        
+        // Find best symbol rate
+        auto best = std::max_element(rate_results.begin(), rate_results.end(),
+            [](const SymbolRateResult& a, const SymbolRateResult& b) {
+                return a.correlation < b.correlation;
+            });
+        
+        if (best->correlation < config_.detection_threshold) {
+            return result;  // No detection
+        }
+        
+        result.symbol_rate = best->symbol_rate;
+        result.freq_offset_hz = best->freq_offset_hz;
+        result.correlation_peak = best->correlation;
+        
+        // Step 2: Extract and decode mode symbols
+        float sps = config_.sample_rate / best->symbol_rate;
+        int common_samples = static_cast<int>(PREAMBLE_COMMON_SYMBOLS * sps);
+        int mode_start = best->peak_sample + common_samples;
+        
+        // Downconvert and sample mode symbols
+        auto mode_symbols = extract_symbols(rf_samples, mode_start, 
+                                           PREAMBLE_MODE_SYMBOLS, 
+                                           best->symbol_rate,
+                                           best->freq_offset_hz);
+        
+        if (mode_symbols.size() < PREAMBLE_MODE_SYMBOLS) {
+            // Not enough samples for mode extraction
+            // Fall back to symbol rate based detection
+            result.mode = guess_mode_from_rate(best->symbol_rate);
+            result.detected = true;
+            result.confidence = 0.5f;
+            return result;
+        }
+        
+        // Decode mode ID from mode symbols
+        int mode_id = decode_mode_symbols(mode_symbols);
+        
+        // Map mode ID to ModeId enum
+        result.mode = mode_id_to_enum(mode_id, best->symbol_rate);
+        result.detected = true;
+        result.confidence = best->correlation;
+        
+        // Calculate data start offset
+        int preamble_total = PREAMBLE_COMMON_SYMBOLS + PREAMBLE_MODE_SYMBOLS + 
+                            PREAMBLE_COUNT_SYMBOLS + PREAMBLE_ZERO_SYMBOLS;
+        result.sample_offset = best->peak_sample + 
+                              static_cast<int>(preamble_total * sps);
+        
+        return result;
+    }
+    
+    /**
+     * Quick symbol rate detection only (faster)
+     */
+    SymbolRateResult detect_symbol_rate(const std::vector<float>& rf_samples) {
+        SymbolRateResult best;
+        best.correlation = 0.0f;
+        
+        for (int rate : symbol_rates_) {
+            auto result = try_symbol_rate(rf_samples, rate);
+            if (result.correlation > best.correlation) {
+                best = result;
+            }
+        }
+        
+        return best;
+    }
+
+private:
+    Config config_;
+    std::vector<int> symbol_rates_;
+    
+    // Reference preambles for each symbol rate (baseband, after matched filter)
+    std::map<int, std::vector<complex_t>> ref_preambles_;
+    
+    void generate_references() {
+        // Generate common preamble symbols (same for all modes)
+        Scrambler scr(SCRAMBLER_INIT_PREAMBLE);
+        SymbolMapper mapper;
+        
+        std::vector<complex_t> common_symbols;
+        for (int i = 0; i < PREAMBLE_COMMON_SYMBOLS; i++) {
+            uint8_t tribit = scr.next_tribit();
+            common_symbols.push_back(mapper.map(tribit));
+        }
+        
+        // For each symbol rate, create upsampled/filtered reference
+        for (int rate : symbol_rates_) {
+            float sps = config_.sample_rate / rate;
+            auto srrc = generate_srrc_taps(SRRC_ALPHA, SRRC_SPAN_SYMBOLS, sps);
+            
+            // Use first 64 symbols for correlation (one segment)
+            int ref_symbols = std::min(64, PREAMBLE_COMMON_SYMBOLS);
+            
+            std::vector<complex_t> ref_samples;
+            ComplexFirFilter filter(srrc);
+            
+            float gain = std::sqrt(sps);
+            for (int i = 0; i < ref_symbols; i++) {
+                ref_samples.push_back(filter.process(common_symbols[i] * gain));
+                for (int j = 1; j < static_cast<int>(sps); j++) {
+                    ref_samples.push_back(filter.process(complex_t(0, 0)));
+                }
+            }
+            
+            // Flush filter
+            for (size_t i = 0; i < srrc.size(); i++) {
+                ref_samples.push_back(filter.process(complex_t(0, 0)));
+            }
+            
+            // Normalize reference
+            float energy = 0.0f;
+            for (const auto& s : ref_samples) {
+                energy += std::norm(s);
+            }
+            float norm = std::sqrt(energy);
+            if (norm > 0.0f) {
+                for (auto& s : ref_samples) {
+                    s /= norm;
+                }
+            }
+            
+            ref_preambles_[rate] = ref_samples;
+        }
+    }
+    
+    SymbolRateResult try_symbol_rate(const std::vector<float>& rf_samples, int rate) {
+        SymbolRateResult result;
+        result.symbol_rate = rate;
+        result.correlation = 0.0f;
+        result.freq_offset_hz = 0.0f;
+        result.peak_sample = 0;
+        
+        const auto& ref = ref_preambles_[rate];
+        if (ref.empty()) return result;
+        
+        float sps = config_.sample_rate / rate;
+        auto srrc = generate_srrc_taps(SRRC_ALPHA, SRRC_SPAN_SYMBOLS, sps);
+        
+        // Try frequency offsets
+        for (float freq_offset = -config_.freq_search_range;
+             freq_offset <= config_.freq_search_range;
+             freq_offset += config_.freq_step) {
+            
+            // Downconvert
+            NCO nco(config_.sample_rate, -config_.carrier_freq - freq_offset);
+            ComplexFirFilter filter(srrc);
+            
+            std::vector<complex_t> baseband;
+            for (float s : rf_samples) {
+                baseband.push_back(filter.process(nco.mix(complex_t(s, 0))));
+            }
+            
+            // Correlate with reference
+            float best_corr = 0.0f;
+            int best_pos = 0;
+            
+            for (size_t i = 0; i + ref.size() < baseband.size(); i += static_cast<int>(sps)) {
+                // Compute normalized correlation
+                complex_t sum(0, 0);
+                float rx_energy = 0.0f;
+                
+                for (size_t j = 0; j < ref.size(); j++) {
+                    sum += baseband[i + j] * std::conj(ref[j]);
+                    rx_energy += std::norm(baseband[i + j]);
+                }
+                
+                float corr = (rx_energy > 0.0f) ? std::abs(sum) / std::sqrt(rx_energy) : 0.0f;
+                
+                if (corr > best_corr) {
+                    best_corr = corr;
+                    best_pos = i;
+                }
+            }
+            
+            if (best_corr > result.correlation) {
+                result.correlation = best_corr;
+                result.freq_offset_hz = freq_offset;
+                result.peak_sample = best_pos;
+            }
+        }
+        
+        return result;
+    }
+    
+    std::vector<complex_t> extract_symbols(const std::vector<float>& rf_samples,
+                                           int start_sample,
+                                           int num_symbols,
+                                           int symbol_rate,
+                                           float freq_offset) {
+        std::vector<complex_t> symbols;
+        
+        float sps = config_.sample_rate / symbol_rate;
+        auto srrc = generate_srrc_taps(SRRC_ALPHA, SRRC_SPAN_SYMBOLS, sps);
+        
+        // Downconvert and filter
+        NCO nco(config_.sample_rate, -config_.carrier_freq - freq_offset);
+        ComplexFirFilter filter(srrc);
+        
+        std::vector<complex_t> baseband;
+        for (float s : rf_samples) {
+            baseband.push_back(filter.process(nco.mix(complex_t(s, 0))));
+        }
+        
+        // Sample at symbol rate
+        int filter_delay = (srrc.size() - 1) / 2;
+        int sample_start = start_sample + filter_delay;
+        
+        for (int i = 0; i < num_symbols; i++) {
+            int idx = sample_start + static_cast<int>(i * sps);
+            if (idx >= 0 && idx < static_cast<int>(baseband.size())) {
+                symbols.push_back(baseband[idx]);
+            }
+        }
+        
+        return symbols;
+    }
+    
+    int decode_mode_symbols(const std::vector<complex_t>& mode_symbols) {
+        // Mode symbols encode the mode ID using differential 8PSK
+        // The 64 symbols encode repeated copies of the mode ID for redundancy
+        
+        // Differential decode
+        std::vector<int> tribits;
+        complex_t prev(1.0f, 0.0f);
+        
+        for (const auto& sym : mode_symbols) {
+            complex_t diff = sym * std::conj(prev);
+            float phase = std::atan2(diff.imag(), diff.real());
+            if (phase < 0) phase += 2.0f * PI;
+            
+            int tribit = static_cast<int>(std::round(phase / (PI / 4))) % 8;
+            tribits.push_back(tribit);
+            prev = sym;
+        }
+        
+        // Extract mode ID (typically in first few tribits)
+        // Mode ID is 5 bits repeated multiple times
+        int mode_id = 0;
+        if (tribits.size() >= 2) {
+            // First two tribits = 6 bits, take lower 5
+            mode_id = ((tribits[0] & 0x7) << 2) | ((tribits[1] >> 1) & 0x3);
+            mode_id &= 0x1F;  // 5-bit mode ID
+        }
+        
+        return mode_id;
+    }
+    
+    ModeId mode_id_to_enum(int mode_id, int symbol_rate) {
+        // Map mode ID and symbol rate to ModeId enum
+        // Use symbol rate as primary discriminator
+        
+        switch (symbol_rate) {
+            case 75:
+                return ModeId::M75NS;  // Could be M75NS or M75NL
+            case 150:
+                return ModeId::M300S;  // 150 baud QPSK
+            case 300:
+                return ModeId::M600S;  // 300 baud QPSK
+            case 600:
+                return ModeId::M1200S; // 600 baud QPSK
+            case 800:
+                return ModeId::M2400S; // 800 baud 8PSK
+            case 1600:
+                return ModeId::M4800S; // 1600 baud 8PSK
+            default:
+                return ModeId::M2400S;
+        }
+    }
+    
+    ModeId guess_mode_from_rate(int symbol_rate) {
+        // Fallback: guess most common mode for this symbol rate
+        return mode_id_to_enum(0, symbol_rate);
+    }
+};
+
+/**
+ * Auto-detecting receiver that probes for mode before decoding
+ */
+class AutoModeRx {
+public:
+    struct Config {
+        float sample_rate;
+        float carrier_freq;
+        float freq_search_range;
+        bool verbose;
+        
+        Config()
+            : sample_rate(48000.0f)
+            , carrier_freq(1800.0f)
+            , freq_search_range(50.0f)
+            , verbose(false) {}
+    };
+    
+    struct RxResult {
+        bool success;
+        ModeId detected_mode;
+        std::string mode_name;
+        std::vector<uint8_t> data;
+        float freq_offset_hz;
+        int symbol_rate;
+        float confidence;
+        
+        RxResult() 
+            : success(false)
+            , detected_mode(ModeId::M2400S)
+            , freq_offset_hz(0.0f)
+            , symbol_rate(0)
+            , confidence(0.0f) {}
+    };
+    
+    explicit AutoModeRx(const Config& cfg = Config{})
+        : config_(cfg) {
+        
+        // Configure mode detector
+        ModeDetector::Config det_cfg;
+        det_cfg.sample_rate = cfg.sample_rate;
+        det_cfg.carrier_freq = cfg.carrier_freq;
+        det_cfg.freq_search_range = cfg.freq_search_range;
+        detector_ = std::make_unique<ModeDetector>(det_cfg);
+    }
+    
+    /**
+     * Auto-detect mode and decode
+     */
+    RxResult decode(const std::vector<float>& rf_samples) {
+        RxResult result;
+        
+        // Step 1: Detect mode
+        auto detection = detector_->detect(rf_samples);
+        
+        if (!detection.detected) {
+            if (config_.verbose) {
+                std::cerr << "AutoModeRx: No mode detected\n";
+            }
+            return result;
+        }
+        
+        result.detected_mode = detection.mode;
+        result.mode_name = mode_to_string(detection.mode);
+        result.symbol_rate = detection.symbol_rate;
+        result.freq_offset_hz = detection.freq_offset_hz;
+        result.confidence = detection.confidence;
+        
+        if (config_.verbose) {
+            std::cerr << "AutoModeRx: Detected " << result.mode_name
+                      << " (rate=" << result.symbol_rate
+                      << ", freq_offset=" << result.freq_offset_hz << " Hz"
+                      << ", confidence=" << result.confidence << ")\n";
+        }
+        
+        // Step 2: Configure receiver for detected mode
+        MultiModeRx::Config rx_cfg;
+        rx_cfg.mode = detection.mode;
+        rx_cfg.sample_rate = config_.sample_rate;
+        rx_cfg.carrier_freq = config_.carrier_freq;
+        rx_cfg.freq_search_range = 0.0f;  // Already have freq offset
+        rx_cfg.verbose = config_.verbose;
+        
+        MultiModeRx rx(rx_cfg);
+        
+        // Step 3: Decode
+        auto rx_result = rx.decode(rf_samples);
+        
+        result.success = rx_result.success;
+        result.data = std::move(rx_result.data);
+        
+        return result;
+    }
+
+private:
+    Config config_;
+    std::unique_ptr<ModeDetector> detector_;
+};
+
+} // namespace m110a
+
+#endif // M110A_MODE_DETECTOR_H

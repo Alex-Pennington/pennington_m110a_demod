@@ -1,0 +1,27 @@
+=== Journal Entry 2025-12-07 Session 17 ===
+M75 Walsh Debug and Project Summary
+
+Continued M75 Walsh decode debugging with extensive parameter search:
+- Symbol offsets: 0-20000 (no match)
+- Scrambler offsets: 0-160 (no match)  
+- Gray mappings: 8 variations (no match)
+- Bit inversions: tested (no match)
+
+Loopback continues to work perfectly - real file decode remains blocked.
+
+Created comprehensive project documentation:
+- docs/PROJECT_STATUS.md - Full project status
+- docs/TODO.md - TODO tracker with all items
+
+Project Status Summary:
+- 21/21 main tests passing
+- 20/22 modes fully working (M150-M4800)
+- 2/22 modes partial (M75NS/NL loopback only)
+- All equalizers working (DFE, MLSE L=2/L=3)
+- All channel models working (AWGN, Watterson)
+
+M75 paused pending further investigation of:
+1. sync_75_mask adaptive weighting
+2. 4800 Hz vs 2400 Hz symbol timing
+3. MES/MNS block synchronization
+
