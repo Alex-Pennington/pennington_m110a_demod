@@ -19,10 +19,10 @@ MAJOR.MINOR.PATCH
 
 ## Current Version Tracking
 
-| Component | Current Version | Last Updated |
-|-----------|-----------------|--------------|
-| API | 1.0.0 | 2025-12-07 |
-| Test Suite | 1.0.0 | 2025-12-07 |
+| Component | Current Version | Git Commit | Git Tag | Last Updated |
+|-----------|-----------------|------------|---------|---------------|
+| API | 1.0.0 | 591900b | v1.0.0 | 2025-12-07 |
+| Test Suite | 1.0.0 | 591900b | v1.0.0 | 2025-12-07 |
 
 ---
 
@@ -58,12 +58,40 @@ Example: `exhaustive_test_report_2025-12-07_v1.0.0.md`
 
 ---
 
+## Git Version Tracking
+
+### Git Commands for Version Management
+```powershell
+# Get current commit hash
+git rev-parse --short HEAD
+
+# Get full commit hash
+git rev-parse HEAD
+
+# Create version tag
+git tag vX.Y.Z
+
+# List all tags
+git tag -l
+
+# Show commit info for a tag
+git show vX.Y.Z
+
+# Commit with version message
+git add -A
+git commit -m "vX.Y.Z - Description of changes"
+git tag vX.Y.Z
+```
+
+---
+
 ## Copilot Instructions for Version Iteration
 
 ### Before Starting Work
 1. Check the latest report in `docs/test_reports/`
-2. Note the current version number
+2. Note the current version number and git commit
 3. Determine if changes warrant MAJOR, MINOR, or PATCH increment
+4. Run `git log -1 --oneline` to verify current state
 
 ### After Making Changes
 1. Run the exhaustive test suite:
@@ -72,16 +100,30 @@ Example: `exhaustive_test_report_2025-12-07_v1.0.0.md`
    .\exhaustive_test.exe
    ```
 
-2. Create new report with incremented version:
+2. Commit changes with version:
+   ```powershell
+   git add -A
+   git commit -m "vX.Y.Z - Description of changes"
+   git tag vX.Y.Z
+   ```
+
+3. Get new commit hash:
+   ```powershell
+   git rev-parse --short HEAD
+   ```
+
+4. Create new report with incremented version:
    ```
    docs/test_reports/exhaustive_test_report_YYYY-MM-DD_vX.Y.Z.md
    ```
 
-3. Update this file's "Current Version Tracking" table
+5. Update this file's "Current Version Tracking" table with new commit hash
 
 ### Report Template Fields to Update
 - **Date**: Current date (YYYY-MM-DD format)
 - **Version**: Incremented version number
+- **Git Commit**: From `git rev-parse --short HEAD`
+- **Git Tag**: Version tag (e.g., v1.0.1)
 - **Duration**: From test output
 - **Iterations**: From test output
 - **Total Tests**: From test output

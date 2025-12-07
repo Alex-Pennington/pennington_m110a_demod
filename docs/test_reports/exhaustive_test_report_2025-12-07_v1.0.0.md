@@ -2,9 +2,11 @@
 
 ## Test Information
 | Field | Value |
-|-------|-------|
+|-------|---------|
 | **Date** | December 7, 2025 |
 | **Version** | 1.0.0 |
+| **Git Commit** | 591900b |
+| **Git Tag** | v1.0.0 |
 | **Duration** | 600 seconds (10 minutes) |
 | **Iterations** | 51 |
 | **Total Tests** | 3,037 |
