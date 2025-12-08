@@ -100,15 +100,31 @@ inline std::string version() {
            std::to_string(VERSION_PATCH);
 }
 
-/// Get full version string with build info (e.g., "1.2.0+build.1.b52efc3")
+/// Get full version string with branch and build info
+/// Format: "1.2.0 (turbo) build.42.abc1234"
 inline std::string version_full() {
-    return version() + "+build." + std::to_string(BUILD_NUMBER) + "." + GIT_COMMIT;
+    return version() + " (" + GIT_BRANCH + ") build." + 
+           std::to_string(BUILD_NUMBER) + "." + GIT_COMMIT;
 }
 
-/// Get build info string
+/// Get build info string for reports
+/// Format: "Build 42 (abc1234) turbo 2025-12-08 07:30:00"
 inline std::string build_info() {
     return std::string("Build ") + std::to_string(BUILD_NUMBER) + 
-           " (" + GIT_COMMIT + ") " + BUILD_DATE + " " + BUILD_TIME;
+           " (" + GIT_COMMIT + ") " + GIT_BRANCH + " " + BUILD_DATE + " " + BUILD_TIME;
+}
+
+/// Get version for help/usage display
+/// Format: "v1.2.0-turbo+42"
+inline std::string version_short() {
+    return "v" + version() + "-" + GIT_BRANCH + "+" + std::to_string(BUILD_NUMBER);
+}
+
+/// Get detailed version info for headers
+/// Format: "M110A Modem v1.2.0 (turbo branch, build 42, commit abc1234)"
+inline std::string version_header() {
+    return std::string("M110A Modem v") + version() + " (" + GIT_BRANCH + 
+           " branch, build " + std::to_string(BUILD_NUMBER) + ", commit " + GIT_COMMIT + ")";
 }
 
 } // namespace m110a

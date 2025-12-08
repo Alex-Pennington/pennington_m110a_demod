@@ -741,9 +741,12 @@ void generate_report(const std::string& filename,
     report << "## Test Information\n";
     report << "| Field | Value |\n";
     report << "|-------|-------|\n";
-    report << "| **Version** | " << m110a::version_full() << " |\n";
-    report << "| **Build** | " << m110a::build_info() << " |\n";
-    report << "| **Date** | " << std::put_time(tm, "%B %d, %Y %H:%M") << " |\n";
+    report << "| **Version** | " << m110a::version() << " |\n";
+    report << "| **Branch** | " << m110a::GIT_BRANCH << " |\n";
+    report << "| **Build** | " << m110a::BUILD_NUMBER << " |\n";
+    report << "| **Commit** | " << m110a::GIT_COMMIT << " |\n";
+    report << "| **Build Date** | " << m110a::BUILD_DATE << " " << m110a::BUILD_TIME << " |\n";
+    report << "| **Test Date** | " << std::put_time(tm, "%B %d, %Y %H:%M") << " |\n";
     report << "| **Duration** | " << duration_sec << " seconds |\n";
     report << "| **Iterations** | " << iterations << " |\n";
     report << "| **Total Tests** | " << total_tests << " |\n";
@@ -1012,7 +1015,10 @@ int main(int argc, char* argv[]) {
             if (csv.is_open()) {
                 // Version header as comment
                 csv << "# M110A Modem Progressive Test Results\n";
-                csv << "# Version: " << m110a::version_full() << "\n";
+                csv << "# Version: " << m110a::version() << "\n";
+                csv << "# Branch: " << m110a::GIT_BRANCH << "\n";
+                csv << "# Build: " << m110a::BUILD_NUMBER << "\n";
+                csv << "# Commit: " << m110a::GIT_COMMIT << "\n";
                 csv << "# Date: " << m110a::BUILD_DATE << " " << m110a::BUILD_TIME << "\n";
                 csv << "# Mode Filter: " << (mode_filter.empty() ? "ALL" : mode_filter) << "\n";
                 

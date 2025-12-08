@@ -472,18 +472,21 @@ inline void generate_markdown_report(const std::string& filename,
     std::time_t now_time = std::chrono::system_clock::to_time_t(now);
     std::tm* tm = std::localtime(&now_time);
     
-    report << "# M110A Modem Exhaustive Test Report\n\n";
-    report << "## Test Information\n";
-    report << "| Field | Value |\n";
-    report << "|-------|-------|\n";
-    report << "| **Version** | " << m110a::version_full() << " |\n";
-    report << "| **Build** | " << m110a::build_info() << " |\n";
-    report << "| **Backend** | " << backend_name << " |\n";
-    report << "| **Date** | " << std::put_time(tm, "%B %d, %Y %H:%M") << " |\n";
-    report << "| **Duration** | " << results.duration_seconds << " seconds |\n";
-    report << "| **Iterations** | " << results.iterations << " |\n";
-    report << "| **Total Tests** | " << results.total_tests << " |\n";
-    report << "| **Rating** | " << results.rating() << " |\n\n";
+    report << "# M110A Modem Exhaustive Test Report\\n\\n";
+    report << "## Test Information\\n";
+    report << "| Field | Value |\\n";
+    report << "|-------|-------|\\n";
+    report << "| **Version** | " << m110a::version() << " |\\n";
+    report << "| **Branch** | " << m110a::GIT_BRANCH << " |\\n";
+    report << "| **Build** | " << m110a::BUILD_NUMBER << " |\\n";
+    report << "| **Commit** | " << m110a::GIT_COMMIT << " |\\n";
+    report << "| **Build Date** | " << m110a::BUILD_DATE << " " << m110a::BUILD_TIME << " |\\n";
+    report << "| **Backend** | " << backend_name << " |\\n";
+    report << "| **Test Date** | " << std::put_time(tm, "%B %d, %Y %H:%M") << " |\\n";
+    report << "| **Duration** | " << results.duration_seconds << " seconds |\\n";
+    report << "| **Iterations** | " << results.iterations << " |\\n";
+    report << "| **Total Tests** | " << results.total_tests << " |\\n";
+    report << "| **Rating** | " << results.rating() << " |\\n\\n";
     
     report << "---\n\n";
     report << "## Summary\n\n";
@@ -596,7 +599,10 @@ inline void write_progressive_csv_header(const std::string& filename,
     if (!csv.is_open()) return;
     
     csv << "# M110A Modem Progressive Test Results\n";
-    csv << "# Version: " << m110a::version_full() << "\n";
+    csv << "# Version: " << m110a::version() << "\n";
+    csv << "# Branch: " << m110a::GIT_BRANCH << "\n";
+    csv << "# Build: " << m110a::BUILD_NUMBER << "\n";
+    csv << "# Commit: " << m110a::GIT_COMMIT << "\n";
     csv << "# Date: " << m110a::BUILD_DATE << " " << m110a::BUILD_TIME << "\n";
     csv << "# Mode Filter: " << (mode_filter.empty() ? "ALL" : mode_filter) << "\n";
     

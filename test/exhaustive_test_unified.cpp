@@ -266,6 +266,7 @@ int main(int argc, char* argv[]) {
         } else if ((arg == "--csv" || arg == "-c") && i + 1 < argc) {
             csv_file = argv[++i];
         } else if (arg == "--help" || arg == "-h") {
+            std::cout << m110a::version_header() << "\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
             std::cout << "Backend Options:\n";
             std::cout << "  --server        Use server backend instead of direct API\n";
@@ -311,9 +312,9 @@ int main(int argc, char* argv[]) {
     
     // Print header
     std::cout << "==============================================\n";
-    std::cout << "M110A Exhaustive Test Suite\n";
+    std::cout << m110a::version_header() << "\n";
     std::cout << "==============================================\n";
-    std::cout << "Version: " << m110a::version_full() << "\n";
+    std::cout << m110a::build_info() << "\n";
     std::cout << "Backend: " << backend->backend_name() << "\n";
     if (progressive_mode) {
         std::cout << "Mode: PROGRESSIVE (find mode limits)\n";

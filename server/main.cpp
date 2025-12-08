@@ -37,8 +37,7 @@ void signal_handler(int signal) {
 }
 
 void print_usage(const char* program) {
-    std::cout << "M110A Modem Server - MS-DMT Compatible Interface\n";
-    std::cout << "Version: " << m110a::version_full() << "\n";
+    std::cout << m110a::version_header() << "\n";
     std::cout << m110a::build_info() << "\n\n";
     std::cout << "Usage: " << program << " [options]\n\n";
     std::cout << "Options:\n";
@@ -106,10 +105,9 @@ int main(int argc, char* argv[]) {
     // Print banner
     if (!quiet) {
         std::cout << "================================================\n";
-        std::cout << "M110A Modem Server\n";
+        std::cout << m110a::version_header() << "\n";
         std::cout << "MS-DMT Compatible Network Interface\n";
         std::cout << "================================================\n";
-        std::cout << "Version: " << m110a::version_full() << "\n";
         std::cout << m110a::build_info() << "\n";
         if (test_mode) {
             std::cout << "Mode: Test (mock audio devices)\n";
