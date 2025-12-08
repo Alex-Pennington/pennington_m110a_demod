@@ -119,6 +119,18 @@ const char* HTML_PAGE = R"HTML(
                     <input type="number" id="iterations" value="1" min="1" max="100" style="width: 80px;">
                 </div>
                 <div class="field">
+                    <label>Parallel Threads</label>
+                    <select id="threads">
+                        <option value="1">1 (Sequential)</option>
+                        <option value="2">2 threads</option>
+                        <option value="4" selected>4 threads</option>
+                        <option value="6">6 threads</option>
+                        <option value="8">8 threads</option>
+                        <option value="12">12 threads</option>
+                        <option value="16">16 threads</option>
+                    </select>
+                </div>
+                <div class="field">
                     <label>Backend</label>
                     <select id="backend">
                         <option value="direct">Direct API</option>
@@ -251,6 +263,15 @@ Available tests:
         document.getElementById('modes').addEventListener('change', updateSummary);
         document.getElementById('equalizers').addEventListener('change', updateSummary);
         
+        // Enable/disable threads based on backend selection
+        document.getElementById('backend').addEventListener('change', () => {
+            const isServer = document.getElementById('backend').value === 'server';
+            document.getElementById('threads').disabled = isServer;
+            if (isServer) {
+                document.getElementById('threads').value = '1';
+            }
+        });
+        
         function runTest() {
             const output = document.getElementById('output');
             const status = document.getElementById('status');
@@ -274,7 +295,16 @@ Available tests:
             const iters = document.getElementById('iterations').value;
             args.push('-n', iters);
             
-            if (document.getElementById('backend').value === 'server') {
+            // Add parallel threads (only for direct backend)
+            const backend = document.getElementById('backend').value;
+            if (backend === 'direct') {
+                const threads = document.getElementById('threads').value;
+                if (threads > 1) {
+                    args.push('-j', threads);
+                }
+            }
+            
+            if (backend === 'server') {
                 args.push('--server');
             }
             
