@@ -313,19 +313,22 @@ struct ModeInfo {
 };
 
 std::vector<ModeInfo> get_modes() {
+    // TX times based on interleaver block sizes and data rates
+    // SHORT: 0.6s blocks, LONG: 4.8s blocks (8x longer)
+    // Time = (interleaver_block_bits / data_rate_bps) + preamble overhead
     return {
-        {"75S",   "75S",   8000},
-        {"75L",   "75L",   8000},
-        {"150S",  "150S",  4000},
-        {"150L",  "150L",  4000},
-        {"300S",  "300S",  2000},
-        {"300L",  "300L",  2000},
-        {"600S",  "600S",  1500},
-        {"600L",  "600L",  1500},
-        {"1200S", "1200S", 1000},
-        {"1200L", "1200L", 1000},
-        {"2400S", "2400S", 800},
-        {"2400L", "2400L", 800},
+        {"75S",   "75S",   10000},   // Very slow data rate
+        {"75L",   "75L",   80000},   // 8x longer interleaver
+        {"150S",  "150S",  5000},    // 720 bits / 150 bps + overhead
+        {"150L",  "150L",  40000},   // 5760 bits / 150 bps + overhead
+        {"300S",  "300S",  3000},    // 720 bits / 300 bps + overhead
+        {"300L",  "300L",  20000},   // 5760 bits / 300 bps + overhead
+        {"600S",  "600S",  2000},    // 720 bits / 600 bps + overhead
+        {"600L",  "600L",  10000},   // 5760 bits / 600 bps + overhead
+        {"1200S", "1200S", 2000},    // 1440 bits / 1200 bps + overhead
+        {"1200L", "1200L", 10000},   // 11520 bits / 1200 bps + overhead
+        {"2400S", "2400S", 2000},    // 2880 bits / 2400 bps + overhead
+        {"2400L", "2400L", 10000},   // 23040 bits / 2400 bps + overhead
     };
 }
 
@@ -362,38 +365,23 @@ bool run_single_test(ServerConnection& conn,
                      double& ber_out) {
     ber_out = 1.0;
     
-    // Debug log - overwritten each test
-    std::ofstream dbg("debug_test.log");
-    dbg << "=== Test: " << mode.name << " + " << channel.name << " ===\n";
-    dbg << "Time: " << std::chrono::system_clock::now().time_since_epoch().count() << "\n\n";
-    
     // 1. Set mode
-    dbg << "[1] Setting mode: CMD:DATA RATE:" << mode.cmd << "\n";
     std::string resp = conn.send_command("CMD:DATA RATE:" + mode.cmd);
-    dbg << "    Response: " << resp << "\n";
     if (resp.find("OK:") == std::string::npos) {
-        dbg << "    FAIL: No OK in response\n";
-        dbg.close();
         return false;
     }
     
     // 2. Enable recording
-    dbg << "[2] Enable recording\n";
     conn.send_command("CMD:RECORD TX:ON");
     conn.send_command("CMD:RECORD PREFIX:" + mode.name + "_" + channel.name);
     
     // 3. Send test data
-    dbg << "[3] Sending " << test_data.size() << " bytes of test data\n";
     conn.send_data(test_data);
     
     // 4. Trigger TX
-    dbg << "[4] Triggering TX (timeout: " << (mode.tx_time_ms + 2000) << "ms)\n";
     conn.last_pcm_file.clear();
     resp = conn.send_command("CMD:SENDBUFFER", mode.tx_time_ms + 2000);
-    dbg << "    Response: " << resp << "\n";
     if (resp.find("OK:") == std::string::npos) {
-        dbg << "    FAIL: TX did not complete\n";
-        dbg.close();
         return false;
     }
     
@@ -402,39 +390,29 @@ bool run_single_test(ServerConnection& conn,
     
     // 5. Get PCM filename
     std::string pcm_file = conn.last_pcm_file;
-    dbg << "[5] PCM file: " << (pcm_file.empty() ? "(empty)" : pcm_file) << "\n";
     if (pcm_file.empty()) {
-        dbg << "    FAIL: No PCM file received\n";
-        dbg.close();
         return false;
     }
     
     // 6. Configure channel
-    dbg << "[6] Configuring channel: " << (channel.setup_cmd.empty() ? "clean" : channel.setup_cmd) << "\n";
-    conn.send_command("CMD:CHANNEL OFF");  // Reset first
+    conn.send_command("CMD:CHANNEL OFF");
     if (!channel.setup_cmd.empty()) {
         resp = conn.send_command(channel.setup_cmd);
-        dbg << "    Response: " << resp << "\n";
         if (resp.find("OK:") == std::string::npos) {
-            dbg << "    FAIL: Channel config failed\n";
-            dbg.close();
             return false;
         }
     }
     
-    // 7. Inject PCM for decode - send command and wait for COMPLETE
-    dbg << "[7] Injecting PCM: " << pcm_file << "\n";
+    // 7. Inject PCM for decode
     {
         std::string full_cmd = "CMD:RXAUDIOINJECT:" + pcm_file + "\n";
         send(conn.control_sock, full_cmd.c_str(), (int)full_cmd.length(), 0);
         
-        // Wait for COMPLETE (not just any OK:)
         bool got_complete = false;
         auto start = steady_clock::now();
         int timeout_ms = mode.tx_time_ms + 5000;
         
         while (duration_cast<milliseconds>(steady_clock::now() - start).count() < timeout_ms) {
-            // Read status lines
 #ifdef _WIN32
             DWORD tv = 500;
             setsockopt(conn.control_sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
@@ -447,39 +425,31 @@ bool run_single_test(ServerConnection& conn,
             }
             
             if (!line.empty()) {
-                dbg << "    RX: " << line << "\n";
                 if (line.find("RXAUDIOINJECT:COMPLETE") != std::string::npos) {
                     got_complete = true;
                     break;
                 }
                 if (line.find("ERROR:") != std::string::npos) {
-                    dbg << "    FAIL: Error during inject\n";
-                    dbg.close();
                     return false;
                 }
             }
         }
         
         if (!got_complete) {
-            dbg << "    FAIL: Timeout waiting for COMPLETE\n";
-            dbg.close();
             return false;
         }
     }
     
-    // 8. Receive decoded data (should already be in TCP buffer)
-    dbg << "[8] Receiving decoded data\n";
+    // 8. Receive decoded data
     std::vector<uint8_t> rx_data = conn.receive_data(2000);
-    dbg << "    Received: " << rx_data.size() << " bytes\n";
     
     // 9. Calculate BER
     ber_out = calculate_ber(test_data, rx_data);
-    dbg << "[9] BER: " << ber_out << " (threshold: " << channel.expected_ber_threshold << ")\n";
     
-    // 10. Turn off channel sim
+    // 10. Cleanup
     conn.send_command("CMD:CHANNEL OFF");
     
-    // Keep track of last 2 PCM files, delete older ones
+    // Keep last 2 PCM files, delete older ones
     static std::string prev_pcm_file;
     static std::string prev_prev_pcm_file;
     
@@ -488,10 +458,6 @@ bool run_single_test(ServerConnection& conn,
     }
     prev_prev_pcm_file = prev_pcm_file;
     prev_pcm_file = pcm_file;
-    
-    bool passed = ber_out <= channel.expected_ber_threshold;
-    dbg << "[10] Result: " << (passed ? "PASS" : "FAIL") << "\n";
-    dbg.close();
     
     return ber_out <= channel.expected_ber_threshold;
 }
