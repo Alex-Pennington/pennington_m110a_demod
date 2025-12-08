@@ -1,1 +1,16 @@
 excluded_from_git/
+
+# Generated files
+tx_pcm_out/
+rx_pcm_in/
+
+# Build artifacts
+*.exe
+*.o
+*.obj
+*.pdb
+
+# IDE
+.vscode/
+*.suo
+*.user
