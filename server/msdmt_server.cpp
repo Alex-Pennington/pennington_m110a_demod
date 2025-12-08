@@ -739,17 +739,23 @@ void MSDMTServer::cmd_send_buffer(std::shared_ptr<ClientConnection> client) {
     auto samples = encode_result.value();
     
     // Save to file if recording enabled
+    std::string pcm_filename;
     if (recording_enabled_) {
-        std::string filename = generate_pcm_filename(recording_prefix_, config_.pcm_output_dir);
+        pcm_filename = generate_pcm_filename(recording_prefix_, config_.pcm_output_dir);
         auto int16_samples = samples_to_int16(samples);
-        write_pcm_file(filename, int16_samples);
-        std::cout << "[TX] Saved: " << filename << " (" << int16_samples.size() << " samples)\n";
+        write_pcm_file(pcm_filename, int16_samples);
+        std::cout << "[TX] Saved: " << pcm_filename << " (" << int16_samples.size() << " samples)\n";
     }
     
     state_.store(ModemState::IDLE);
     broadcast_status(StatusCategory::TX, "IDLE");
     
-    client->send(format_ok("SENDBUFFER", std::to_string(data.size()) + " bytes"));
+    // Include PCM filename in response if recording was enabled
+    if (!pcm_filename.empty()) {
+        client->send(format_ok("SENDBUFFER", std::to_string(data.size()) + " bytes FILE:" + pcm_filename));
+    } else {
+        client->send(format_ok("SENDBUFFER", std::to_string(data.size()) + " bytes"));
+    }
 }
 
 void MSDMTServer::cmd_record_tx(std::shared_ptr<ClientConnection> client, bool enable) {
@@ -797,6 +803,7 @@ void MSDMTServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, 
     // Decode using modem API
     m110a::api::RxConfig rx_cfg;
     rx_cfg.sample_rate = 48000;
+    rx_cfg.mode = to_api_mode(current_mode_);  // Use current mode instead of auto-detect
     
     auto result = m110a::api::decode(samples, rx_cfg);
     
