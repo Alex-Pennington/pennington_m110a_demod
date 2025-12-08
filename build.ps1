@@ -221,6 +221,21 @@ function Build-UnitTests {
     }
 }
 
+function Build-TestGui {
+    Write-Host "`n=== Building Test GUI Server ===" -ForegroundColor Yellow
+    
+    $cmd = "$CXX $CXXFLAGS -o test/test_gui.exe test/test_gui_server.cpp $LDFLAGS -lshell32"
+    Write-Host $cmd -ForegroundColor DarkGray
+    
+    Invoke-Expression $cmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Test GUI built successfully" -ForegroundColor Green
+    } else {
+        throw "Test GUI build failed"
+    }
+}
+
 function Clean-Build {
     Write-Host "`n=== Cleaning ===" -ForegroundColor Yellow
     
@@ -265,15 +280,19 @@ switch ($Target.ToLower()) {
     "unit" {
         Build-UnitTests
     }
+    "gui" {
+        Build-TestGui
+    }
     "all" {
         Build-Server
         Build-ExhaustiveTest
         Build-UnifiedTest
         Build-UnitTests
+        Build-TestGui
     }
     default {
         Write-Host "Unknown target: $Target" -ForegroundColor Red
-        Write-Host "Valid targets: server, test, unified, unit, all" -ForegroundColor Yellow
+        Write-Host "Valid targets: server, test, unified, unit, gui, all" -ForegroundColor Yellow
         exit 1
     }
 }
