@@ -331,6 +331,25 @@ private:
     void cmd_record_prefix(std::shared_ptr<ClientConnection> client, const std::string& prefix);
     void cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, const std::string& filepath);
     void cmd_kill_tx(std::shared_ptr<ClientConnection> client);
+    
+    // Channel simulation command handlers
+    void cmd_channel_config(std::shared_ptr<ClientConnection> client, const std::string& param);
+    void cmd_channel_preset(std::shared_ptr<ClientConnection> client, const std::string& preset);
+    void cmd_channel_awgn(std::shared_ptr<ClientConnection> client, const std::string& snr_db);
+    void cmd_channel_multipath(std::shared_ptr<ClientConnection> client, const std::string& params);
+    void cmd_channel_freq_offset(std::shared_ptr<ClientConnection> client, const std::string& offset_hz);
+    void cmd_channel_off(std::shared_ptr<ClientConnection> client);
+    void cmd_run_ber_test(std::shared_ptr<ClientConnection> client, const std::string& params);
+    
+    // Channel simulation state
+    bool channel_sim_enabled_ = false;
+    float channel_snr_db_ = 30.0f;
+    bool channel_awgn_enabled_ = false;
+    bool channel_multipath_enabled_ = false;
+    int channel_multipath_delay_ = 48;
+    float channel_multipath_gain_ = 0.5f;
+    bool channel_freq_offset_enabled_ = false;
+    float channel_freq_offset_hz_ = 0.0f;
 };
 
 // ============================================================

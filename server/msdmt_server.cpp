@@ -5,6 +5,7 @@
 
 #include "msdmt_server.h"
 #include "api/modem.h"
+#include "api/channel_sim.h"
 
 #include <iostream>
 #include <fstream>
@@ -674,6 +675,20 @@ void MSDMTServer::process_command(std::shared_ptr<ClientConnection> client, cons
         cmd_rx_audio_inject(client, cmd.parameter);
     } else if (cmd.type == "KILL TX") {
         cmd_kill_tx(client);
+    } else if (cmd.type == "CHANNEL CONFIG") {
+        cmd_channel_config(client, cmd.parameter);
+    } else if (cmd.type == "CHANNEL PRESET") {
+        cmd_channel_preset(client, cmd.parameter);
+    } else if (cmd.type == "CHANNEL AWGN") {
+        cmd_channel_awgn(client, cmd.parameter);
+    } else if (cmd.type == "CHANNEL MULTIPATH") {
+        cmd_channel_multipath(client, cmd.parameter);
+    } else if (cmd.type == "CHANNEL FREQOFFSET") {
+        cmd_channel_freq_offset(client, cmd.parameter);
+    } else if (cmd.type == "CHANNEL OFF") {
+        cmd_channel_off(client);
+    } else if (cmd.type == "CHANNEL APPLY" || cmd.type == "RUN BERTEST") {
+        cmd_run_ber_test(client, cmd.parameter);
     } else {
         client->send(format_error(cmd.type, "UNKNOWN COMMAND"));
     }
@@ -764,6 +779,21 @@ void MSDMTServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, 
     auto int16_samples = read_pcm_file(filepath);
     auto samples = samples_to_float(int16_samples);
     
+    // Apply channel impairments if enabled
+    if (channel_sim_enabled_) {
+        std::mt19937 rng(static_cast<uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+        
+        if (channel_freq_offset_enabled_) {
+            m110a::api::channel::add_freq_offset(samples, channel_freq_offset_hz_, 48000.0f);
+        }
+        if (channel_multipath_enabled_) {
+            m110a::api::channel::add_multipath(samples, channel_multipath_delay_, channel_multipath_gain_);
+        }
+        if (channel_awgn_enabled_) {
+            m110a::api::channel::add_awgn(samples, channel_snr_db_, rng);
+        }
+    }
+    
     // Decode using modem API
     m110a::api::RxConfig rx_cfg;
     rx_cfg.sample_rate = 48000;
@@ -785,7 +815,12 @@ void MSDMTServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, 
     
     state_.store(ModemState::IDLE);
     
-    client->send(format_ok("RXAUDIOINJECT", "COMPLETE:" + std::to_string(int16_samples.size()) + " samples"));
+    std::ostringstream ss;
+    ss << "COMPLETE:" << int16_samples.size() << " samples";
+    if (channel_sim_enabled_) {
+        ss << " (channel sim applied)";
+    }
+    client->send(format_ok("RXAUDIOINJECT", ss.str()));
 }
 
 void MSDMTServer::cmd_kill_tx(std::shared_ptr<ClientConnection> client) {
@@ -793,6 +828,239 @@ void MSDMTServer::cmd_kill_tx(std::shared_ptr<ClientConnection> client) {
     clear_tx_buffer();
     broadcast_status(StatusCategory::TX, "IDLE");
     client->send(format_ok("KILL TX", ""));
+}
+
+// ============================================================
+// Channel Simulation Command Handlers
+// ============================================================
+
+void MSDMTServer::cmd_channel_config(std::shared_ptr<ClientConnection> client, const std::string& param) {
+    // Return current channel config
+    std::ostringstream ss;
+    ss << "CHANNEL CONFIG:\n";
+    ss << "  Enabled: " << (channel_sim_enabled_ ? "YES" : "NO") << "\n";
+    ss << "  AWGN: " << (channel_awgn_enabled_ ? "ON" : "OFF");
+    if (channel_awgn_enabled_) ss << " (SNR=" << channel_snr_db_ << "dB)";
+    ss << "\n";
+    ss << "  Multipath: " << (channel_multipath_enabled_ ? "ON" : "OFF");
+    if (channel_multipath_enabled_) ss << " (delay=" << channel_multipath_delay_ 
+                                        << " samples, gain=" << channel_multipath_gain_ << ")";
+    ss << "\n";
+    ss << "  FreqOffset: " << (channel_freq_offset_enabled_ ? "ON" : "OFF");
+    if (channel_freq_offset_enabled_) ss << " (" << channel_freq_offset_hz_ << "Hz)";
+    ss << "\n";
+    
+    client->send(format_ok("CHANNEL CONFIG", ss.str()));
+}
+
+void MSDMTServer::cmd_channel_preset(std::shared_ptr<ClientConnection> client, const std::string& preset) {
+    std::string p = preset;
+    std::transform(p.begin(), p.end(), p.begin(), ::toupper);
+    
+    m110a::api::channel::ChannelConfig cfg;
+    std::string preset_name;
+    
+    if (p == "GOOD" || p == "GOOD_HF") {
+        cfg = m110a::api::channel::channel_good_hf();
+        preset_name = "GOOD_HF";
+    } else if (p == "MODERATE" || p == "MODERATE_HF") {
+        cfg = m110a::api::channel::channel_moderate_hf();
+        preset_name = "MODERATE_HF";
+    } else if (p == "POOR" || p == "POOR_HF") {
+        cfg = m110a::api::channel::channel_poor_hf();
+        preset_name = "POOR_HF";
+    } else if (p == "CCIR_GOOD") {
+        cfg = m110a::api::channel::channel_ccir_good();
+        preset_name = "CCIR_GOOD";
+    } else if (p == "CCIR_MODERATE") {
+        cfg = m110a::api::channel::channel_ccir_moderate();
+        preset_name = "CCIR_MODERATE";
+    } else if (p == "CCIR_POOR") {
+        cfg = m110a::api::channel::channel_ccir_poor();
+        preset_name = "CCIR_POOR";
+    } else if (p == "CLEAN" || p == "OFF") {
+        channel_sim_enabled_ = false;
+        channel_awgn_enabled_ = false;
+        channel_multipath_enabled_ = false;
+        channel_freq_offset_enabled_ = false;
+        client->send(format_ok("CHANNEL PRESET", "CLEAN (no impairments)"));
+        return;
+    } else {
+        client->send(format_error("CHANNEL PRESET", "Unknown preset. Use: GOOD, MODERATE, POOR, CCIR_GOOD, CCIR_MODERATE, CCIR_POOR, CLEAN"));
+        return;
+    }
+    
+    // Apply preset
+    channel_sim_enabled_ = true;
+    channel_awgn_enabled_ = cfg.awgn_enabled;
+    channel_snr_db_ = cfg.snr_db;
+    channel_multipath_enabled_ = cfg.multipath_enabled;
+    channel_multipath_delay_ = cfg.multipath_delay_samples;
+    channel_multipath_gain_ = cfg.multipath_gain;
+    channel_freq_offset_enabled_ = cfg.freq_offset_enabled;
+    channel_freq_offset_hz_ = cfg.freq_offset_hz;
+    
+    std::ostringstream ss;
+    ss << preset_name << " (SNR=" << cfg.snr_db << "dB, MP=" 
+       << cfg.multipath_delay_samples << "samp, FOFF=" << cfg.freq_offset_hz << "Hz)";
+    client->send(format_ok("CHANNEL PRESET", ss.str()));
+}
+
+void MSDMTServer::cmd_channel_awgn(std::shared_ptr<ClientConnection> client, const std::string& snr_db) {
+    try {
+        float snr = std::stof(snr_db);
+        if (snr < 0.0f || snr > 60.0f) {
+            client->send(format_error("CHANNEL AWGN", "SNR must be 0-60 dB"));
+            return;
+        }
+        channel_awgn_enabled_ = true;
+        channel_snr_db_ = snr;
+        channel_sim_enabled_ = true;
+        
+        std::ostringstream ss;
+        ss << "AWGN enabled at " << snr << " dB SNR";
+        client->send(format_ok("CHANNEL AWGN", ss.str()));
+    } catch (...) {
+        client->send(format_error("CHANNEL AWGN", "Invalid SNR value"));
+    }
+}
+
+void MSDMTServer::cmd_channel_multipath(std::shared_ptr<ClientConnection> client, const std::string& params) {
+    // Parse: "delay_samples,gain" or just "delay_samples" (default gain 0.5)
+    int delay = 48;
+    float gain = 0.5f;
+    
+    size_t comma = params.find(',');
+    try {
+        if (comma != std::string::npos) {
+            delay = std::stoi(params.substr(0, comma));
+            gain = std::stof(params.substr(comma + 1));
+        } else {
+            delay = std::stoi(params);
+        }
+        
+        if (delay < 1 || delay > 500) {
+            client->send(format_error("CHANNEL MULTIPATH", "Delay must be 1-500 samples"));
+            return;
+        }
+        if (gain < 0.0f || gain > 1.0f) {
+            client->send(format_error("CHANNEL MULTIPATH", "Gain must be 0.0-1.0"));
+            return;
+        }
+        
+        channel_multipath_enabled_ = true;
+        channel_multipath_delay_ = delay;
+        channel_multipath_gain_ = gain;
+        channel_sim_enabled_ = true;
+        
+        std::ostringstream ss;
+        ss << "Multipath enabled: delay=" << delay << " samples (" 
+           << (delay / 48.0f) << "ms), gain=" << gain;
+        client->send(format_ok("CHANNEL MULTIPATH", ss.str()));
+    } catch (...) {
+        client->send(format_error("CHANNEL MULTIPATH", "Invalid parameters. Use: delay_samples[,gain]"));
+    }
+}
+
+void MSDMTServer::cmd_channel_freq_offset(std::shared_ptr<ClientConnection> client, const std::string& offset_hz) {
+    try {
+        float offset = std::stof(offset_hz);
+        if (offset < -50.0f || offset > 50.0f) {
+            client->send(format_error("CHANNEL FREQOFFSET", "Offset must be -50 to +50 Hz"));
+            return;
+        }
+        
+        channel_freq_offset_enabled_ = true;
+        channel_freq_offset_hz_ = offset;
+        channel_sim_enabled_ = true;
+        
+        std::ostringstream ss;
+        ss << "Frequency offset enabled: " << offset << " Hz";
+        client->send(format_ok("CHANNEL FREQOFFSET", ss.str()));
+    } catch (...) {
+        client->send(format_error("CHANNEL FREQOFFSET", "Invalid offset value"));
+    }
+}
+
+void MSDMTServer::cmd_channel_off(std::shared_ptr<ClientConnection> client) {
+    channel_sim_enabled_ = false;
+    channel_awgn_enabled_ = false;
+    channel_multipath_enabled_ = false;
+    channel_freq_offset_enabled_ = false;
+    
+    client->send(format_ok("CHANNEL OFF", "All channel impairments disabled"));
+}
+
+void MSDMTServer::cmd_run_ber_test(std::shared_ptr<ClientConnection> client, const std::string& params) {
+    // Apply channel impairments to a PCM file and save to a new file
+    // Parameters: "input_file,output_file" or just "input_file" (overwrites)
+    
+    std::string input_file, output_file;
+    
+    size_t comma = params.find(',');
+    if (comma != std::string::npos) {
+        input_file = params.substr(0, comma);
+        output_file = params.substr(comma + 1);
+        // Trim whitespace
+        output_file.erase(0, output_file.find_first_not_of(" \t"));
+        output_file.erase(output_file.find_last_not_of(" \t") + 1);
+    } else {
+        input_file = params;
+        output_file = params;  // Overwrite
+    }
+    
+    // Trim input filename
+    input_file.erase(0, input_file.find_first_not_of(" \t"));
+    input_file.erase(input_file.find_last_not_of(" \t") + 1);
+    
+    if (input_file.empty()) {
+        client->send(format_error("RUN BERTEST", "No input file specified. Usage: CMD:RUN BERTEST:input.pcm[,output.pcm]"));
+        return;
+    }
+    
+    // Read input PCM
+    auto int16_samples = read_pcm_file(input_file);
+    if (int16_samples.empty()) {
+        client->send(format_error("RUN BERTEST", "Cannot read file: " + input_file));
+        return;
+    }
+    
+    auto samples = samples_to_float(int16_samples);
+    
+    // Check if channel sim is enabled
+    if (!channel_sim_enabled_) {
+        client->send(format_error("RUN BERTEST", "No channel impairments configured. Use CMD:CHANNEL commands first."));
+        return;
+    }
+    
+    // Apply channel impairments
+    std::mt19937 rng(static_cast<uint32_t>(std::chrono::steady_clock::now().time_since_epoch().count()));
+    
+    std::ostringstream applied;
+    if (channel_freq_offset_enabled_) {
+        m110a::api::channel::add_freq_offset(samples, channel_freq_offset_hz_, 48000.0f);
+        applied << "FOFF=" << channel_freq_offset_hz_ << "Hz ";
+    }
+    if (channel_multipath_enabled_) {
+        m110a::api::channel::add_multipath(samples, channel_multipath_delay_, channel_multipath_gain_);
+        applied << "MP=" << channel_multipath_delay_ << "samp ";
+    }
+    if (channel_awgn_enabled_) {
+        m110a::api::channel::add_awgn(samples, channel_snr_db_, rng);
+        applied << "AWGN=" << channel_snr_db_ << "dB ";
+    }
+    
+    // Write output PCM
+    auto output_samples = samples_to_int16(samples);
+    if (!write_pcm_file(output_file, output_samples)) {
+        client->send(format_error("RUN BERTEST", "Cannot write file: " + output_file));
+        return;
+    }
+    
+    std::ostringstream ss;
+    ss << "Applied [" << applied.str() << "] to " << int16_samples.size() 
+       << " samples -> " << output_file;
+    client->send(format_ok("RUN BERTEST", ss.str()));
 }
 
 // ============================================================
