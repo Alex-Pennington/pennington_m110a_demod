@@ -479,6 +479,16 @@ bool run_single_test(ServerConnection& conn,
     // 10. Turn off channel sim
     conn.send_command("CMD:CHANNEL OFF");
     
+    // Keep track of last 2 PCM files, delete older ones
+    static std::string prev_pcm_file;
+    static std::string prev_prev_pcm_file;
+    
+    if (!prev_prev_pcm_file.empty()) {
+        std::remove(prev_prev_pcm_file.c_str());
+    }
+    prev_prev_pcm_file = prev_pcm_file;
+    prev_pcm_file = pcm_file;
+    
     bool passed = ber_out <= channel.expected_ber_threshold;
     dbg << "[10] Result: " << (passed ? "PASS" : "FAIL") << "\n";
     dbg.close();
@@ -778,15 +788,30 @@ int main(int argc, char* argv[]) {
                 
                 // Track consecutive failures to detect connection issues
                 static int consecutive_failures = 0;
+                static int reconnect_attempts = 0;
                 if (passed) {
                     consecutive_failures = 0;
+                    reconnect_attempts = 0;
                 } else {
                     consecutive_failures++;
                     if (consecutive_failures >= 10) {
-                        std::cout << "\n[WARNING] 10 consecutive failures - checking connection...\n";
-                        if (!conn.ensure_connected()) {
-                            std::cerr << "[ERROR] Cannot reconnect, aborting.\n";
+                        reconnect_attempts++;
+                        std::cout << "\n[WARNING] 10 consecutive failures (attempt " << reconnect_attempts << "/3)\n";
+                        
+                        if (reconnect_attempts >= 3) {
+                            std::cerr << "[ERROR] Too many consecutive failures, aborting.\n";
                             // Generate partial report before exit
+                            generate_report(report_file, 
+                                duration_cast<seconds>(steady_clock::now() - start_time).count(),
+                                iteration, total_tests);
+                            std::exit(1);
+                        }
+                        
+                        // Try reconnecting
+                        conn.disconnect();
+                        std::this_thread::sleep_for(std::chrono::seconds(2));
+                        if (!conn.connect_to_server()) {
+                            std::cerr << "[ERROR] Cannot reconnect, aborting.\n";
                             generate_report(report_file, 
                                 duration_cast<seconds>(steady_clock::now() - start_time).count(),
                                 iteration, total_tests);
