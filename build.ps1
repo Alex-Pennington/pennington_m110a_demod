@@ -169,6 +169,27 @@ function Build-ExhaustiveTest {
     }
 }
 
+function Build-UnifiedTest {
+    Write-Host "`n=== Building Unified Exhaustive Test ===" -ForegroundColor Yellow
+    
+    $sources = @(
+        "test/exhaustive_test_unified.cpp",
+        "api/modem_tx.cpp",
+        "api/modem_rx.cpp"
+    )
+    
+    $cmd = "$CXX $CXXFLAGS -o test/exhaustive_test.exe $($sources -join ' ') $LDFLAGS"
+    Write-Host $cmd -ForegroundColor DarkGray
+    
+    Invoke-Expression $cmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Unified test built successfully" -ForegroundColor Green
+    } else {
+        throw "Unified test build failed"
+    }
+}
+
 function Clean-Build {
     Write-Host "`n=== Cleaning ===" -ForegroundColor Yellow
     
@@ -207,13 +228,17 @@ switch ($Target.ToLower()) {
     "test" {
         Build-ExhaustiveTest
     }
+    "unified" {
+        Build-UnifiedTest
+    }
     "all" {
         Build-Server
         Build-ExhaustiveTest
+        Build-UnifiedTest
     }
     default {
         Write-Host "Unknown target: $Target" -ForegroundColor Red
-        Write-Host "Valid targets: server, test, all" -ForegroundColor Yellow
+        Write-Host "Valid targets: server, test, unified, all" -ForegroundColor Yellow
         exit 1
     }
 }
