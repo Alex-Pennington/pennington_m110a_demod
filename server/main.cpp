@@ -38,7 +38,8 @@ void signal_handler(int signal) {
 
 void print_usage(const char* program) {
     std::cout << "M110A Modem Server - MS-DMT Compatible Interface\n";
-    std::cout << "Version: " << m110a::api::version() << "\n\n";
+    std::cout << "Version: " << m110a::version_full() << "\n";
+    std::cout << m110a::build_info() << "\n\n";
     std::cout << "Usage: " << program << " [options]\n\n";
     std::cout << "Options:\n";
     std::cout << "  --testdevices      Run with mock audio devices (for testing)\n";
