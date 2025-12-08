@@ -160,6 +160,88 @@ public:
     }
     
     /**
+     * Interleave float LLRs (for turbo equalization)
+     */
+    std::vector<float> interleave_float(const std::vector<float>& input) {
+        if (static_cast<int>(input.size()) != block_size()) {
+            throw std::runtime_error("Interleaver: input size mismatch");
+        }
+        
+        if (is_passthrough()) {
+            return input;
+        }
+        
+        std::vector<float> matrix(block_size());
+        
+        // Load phase
+        int row = 0, col = 0;
+        for (int i = 0; i < block_size(); i++) {
+            matrix[row * params_.cols + col] = input[i];
+            row = (row + params_.row_inc) % params_.rows;
+            if (row == 0) {
+                col = (col + 1) % params_.cols;
+            }
+        }
+        
+        // Fetch phase
+        std::vector<float> output(block_size());
+        row = 0; col = 0;
+        int col_last = 0;
+        for (int i = 0; i < block_size(); i++) {
+            output[i] = matrix[row * params_.cols + col];
+            row = (row + 1) % params_.rows;
+            col = (col + params_.col_inc) % params_.cols;
+            if (row == 0) {
+                col = (col_last + 1) % params_.cols;
+                col_last = col;
+            }
+        }
+        
+        return output;
+    }
+    
+    /**
+     * Deinterleave float LLRs (for turbo equalization)
+     */
+    std::vector<float> deinterleave_float(const std::vector<float>& input) {
+        if (static_cast<int>(input.size()) != block_size()) {
+            throw std::runtime_error("Deinterleaver: input size mismatch");
+        }
+        
+        if (is_passthrough()) {
+            return input;
+        }
+        
+        std::vector<float> matrix(block_size());
+        
+        // Load phase (uses fetch pattern)
+        int row = 0, col = 0;
+        int col_last = 0;
+        for (int i = 0; i < block_size(); i++) {
+            matrix[row * params_.cols + col] = input[i];
+            row = (row + 1) % params_.rows;
+            col = (col + params_.col_inc) % params_.cols;
+            if (row == 0) {
+                col = (col_last + 1) % params_.cols;
+                col_last = col;
+            }
+        }
+        
+        // Fetch phase (uses load pattern)
+        std::vector<float> output(block_size());
+        row = 0; col = 0;
+        for (int i = 0; i < block_size(); i++) {
+            output[i] = matrix[row * params_.cols + col];
+            row = (row + params_.row_inc) % params_.rows;
+            if (row == 0) {
+                col = (col + 1) % params_.cols;
+            }
+        }
+        
+        return output;
+    }
+    
+    /**
      * Interleave hard bits (for TX)
      */
     std::vector<uint8_t> interleave_hard(const std::vector<uint8_t>& input) {

@@ -569,6 +569,72 @@ public:
         return SNRWeightedDemapper8PSK::estimate_snr(received_probes, expected_probes);
     }
     
+    /**
+     * Decode from external soft LLRs (e.g., from turbo equalizer)
+     *
+     * The LLRs should be in the same order as the codec would produce:
+     * - After descrambling and inverse Gray mapping
+     * - Before deinterleaving
+     * - Positive LLR = likely bit 0, Negative LLR = likely bit 1
+     *
+     * @param llrs External soft LLRs (one per coded bit)
+     * @return Decoded bytes
+     */
+    std::vector<uint8_t> decode_from_llrs(const std::vector<float>& llrs) {
+        // Convert LLRs to soft_bit_t format
+        std::vector<soft_bit_t> soft_bits;
+        soft_bits.reserve(llrs.size());
+
+        for (float llr : llrs) {
+            // Scale LLR to soft bit range (-127 to +127)
+            // Convention: positive LLR = bit 0 = positive soft bit
+            float scaled = llr * 20.0f;  // Empirical scaling factor
+            int8_t sb = static_cast<int8_t>(std::max(-127.0f, std::min(127.0f, scaled)));
+            soft_bits.push_back(sb);
+        }
+
+        return decode_soft_bits(soft_bits);
+    }
+
+    /**
+     * Decode from external soft LLRs with probe symbols still included
+     *
+     * This version handles the data+probe structure, extracting only data LLRs.
+     * Useful when turbo equalizer processes the full symbol stream.
+     *
+     * @param all_llrs LLRs for all symbols (data + probes)
+     * @return Decoded bytes
+     */
+    std::vector<uint8_t> decode_from_llrs_with_probes(const std::vector<float>& all_llrs) {
+        int unknown_len = config_.unknown_data_len;
+        int known_len = config_.known_data_len;
+        int bits_per_sym = config_.bits_per_symbol;
+
+        // 75 bps modes have no probes
+        if (unknown_len == 0 || known_len == 0) {
+            return decode_from_llrs(all_llrs);
+        }
+
+        int pattern_len = unknown_len + known_len;
+        int bits_per_pattern = pattern_len * bits_per_sym;
+        int data_bits_per_pattern = unknown_len * bits_per_sym;
+
+        // Extract data LLRs only
+        std::vector<float> data_llrs;
+
+        size_t idx = 0;
+        while (idx + bits_per_pattern <= all_llrs.size()) {
+            // Copy data LLRs
+            for (int i = 0; i < data_bits_per_pattern; i++) {
+                data_llrs.push_back(all_llrs[idx + i]);
+            }
+            // Skip probe LLRs
+            idx += bits_per_pattern;
+        }
+
+        return decode_from_llrs(data_llrs);
+    }
+    
 private:
     /**
      * Detect 180° phase offset using probe symbols

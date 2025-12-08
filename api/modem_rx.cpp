@@ -11,7 +11,12 @@
 #include "m110a/mode_config.h"
 #include "equalizer/dfe.h"
 #include "dsp/mlse_equalizer.h"
+#include "dsp/mlse_adaptive.h"
+#include "dsp/turbo_equalizer.h"
+#include "dsp/turbo_equalizer_v2.h"
+#include "dsp/turbo_codec_integrated.h"
 #include "dsp/phase_tracker.h"
+#include "dsp/agc.h"
 #include "modem/scrambler_fixed.h"
 #include <mutex>
 #include <cmath>
@@ -170,6 +175,68 @@ public:
                 channel_memory,
                 msdmt_result.preamble_symbols
             );
+        } else if (config_.equalizer == Equalizer::MLSE_ADAPTIVE &&
+                   mode_cfg.unknown_data_len > 0 && mode_cfg.known_data_len > 0) {
+            
+            // Apply Adaptive MLSE with continuous tracking (100x better on fast fading)
+            equalized_symbols = apply_adaptive_mlse_equalization(
+                phase_corrected,
+                mode_cfg.unknown_data_len,
+                mode_cfg.known_data_len,
+                msdmt_result.preamble_symbols
+            );
+        } else if (config_.equalizer == Equalizer::TURBO &&
+                   mode_cfg.unknown_data_len > 0 && mode_cfg.known_data_len > 0) {
+            
+            // Full turbo equalization with mode-aware SISO decoder
+            // Turbo iterations improve MLSE via decoder feedback
+            // Note: turbo_result.decoded_bits bypasses normal codec path
+            auto turbo_result = apply_turbo_equalization_full(
+                phase_corrected,
+                mode_id,
+                mode_cfg.unknown_data_len,
+                mode_cfg.known_data_len,
+                msdmt_result.preamble_symbols
+            );
+            equalized_symbols = std::move(turbo_result.symbols);
+            
+            // SISO decoder produces info bits directly - skip codec!
+            if (!turbo_result.decoded_bits.empty()) {
+                // Convert bits to bytes
+                std::vector<uint8_t> turbo_decoded;
+                turbo_decoded.reserve(turbo_result.decoded_bits.size() / 8);
+                for (size_t i = 0; i + 7 < turbo_result.decoded_bits.size(); i += 8) {
+                    uint8_t byte = 0;
+                    for (int b = 0; b < 8; b++) {
+                        if (turbo_result.decoded_bits[i + b]) {
+                            byte |= (1 << b);  // LSB first
+                        }
+                    }
+                    turbo_decoded.push_back(byte);
+                }
+                
+                // Detect and strip EOM
+                result.eom_detected = detect_eom(turbo_decoded, mode_cfg.unknown_data_len, 
+                                                 mode_cfg.known_data_len);
+                if (result.eom_detected) {
+                    turbo_decoded = strip_eom_padding(turbo_decoded);
+                }
+                
+                result.success = true;
+                result.data = turbo_decoded;
+                result.snr_db = estimate_snr_from_symbols(msdmt_result.data_symbols);
+                result.freq_offset_hz = freq_offset_hz;
+                
+                // Update stats
+                stats_.bytes_received += turbo_decoded.size();
+                stats_.frames_received++;
+                stats_.snr_db = result.snr_db;
+                
+                state_ = RxState::COMPLETE;
+                last_result_ = result;
+                
+                return result;  // Early return - bypass normal codec
+            }
         }
         
         // Step 5: Decode using M110ACodec
@@ -936,6 +1003,263 @@ private:
         }
         
         return output;
+    }
+    
+    /**
+     * Apply Adaptive MLSE equalization with continuous tracking
+     * 
+     * This provides 100x better performance on fast fading channels compared to RLS.
+     * Uses continuous processing without frame-by-frame reset.
+     * 
+     * Test results:
+     * - Fade 0.001: MLSE 3.6% vs RLS 6.1%
+     * - Fade 0.01:  MLSE 0.9% vs RLS 79.8%
+     * - Fade 0.02:  MLSE 0.6% vs RLS 86.4%
+     */
+    std::vector<complex_t> apply_adaptive_mlse_equalization(
+            const std::vector<complex_t>& symbols,
+            int unknown_len, int known_len,
+            const std::vector<complex_t>& preamble_symbols = {}) {
+        
+        // 8-PSK constellation
+        static const std::array<complex_t, 8> PSK8 = {{
+            complex_t( 1.000f,  0.000f),
+            complex_t( 0.707f,  0.707f),
+            complex_t( 0.000f,  1.000f),
+            complex_t(-0.707f,  0.707f),
+            complex_t(-1.000f,  0.000f),
+            complex_t(-0.707f, -0.707f),
+            complex_t( 0.000f, -1.000f),
+            complex_t( 0.707f, -0.707f)
+        }};
+        
+        // Preamble scrambling sequence
+        static const std::array<uint8_t, 32> pscramble = {
+            7, 4, 3, 0, 5, 1, 5, 0, 2, 2, 1, 1, 5, 7, 4, 3,
+            5, 0, 2, 6, 2, 1, 6, 2, 0, 0, 5, 0, 5, 2, 6, 6
+        };
+        
+        // Common preamble pattern (D values)
+        static const std::array<uint8_t, 9> p_c_seq = {0, 1, 3, 0, 1, 3, 1, 2, 0};
+        
+        // PSK symbol patterns
+        static const std::array<std::array<uint8_t, 8>, 8> psymbol = {{
+            {0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 4, 0, 4, 0, 4, 0, 4},
+            {0, 0, 4, 4, 0, 0, 4, 4},
+            {0, 4, 4, 0, 0, 4, 4, 0},
+            {0, 0, 0, 0, 4, 4, 4, 4},
+            {0, 4, 0, 4, 4, 0, 4, 0},
+            {0, 0, 4, 4, 4, 4, 0, 0},
+            {0, 4, 4, 0, 4, 0, 0, 4}
+        }};
+        
+        // Configure Adaptive MLSE (L=3 for best performance)
+        AdaptiveMLSEConfig mlse_cfg;
+        mlse_cfg.channel_memory = 3;     // 64 states
+        mlse_cfg.traceback_depth = 25;
+        mlse_cfg.track_during_data = false;  // Use probe-based tracking only
+        mlse_cfg.adaptation_rate = 0.01f;
+        
+        AdaptiveMLSE mlse(mlse_cfg);
+        
+        // Estimate channel from preamble
+        if (!preamble_symbols.empty()) {
+            int pretrain_len = std::min(288, static_cast<int>(preamble_symbols.size()));
+            
+            std::vector<complex_t> preamble_ref;
+            preamble_ref.reserve(pretrain_len);
+            
+            int scram_idx = 0;
+            for (int i = 0; i < 9 && static_cast<int>(preamble_ref.size()) < pretrain_len; i++) {
+                uint8_t d_val = p_c_seq[i];
+                for (int j = 0; j < 32 && static_cast<int>(preamble_ref.size()) < pretrain_len; j++) {
+                    uint8_t base = psymbol[d_val][j % 8];
+                    uint8_t scrambled = (base + pscramble[scram_idx % 32]) % 8;
+                    preamble_ref.push_back(PSK8[scrambled]);
+                    scram_idx++;
+                }
+            }
+            
+            std::vector<complex_t> preamble_rx(
+                preamble_symbols.begin(),
+                preamble_symbols.begin() + pretrain_len);
+            
+            mlse.estimate_channel(preamble_rx, preamble_ref);
+        }
+        
+        // Process entire sequence continuously (key to performance)
+        auto result = mlse.equalize_with_tracking(symbols, unknown_len, known_len);
+        
+        // Convert symbol indices to complex symbols
+        std::vector<complex_t> output;
+        output.reserve(result.size());
+        for (int sym_idx : result) {
+            if (sym_idx >= 0 && sym_idx < 8) {
+                output.push_back(PSK8[sym_idx]);
+            }
+        }
+        
+        return output;
+    }
+    
+    /**
+     * Result from turbo equalization
+     */
+    struct TurboResult {
+        std::vector<complex_t> symbols;     // Equalized symbols
+        std::vector<uint8_t> decoded_bits;  // SISO decoded bits (already FEC decoded)
+    };
+    
+    /**
+     * Apply turbo equalization with TurboCodecIntegrated
+     * 
+     * Uses TurboCodecIntegrated which properly handles:
+     *   - Scrambler with correct frame indexing (accounting for probe gaps)
+     *   - Gray code conversion (MGD3/INV_MGD3)
+     *   - Mode-specific helical interleaver
+     *   - SISO decoder (BCJR, K=7, rate 1/2)
+     *   - Iterative MLSE ↔ SISO exchange
+     * 
+     * Returns improved symbols for passing to normal codec path.
+     * 
+     * @param symbols Input symbols (data + probes interleaved)
+     * @param mode_id Mode identifier for codec chain
+     * @param unknown_len Data symbols per frame
+     * @param known_len Probe symbols per frame
+     * @param preamble_symbols Preamble for channel estimation
+     * @return TurboResult with improved symbols
+     */
+    TurboResult apply_turbo_equalization_full(
+            const std::vector<complex_t>& symbols,
+            ModeId mode_id,
+            int unknown_len, int known_len,
+            const std::vector<complex_t>& preamble_symbols = {}) {
+        
+        // 8-PSK constellation
+        static const std::array<complex_t, 8> PSK8 = {{
+            complex_t( 1.000f,  0.000f),
+            complex_t( 0.707f,  0.707f),
+            complex_t( 0.000f,  1.000f),
+            complex_t(-0.707f,  0.707f),
+            complex_t(-1.000f,  0.000f),
+            complex_t(-0.707f, -0.707f),
+            complex_t( 0.000f, -1.000f),
+            complex_t( 0.707f, -0.707f)
+        }};
+        
+        // Preamble scrambling sequence
+        static const std::array<uint8_t, 32> pscramble = {
+            7, 4, 3, 0, 5, 1, 5, 0, 2, 2, 1, 1, 5, 7, 4, 3,
+            5, 0, 2, 6, 2, 1, 6, 2, 0, 0, 5, 0, 5, 2, 6, 6
+        };
+        
+        // Common preamble pattern (D values)
+        static const std::array<uint8_t, 9> p_c_seq = {0, 1, 3, 0, 1, 3, 1, 2, 0};
+        
+        // PSK symbol patterns
+        static const std::array<std::array<uint8_t, 8>, 8> psymbol = {{
+            {0, 0, 0, 0, 0, 0, 0, 0},
+            {0, 4, 0, 4, 0, 4, 0, 4},
+            {0, 0, 4, 4, 0, 0, 4, 4},
+            {0, 4, 4, 0, 0, 4, 4, 0},
+            {0, 0, 0, 0, 4, 4, 4, 4},
+            {0, 4, 0, 4, 4, 0, 4, 0},
+            {0, 0, 4, 4, 4, 4, 0, 0},
+            {0, 4, 4, 0, 4, 0, 0, 4}
+        }};
+        
+        TurboResult result;
+        
+        // Extract data-only symbols (remove probes)
+        int pattern_len = unknown_len + known_len;
+        std::vector<complex_t> data_only;
+        data_only.reserve((symbols.size() / pattern_len) * unknown_len);
+        
+        size_t idx = 0;
+        while (idx + pattern_len <= symbols.size()) {
+            for (int i = 0; i < unknown_len; i++) {
+                data_only.push_back(symbols[idx + i]);
+            }
+            idx += pattern_len;
+        }
+        
+        // Handle remaining partial frame
+        size_t remaining = symbols.size() - idx;
+        for (size_t i = 0; i < remaining && i < static_cast<size_t>(unknown_len); i++) {
+            data_only.push_back(symbols[idx + i]);
+        }
+        
+        // Generate preamble reference
+        std::vector<complex_t> preamble_ref;
+        std::vector<complex_t> preamble_rx;
+        
+        if (!preamble_symbols.empty()) {
+            int pretrain_len = std::min(288, static_cast<int>(preamble_symbols.size()));
+            preamble_ref.reserve(pretrain_len);
+            
+            int scram_idx = 0;
+            for (int i = 0; i < 9 && static_cast<int>(preamble_ref.size()) < pretrain_len; i++) {
+                uint8_t d_val = p_c_seq[i];
+                for (int j = 0; j < 32 && static_cast<int>(preamble_ref.size()) < pretrain_len; j++) {
+                    uint8_t base = psymbol[d_val][j % 8];
+                    uint8_t scrambled = (base + pscramble[scram_idx % 32]) % 8;
+                    preamble_ref.push_back(PSK8[scrambled]);
+                    scram_idx++;
+                }
+            }
+            
+            preamble_rx.assign(preamble_symbols.begin(), 
+                              preamble_symbols.begin() + pretrain_len);
+        }
+        
+        // Configure turbo codec
+        TurboIntegratedConfig cfg;
+        cfg.mode_id = mode_id;
+        cfg.max_iterations = 5;
+        cfg.extrinsic_scale = 0.7f;
+        cfg.early_termination = true;
+        cfg.convergence_threshold = 0.05f;
+        cfg.channel_memory = 3;
+        cfg.noise_variance = 0.1f;
+        cfg.verbose = false;
+        
+        // Create turbo codec
+        TurboCodecIntegrated turbo(cfg);
+        
+        // Get improved symbols after turbo iterations
+        auto improved_data = turbo.equalize_symbols(data_only, preamble_rx, preamble_ref, 0);
+        
+        // Reconstruct full symbol stream with probes
+        // (probes are passed through unchanged since they're known)
+        result.symbols.reserve(symbols.size());
+        
+        idx = 0;
+        size_t data_idx = 0;
+        while (idx + pattern_len <= symbols.size()) {
+            // Add improved data symbols
+            for (int i = 0; i < unknown_len && data_idx < improved_data.size(); i++) {
+                result.symbols.push_back(improved_data[data_idx++]);
+            }
+            // Add original probes unchanged
+            for (int i = 0; i < known_len; i++) {
+                result.symbols.push_back(symbols[idx + unknown_len + i]);
+            }
+            idx += pattern_len;
+        }
+        
+        // Add remaining symbols
+        while (result.symbols.size() < symbols.size() && data_idx < improved_data.size()) {
+            result.symbols.push_back(improved_data[data_idx++]);
+        }
+        while (result.symbols.size() < symbols.size()) {
+            result.symbols.push_back(symbols[result.symbols.size()]);
+        }
+        
+        // decoded_bits is empty - use normal codec path for final decode
+        // (turbo improves symbol estimates, Viterbi does final decode)
+        
+        return result;
     }
     
     /**

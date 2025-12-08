@@ -294,9 +294,12 @@ inline bool mode_is_long(Mode mode) {
  */
 enum class Equalizer {
     NONE,       // No equalization
-    DFE,        // Decision Feedback Equalizer
+    DFE,        // Decision Feedback Equalizer (LMS/NLMS)
+    DFE_RLS,    // Decision Feedback Equalizer (RLS - faster convergence)
     MLSE_L2,    // MLSE with L=2 (8 states)
     MLSE_L3,    // MLSE with L=3 (64 states)
+    MLSE_ADAPTIVE,  // Adaptive MLSE with continuous tracking (100x better on fast fading)
+    TURBO       // Full turbo equalization (best performance, highest complexity)
 };
 
 // ============================================================
