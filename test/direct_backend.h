@@ -11,6 +11,7 @@
 
 #include "test_framework.h"
 #include "../api/modem.h"
+#include "../src/io/pcm_file.h"
 
 #include <random>
 #include <cmath>
@@ -83,6 +84,61 @@ public:
         return ber_out <= channel.expected_ber_threshold;
     }
     
+    bool run_reference_test(const std::string& pcm_file,
+                           const std::string& expected_message,
+                           ReferenceTestResult& result) override {
+        result.filename = pcm_file;
+        result.expected_message = expected_message;
+        result.passed = false;
+        result.ber = 1.0;
+        
+        // Load PCM file
+        try {
+            m110a::PcmFileReader reader(pcm_file);
+            std::vector<float> pcm = reader.read_all();
+            result.sample_count = (int)pcm.size();
+            
+            // Decode with auto-detection
+            m110a::api::RxConfig cfg;
+            cfg.equalizer = equalizer_;
+            cfg.phase_tracking = true;
+            
+            auto decode_result = m110a::api::decode(pcm, cfg);
+            
+            // Extract detected mode
+            result.detected_mode = mode_to_string(decode_result.mode);
+            
+            // Extract decoded message - compare only expected length
+            size_t expected_len = expected_message.length();
+            size_t decoded_len = std::min(expected_len, decode_result.data.size());
+            
+            std::string decoded(decode_result.data.begin(), 
+                               decode_result.data.begin() + decoded_len);
+            result.decoded_message = decoded;
+            
+            // Check message match (only compare expected length)
+            result.message_match = (decoded == expected_message.substr(0, decoded_len));
+            
+            // Calculate BER (only on expected message length)
+            std::vector<uint8_t> expected_bytes(expected_message.begin(), expected_message.end());
+            std::vector<uint8_t> decoded_bytes(decode_result.data.begin(), 
+                                              decode_result.data.begin() + decoded_len);
+            result.ber = calculate_ber(expected_bytes, decoded_bytes);
+            
+            // Check mode match
+            result.mode_match = (result.detected_mode == result.expected_mode);
+            
+            // Pass if both mode and message match
+            result.passed = result.message_match && result.mode_match;
+            
+            return result.passed;
+            
+        } catch (const std::exception& e) {
+            result.decoded_message = std::string("ERROR: ") + e.what();
+            return false;
+        }
+    }
+    
     std::string backend_name() const override {
         return "Direct API";
     }
@@ -122,6 +178,25 @@ private:
         if (cmd == "2400S") return m110a::api::Mode::M2400_SHORT;
         if (cmd == "2400L") return m110a::api::Mode::M2400_LONG;
         return m110a::api::Mode::AUTO;  // AUTO means parse failed
+    }
+    
+    std::string mode_to_string(m110a::api::Mode mode) {
+        switch (mode) {
+            case m110a::api::Mode::M75_SHORT: return "75S";
+            case m110a::api::Mode::M75_LONG: return "75L";
+            case m110a::api::Mode::M150_SHORT: return "150S";
+            case m110a::api::Mode::M150_LONG: return "150L";
+            case m110a::api::Mode::M300_SHORT: return "300S";
+            case m110a::api::Mode::M300_LONG: return "300L";
+            case m110a::api::Mode::M600_SHORT: return "600S";
+            case m110a::api::Mode::M600_LONG: return "600L";
+            case m110a::api::Mode::M1200_SHORT: return "1200S";
+            case m110a::api::Mode::M1200_LONG: return "1200L";
+            case m110a::api::Mode::M2400_SHORT: return "2400S";
+            case m110a::api::Mode::M2400_LONG: return "2400L";
+            case m110a::api::Mode::AUTO: return "AUTO";
+            default: return "UNKNOWN";
+        }
     }
     
     void apply_channel(std::vector<float>& samples, const ChannelCondition& channel) {

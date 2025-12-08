@@ -29,6 +29,11 @@
 
 #include <iostream>
 #include <memory>
+#include <algorithm>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace test_framework;
 using namespace std::chrono;
@@ -222,6 +227,137 @@ ProgressiveResult run_progressive_tests(ITestBackend& backend, const ModeInfo& m
 }
 
 // ============================================================
+// Reference Sample Tests (MS-DMT Compatibility Validation)
+// ============================================================
+
+std::vector<ReferenceTestResult> run_reference_tests(ITestBackend& backend, 
+                                                      const std::string& ref_dir) {
+    std::vector<ReferenceTestResult> results;
+    
+    // Expected test message from all MS-DMT reference samples
+    const std::string expected_message = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890";
+    
+    // Find all PCM files in reference directory
+    // Use platform-specific directory listing
+#ifdef _WIN32
+    WIN32_FIND_DATAA findData;
+    std::string pattern = ref_dir + "\\*.pcm";
+    HANDLE hFind = FindFirstFileA(pattern.c_str(), &findData);
+    
+    std::vector<std::string> pcm_files;
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                pcm_files.push_back(findData.cFileName);
+            }
+        } while (FindNextFileA(hFind, &findData));
+        FindClose(hFind);
+    }
+    std::sort(pcm_files.begin(), pcm_files.end());
+#else
+    // Unix/Linux directory listing
+    std::vector<std::string> pcm_files;
+    // Would use opendir/readdir here
+#endif
+    
+    if (pcm_files.empty()) {
+        std::cout << "ERROR: No PCM files found in " << ref_dir << "\n";
+        return results;
+    }
+    
+    std::cout << "\nRunning MS-DMT Reference Sample Tests...\n";
+    std::cout << "Testing " << pcm_files.size() << " reference samples\n";
+    std::cout << "Expected message: \"" << expected_message << "\"\n\n";
+    
+    for (const auto& filename : pcm_files) {
+        std::string pcm_file = ref_dir + "/" + filename;
+        
+        // Extract expected mode from filename (e.g., tx_150S_... -> 150S)
+        std::string expected_mode;
+        size_t start = filename.find("_") + 1;
+        size_t end = filename.find("_", start);
+        if (start != std::string::npos && end != std::string::npos) {
+            expected_mode = filename.substr(start, end - start);
+        }
+        
+        std::cout << "Testing " << filename << " (Expected: " << expected_mode << ")... " << std::flush;
+        
+        ReferenceTestResult result;
+        result.expected_mode = expected_mode;
+        
+        bool success = backend.run_reference_test(pcm_file, expected_message, result);
+        results.push_back(result);
+        
+        if (success) {
+            std::cout << "PASS";
+            if (!result.detected_mode.empty()) {
+                std::cout << " (Detected: " << result.detected_mode << ")";
+            }
+            std::cout << "\n";
+        } else {
+            std::cout << "FAIL";
+            if (!result.detected_mode.empty()) {
+                std::cout << " (Detected: " << result.detected_mode << ")";
+            }
+            if (result.ber > 0.0 && result.ber < 1.0) {
+                std::cout << " BER=" << std::fixed << std::setprecision(4) << result.ber;
+            }
+            std::cout << "\n";
+            if (!result.decoded_message.empty() && result.decoded_message.find("ERROR") == std::string::npos) {
+                std::cout << "    Decoded: \"" << result.decoded_message << "\"\n";
+            } else if (!result.decoded_message.empty()) {
+                std::cout << "    " << result.decoded_message << "\n";
+            }
+        }
+    }
+    
+    return results;
+}
+
+void print_reference_test_summary(const std::vector<ReferenceTestResult>& results) {
+    int total = (int)results.size();
+    int passed = 0;
+    int mode_match = 0;
+    int message_match = 0;
+    
+    for (const auto& r : results) {
+        if (r.passed) passed++;
+        if (r.mode_match) mode_match++;
+        if (r.message_match) message_match++;
+    }
+    
+    std::cout << "\n==============================================\n";
+    std::cout << "REFERENCE SAMPLE TEST SUMMARY\n";
+    std::cout << "==============================================\n";
+    std::cout << "Total Samples:     " << total << "\n";
+    std::cout << "Passed:            " << passed << " (" 
+              << std::fixed << std::setprecision(1) 
+              << (100.0 * passed / total) << "%)\n";
+    std::cout << "Mode Detection:    " << mode_match << " (" 
+              << (100.0 * mode_match / total) << "%)\n";
+    std::cout << "Message Match:     " << message_match << " (" 
+              << (100.0 * message_match / total) << "%)\n";
+    
+    if (passed == total) {
+        std::cout << "\n*** ALL REFERENCE TESTS PASSED ***\n";
+        std::cout << "MS-DMT interoperability VERIFIED\n";
+    } else {
+        std::cout << "\n*** SOME REFERENCE TESTS FAILED ***\n";
+        std::cout << "Failed samples:\n";
+        for (const auto& r : results) {
+            if (!r.passed) {
+                std::cout << "  - " << r.filename << " (Expected: " << r.expected_mode;
+                if (!r.detected_mode.empty()) {
+                    std::cout << ", Detected: " << r.detected_mode;
+                }
+                std::cout << ")\n";
+            }
+        }
+    }
+    std::cout << "==============================================\n";
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -238,6 +374,8 @@ int main(int argc, char* argv[]) {
     int control_port = 4999;
     bool progressive_mode = false;
     bool prog_snr = false, prog_freq = false, prog_multipath = false;
+    bool reference_mode = false;  // Test MS-DMT reference samples
+    std::string reference_dir = "../refrence_pcm";
     std::string equalizer = "DFE";  // Default equalizer
     int parallel_threads = 1;  // Number of parallel threads (1 = sequential)
     
@@ -302,6 +440,11 @@ int main(int argc, char* argv[]) {
             parallel_threads = std::stoi(argv[++i]);
             if (parallel_threads < 1) parallel_threads = 1;
             if (parallel_threads > 32) parallel_threads = 32;  // Reasonable limit
+        } else if (arg == "--reference" || arg == "--ref") {
+            reference_mode = true;
+        } else if (arg == "--ref-dir" && i + 1 < argc) {
+            reference_dir = argv[++i];
+            reference_mode = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << m110a::version_header() << "\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
@@ -331,7 +474,11 @@ int main(int argc, char* argv[]) {
             std::cout << "                         MLSE_ADAPTIVE, TURBO\n\n";
             std::cout << "Performance Options:\n";
             std::cout << "  --parallel N    Run N tests in parallel (Direct API only)\n";
-            std::cout << "  -j N            Short form of --parallel\n";
+            std::cout << "  -j N            Short form of --parallel\n\n";
+            std::cout << "Reference Sample Test Options:\n";
+            std::cout << "  --reference     Test MS-DMT reference samples for interoperability\n";
+            std::cout << "  --ref           Short form of --reference\n";
+            std::cout << "  --ref-dir DIR   Reference sample directory (default: ../refrence_pcm)\n";
             return 0;
         }
     }
@@ -418,6 +565,67 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "Connected.\n\n";
+    
+    // ================================================================
+    // Reference Sample Test Mode
+    // ================================================================
+    if (reference_mode) {
+        auto start_time = steady_clock::now();
+        
+        std::cout << "Mode: REFERENCE SAMPLE TEST (MS-DMT Compatibility)\n";
+        std::cout << "Directory: " << reference_dir << "\n\n";
+        
+        // Test with each equalizer
+        std::map<std::string, std::vector<ReferenceTestResult>> all_eq_results;
+        
+        for (const auto& eq : eq_list) {
+            if (eq_list.size() > 1) {
+                std::cout << "\n*** Testing with Equalizer: " << eq << " ***\n";
+            }
+            backend->set_equalizer(eq);
+            
+            auto results = run_reference_tests(*backend, reference_dir);
+            all_eq_results[eq] = results;
+            
+            if (eq_list.size() > 1) {
+                print_reference_test_summary(results);
+            }
+        }
+        
+        auto total_elapsed = duration_cast<seconds>(steady_clock::now() - start_time).count();
+        
+        // Print final summary
+        if (eq_list.size() == 1) {
+            print_reference_test_summary(all_eq_results[eq_list[0]]);
+        } else {
+            std::cout << "\n==============================================\n";
+            std::cout << "MULTI-EQUALIZER REFERENCE TEST SUMMARY\n";
+            std::cout << "==============================================\n";
+            for (const auto& [eq, results] : all_eq_results) {
+                int passed = 0;
+                for (const auto& r : results) {
+                    if (r.passed) passed++;
+                }
+                std::cout << eq << ": " << passed << "/" << results.size() 
+                          << " (" << (100.0 * passed / results.size()) << "%)\n";
+            }
+        }
+        
+        std::cout << "\nTotal Duration: " << total_elapsed << " seconds\n";
+        
+        backend->disconnect();
+        
+        // Return success if all tests passed
+        int total_passed = 0, total_tests = 0;
+        for (const auto& [_, results] : all_eq_results) {
+            total_tests += (int)results.size();
+            for (const auto& r : results) {
+                if (r.passed) total_passed++;
+            }
+        }
+        
+        return (total_passed == total_tests) ? 0 : 1;
+    }
     
     // Test data
     std::string test_msg = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890";

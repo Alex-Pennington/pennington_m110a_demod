@@ -191,7 +191,8 @@ function Build-UnifiedTest {
     $sources = @(
         "test/exhaustive_test_unified.cpp",
         "api/modem_tx.cpp",
-        "api/modem_rx.cpp"
+        "api/modem_rx.cpp",
+        "src/io/pcm_file.cpp"
     )
     
     $cmd = "$CXX $CXXFLAGS -o test/exhaustive_test.exe $($sources -join ' ') $LDFLAGS"

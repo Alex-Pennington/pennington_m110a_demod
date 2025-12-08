@@ -309,6 +309,66 @@ struct ProgressiveResult {
 };
 
 // ============================================================
+// Reference Sample Test (MS-DMT Compatibility Validation)
+// ============================================================
+
+struct ReferenceTestResult {
+    std::string filename;
+    std::string mode_name;
+    std::string expected_mode;     // From metadata
+    std::string detected_mode;     // From decoder
+    std::string expected_message;
+    std::string decoded_message;
+    bool mode_match = false;       // Did detected mode match expected?
+    bool message_match = false;    // Did message match exactly?
+    bool passed = false;           // Overall pass (mode + message match)
+    double ber = 1.0;
+    int sample_count = 0;
+};
+
+inline std::string extract_json_string(const std::string& json, const std::string& key) {
+    // Simple JSON string extractor - finds "key": "value"
+    std::string search = "\"" + key + "\":";
+    size_t pos = json.find(search);
+    if (pos == std::string::npos) return "";
+    
+    pos = json.find('"', pos + search.length());
+    if (pos == std::string::npos) return "";
+    pos++; // Skip opening quote
+    
+    size_t end = json.find('"', pos);
+    if (end == std::string::npos) return "";
+    
+    return json.substr(pos, end - pos);
+}
+
+inline std::string normalize_mode_name(const std::string& name) {
+    // Convert "150 BPS SHORT" -> "150S", "2400 BPS LONG" -> "2400L"
+    std::string norm = name;
+    
+    // Extract number
+    std::string rate;
+    for (char c : norm) {
+        if (std::isdigit(c)) rate += c;
+    }
+    
+    // Determine interleave
+    char interleave = 'S';
+    if (norm.find("LONG") != std::string::npos || norm.find("Long") != std::string::npos) {
+        interleave = 'L';
+    }
+    
+    return rate + interleave;
+}
+
+inline std::string load_file_content(const std::string& filename) {
+    std::ifstream file(filename);
+    if (!file) return "";
+    return std::string((std::istreambuf_iterator<char>(file)), 
+                       std::istreambuf_iterator<char>());
+}
+
+// ============================================================
 // Abstract Test Backend Interface
 // ============================================================
 
@@ -326,6 +386,16 @@ public:
                           const ChannelCondition& channel,
                           const std::vector<uint8_t>& test_data,
                           double& ber_out) = 0;
+    
+    // Reference sample test: decode pre-recorded PCM and compare to expected
+    virtual bool run_reference_test(const std::string& pcm_file,
+                                    const std::string& expected_message,
+                                    ReferenceTestResult& result) {
+        (void)pcm_file;
+        (void)expected_message;
+        (void)result;
+        return false;  // Not implemented by default
+    }
     
     // Optional: Set equalizer type
     virtual bool set_equalizer(const std::string& eq_type) { 

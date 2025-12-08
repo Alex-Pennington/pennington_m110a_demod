@@ -166,6 +166,7 @@ const char* HTML_PAGE = R"HTML(
                     <div class="checkbox-group">
                         <label><input type="radio" name="testtype" value="standard" checked> Standard</label>
                         <label><input type="radio" name="testtype" value="progressive"> Progressive</label>
+                        <label><input type="radio" name="testtype" value="reference"> Reference Samples</label>
                     </div>
                 </div>
             </div>
@@ -177,6 +178,15 @@ const char* HTML_PAGE = R"HTML(
                         <label><input type="checkbox" id="prog-snr" checked> SNR</label>
                         <label><input type="checkbox" id="prog-freq" checked> Frequency</label>
                         <label><input type="checkbox" id="prog-multipath" checked> Multipath</label>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="row" id="ref-options" style="display: none;">
+                <div class="field">
+                    <label>Reference Sample Options</label>
+                    <div class="checkbox-group" style="color: #aaa;">
+                        Tests MS-DMT compatibility with all 12 reference samples
                     </div>
                 </div>
             </div>
@@ -200,6 +210,7 @@ Select options above and click "Run Test" to begin.
 Available tests:
 • Standard: Run through all channel conditions
 • Progressive: Find performance limits (SNR, freq offset, multipath)
+• Reference Samples: Test MS-DMT compatibility (14 reference samples)
 
 </div>
     </div>
@@ -254,8 +265,18 @@ Available tests:
         // Show/hide progressive options
         document.querySelectorAll('input[name="testtype"]').forEach(radio => {
             radio.addEventListener('change', () => {
+                const testType = document.querySelector('input[name="testtype"]:checked').value;
                 document.getElementById('prog-options').style.display = 
-                    document.querySelector('input[name="testtype"]:checked').value === 'progressive' ? 'flex' : 'none';
+                    testType === 'progressive' ? 'flex' : 'none';
+                document.getElementById('ref-options').style.display = 
+                    testType === 'reference' ? 'flex' : 'none';
+                
+                // Disable mode/eq selection for reference tests
+                const isRef = testType === 'reference';
+                document.getElementById('modes').disabled = isRef;
+                document.getElementById('equalizers').disabled = isRef;
+                document.getElementById('iterations').disabled = isRef;
+                updateSummary();
             });
         });
         
@@ -278,22 +299,37 @@ Available tests:
             const btnRun = document.getElementById('btn-run');
             const btnStop = document.getElementById('btn-stop');
             
-            // Get selected modes and equalizers
-            let modes = getSelected('modes');
-            let eqs = getSelected('equalizers');
+            const testType = document.querySelector('input[name="testtype"]:checked').value;
             
-            // Default to all modes if none selected
-            if (modes.length === 0) modes = ALL_MODES;
-            // Default to DFE if none selected
-            if (eqs.length === 0) eqs = ['DFE'];
-            
-            // Build command - we'll pass modes and eqs as comma-separated lists
+            // Build command based on test type
             let args = [];
-            args.push('--modes', modes.join(','));
-            args.push('--eqs', eqs.join(','));
             
-            const iters = document.getElementById('iterations').value;
-            args.push('-n', iters);
+            if (testType === 'reference') {
+                // Reference sample test - simple command
+                args.push('--reference');
+                
+                // Still use selected equalizers if any
+                let eqs = getSelected('equalizers');
+                if (eqs.length > 0) {
+                    args.push('--eqs', eqs.join(','));
+                }
+            } else {
+                // Standard or Progressive tests
+                // Get selected modes and equalizers
+                let modes = getSelected('modes');
+                let eqs = getSelected('equalizers');
+                
+                // Default to all modes if none selected
+                if (modes.length === 0) modes = ALL_MODES;
+                // Default to DFE if none selected
+                if (eqs.length === 0) eqs = ['DFE'];
+                
+                args.push('--modes', modes.join(','));
+                args.push('--eqs', eqs.join(','));
+                
+                const iters = document.getElementById('iterations').value;
+                args.push('-n', iters);
+            }
             
             // Add parallel threads (only for direct backend)
             const backend = document.getElementById('backend').value;
@@ -308,7 +344,6 @@ Available tests:
                 args.push('--server');
             }
             
-            const testType = document.querySelector('input[name="testtype"]:checked').value;
             if (testType === 'progressive') {
                 if (document.getElementById('prog-snr').checked &&
                     document.getElementById('prog-freq').checked &&
