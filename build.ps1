@@ -206,6 +206,21 @@ function Build-UnifiedTest {
     }
 }
 
+function Build-UnitTests {
+    Write-Host "`n=== Building Unit Tests ===" -ForegroundColor Yellow
+    
+    $cmd = "$CXX $CXXFLAGS -o test/test_channel_params.exe test/test_channel_params.cpp $LDFLAGS"
+    Write-Host $cmd -ForegroundColor DarkGray
+    
+    Invoke-Expression $cmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Unit tests built successfully" -ForegroundColor Green
+    } else {
+        throw "Unit test build failed"
+    }
+}
+
 function Clean-Build {
     Write-Host "`n=== Cleaning ===" -ForegroundColor Yellow
     
@@ -247,14 +262,18 @@ switch ($Target.ToLower()) {
     "unified" {
         Build-UnifiedTest
     }
+    "unit" {
+        Build-UnitTests
+    }
     "all" {
         Build-Server
         Build-ExhaustiveTest
         Build-UnifiedTest
+        Build-UnitTests
     }
     default {
         Write-Host "Unknown target: $Target" -ForegroundColor Red
-        Write-Host "Valid targets: server, test, unified, all" -ForegroundColor Yellow
+        Write-Host "Valid targets: server, test, unified, unit, all" -ForegroundColor Yellow
         exit 1
     }
 }
