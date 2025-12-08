@@ -15,6 +15,7 @@
 
 #include "msdmt_server.h"
 #include "api/modem.h"
+#include "api/version.h"
 
 #include <iostream>
 #include <string>
@@ -107,7 +108,8 @@ int main(int argc, char* argv[]) {
         std::cout << "M110A Modem Server\n";
         std::cout << "MS-DMT Compatible Network Interface\n";
         std::cout << "================================================\n";
-        std::cout << "Version: " << m110a::api::version() << "\n";
+        std::cout << "Version: " << m110a::version_full() << "\n";
+        std::cout << m110a::build_info() << "\n";
         if (test_mode) {
             std::cout << "Mode: Test (mock audio devices)\n";
         }
