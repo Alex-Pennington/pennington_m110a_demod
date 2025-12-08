@@ -12,7 +12,13 @@ By downloading, installing, copying, or otherwise using the Software, you acknow
 
 ## 1. GRANT OF LICENSE
 
-Subject to the terms of this Agreement, Licensor grants you a non-exclusive, non-transferable, royalty-free license to:
+**LICENSE REQUIRED:** Use of this Software requires obtaining a free individual license from Phoenix Nest LLC.
+
+To obtain your free license, contact:
+- **Website:** www.organicengineer.com
+- **Email:** [Insert Contact Email]
+
+Upon receiving your individual license, Licensor grants you a non-exclusive, non-transferable, royalty-free license to:
 
 a) Download, install, and use the Software on any number of devices you own or control;
 
@@ -20,7 +26,7 @@ b) Use the Software for personal, educational, emergency communication, and Mili
 
 c) Make copies of the Software for backup and archival purposes.
 
-This license is granted at no cost. No purchase is required.
+This license is granted at no cost, but each user must obtain their own individual license. No purchase is required.
 
 ---
 
@@ -28,23 +34,33 @@ This license is granted at no cost. No purchase is required.
 
 You may NOT:
 
-a) Sell, sublicense, rent, lease, or lend the Software for commercial gain;
+a) Use the Software without first obtaining an individual license from Phoenix Nest LLC;
 
-b) Modify, adapt, translate, reverse engineer, decompile, disassemble, or create derivative works based on the Software, except as expressly permitted by applicable law;
+b) Transfer, share, or distribute your individual license to any other person;
 
-c) Remove, alter, or obscure any proprietary notices, labels, or marks on the Software;
+c) Sell, sublicense, rent, lease, or lend the Software for commercial gain;
 
-d) Use the Software in any manner that violates applicable laws or regulations, including but not limited to Federal Communications Commission (FCC) rules and regulations;
+d) Modify, adapt, translate, reverse engineer, decompile, disassemble, or create derivative works based on the Software, except as expressly permitted by applicable law;
 
-e) Distribute modified versions of the Software without prior written consent from Licensor;
+e) Remove, alter, or obscure any proprietary notices, labels, or marks on the Software;
 
-f) Use the Software to transmit any content that is unlawful, harmful, threatening, abusive, harassing, defamatory, or otherwise objectionable.
+f) Use the Software in any manner that violates applicable laws or regulations, including but not limited to Federal Communications Commission (FCC) rules and regulations;
 
----
+g) Distribute modified versions of the Software without prior written consent from Licensor;
 
-## 3. OBTAINING ADDITIONAL LICENSES
+## 3. OBTAINING YOUR FREE LICENSE
 
-### 3.1 Scope of Free License
+### 3.1 Individual License Requirement
+
+Each user must obtain their own individual free license before using the Software. Licenses are issued at no cost for personal, educational, emergency communication, and MARS purposes.
+
+To request your free individual license, contact Phoenix Nest LLC at:
+- **Website:** www.organicengineer.com
+- **Email:** [Insert Contact Email]
+
+Provide your name, callsign (if applicable), and intended use. Licenses are typically issued within 1-2 business days.
+
+### 3.2 Commercial and Extended Use Licensing
 
 This Agreement grants a limited free license for personal, educational, emergency communication, and MARS purposes only. Any use of the Software beyond the scope of this Agreement requires a separate license from Licensor.
 
@@ -238,15 +254,17 @@ If you are a U.S. Government end user, the Software is licensed with "Restricted
 
 For questions regarding this Agreement, please contact:
 
-**Phoenix Nest LLC**  
-Greenup, Kentucky  
-Website: www.organicengineer.com
-
----
-
 ## 15. ACKNOWLEDGMENT
 
 BY DOWNLOADING, INSTALLING, OR USING THE SOFTWARE, YOU ACKNOWLEDGE THAT YOU HAVE READ THIS AGREEMENT, UNDERSTAND IT, AND AGREE TO BE BOUND BY ITS TERMS AND CONDITIONS.
+
+**YOU FURTHER ACKNOWLEDGE THAT USE OF THE SOFTWARE REQUIRES OBTAINING A FREE INDIVIDUAL LICENSE FROM PHOENIX NEST LLC PRIOR TO USE.**
+
+---
+
+*Last Updated: December 8, 2024*
+
+*Version 1.2*G, INSTALLING, OR USING THE SOFTWARE, YOU ACKNOWLEDGE THAT YOU HAVE READ THIS AGREEMENT, UNDERSTAND IT, AND AGREE TO BE BOUND BY ITS TERMS AND CONDITIONS.
 
 ---
 
