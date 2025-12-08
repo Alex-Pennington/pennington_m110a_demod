@@ -1,6 +1,16 @@
-# MIL-STD-188-110A HF Modem
+# Phoenix Nest Modem
 
-A high-performance implementation of the MIL-STD-188-110A serial-tone HF data modem standard, supporting all 11 data modes from 75 bps to 4800 bps with advanced equalization, turbo processing, and comprehensive testing infrastructure.
+**MIL-STD-188-110A HF Data Modem**
+
+Copyright © 2025 Phoenix Nest LLC
+
+Licensed under the GNU General Public License v3.0 - see [LICENSE](LICENSE) for details.
+
+---
+
+## Overview
+
+A complete software implementation of the MIL-STD-188-110A serial-tone HF data modem standard, supporting all 11 data modes from 75 bps to 4800 bps with advanced equalization, turbo processing, and comprehensive testing infrastructure.
 
 ## Features
 

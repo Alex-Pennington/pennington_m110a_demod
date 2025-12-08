@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2025 Phoenix Nest LLC
+// Phoenix Nest Modem - MIL-STD-188-110A HF Data Modem
 /**
  * @file msdmt_server.h
  * @brief MS-DMT Compatible Network Interface Server
