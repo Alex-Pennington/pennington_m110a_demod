@@ -30,6 +30,11 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <queue>
+#include <condition_variable>
 
 #include "../api/version.h"
 
@@ -226,7 +231,7 @@ inline double calculate_ber(const std::vector<uint8_t>& tx, const std::vector<ui
 }
 
 // ============================================================
-// Test Result Storage
+// Test Result Storage (Thread-Safe)
 // ============================================================
 
 struct TestResults {
@@ -238,8 +243,11 @@ struct TestResults {
     int iterations = 0;
     int duration_seconds = 0;
     
+    mutable std::mutex mutex_;  // For thread-safe recording
+    
     void record(const std::string& mode, const std::string& channel, 
                 bool passed, double ber) {
+        std::lock_guard<std::mutex> lock(mutex_);
         channel_stats[channel].record(passed, ber);
         mode_stats[mode].record(passed, ber);
         mode_channel_stats[mode][channel].record(passed, ber);
@@ -330,6 +338,117 @@ public:
     
     // Backend name for reporting
     virtual std::string backend_name() const = 0;
+    
+    // Optional: Clone backend for parallel execution (returns nullptr if not supported)
+    virtual std::unique_ptr<ITestBackend> clone() const { return nullptr; }
+};
+
+// ============================================================
+// Simple Thread Pool for Parallel Test Execution
+// ============================================================
+
+class ThreadPool {
+public:
+    explicit ThreadPool(size_t num_threads) : stop_(false) {
+        for (size_t i = 0; i < num_threads; i++) {
+            workers_.emplace_back([this] {
+                while (true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(queue_mutex_);
+                        condition_.wait(lock, [this] { return stop_ || !tasks_.empty(); });
+                        if (stop_ && tasks_.empty()) return;
+                        task = std::move(tasks_.front());
+                        tasks_.pop();
+                    }
+                    task();
+                }
+            });
+        }
+    }
+    
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            stop_ = true;
+        }
+        condition_.notify_all();
+        for (auto& worker : workers_) {
+            worker.join();
+        }
+    }
+    
+    template<class F>
+    void enqueue(F&& f) {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            tasks_.emplace(std::forward<F>(f));
+        }
+        condition_.notify_one();
+    }
+    
+    void wait_all() {
+        // Wait for all tasks to complete by enqueueing barrier tasks
+        std::atomic<size_t> count{workers_.size()};
+        std::condition_variable done_cv;
+        std::mutex done_mutex;
+        
+        for (size_t i = 0; i < workers_.size(); i++) {
+            enqueue([&count, &done_cv] {
+                if (--count == 0) {
+                    done_cv.notify_one();
+                }
+            });
+        }
+        
+        std::unique_lock<std::mutex> lock(done_mutex);
+        done_cv.wait(lock, [&count] { return count == 0; });
+    }
+    
+    size_t size() const { return workers_.size(); }
+
+private:
+    std::vector<std::thread> workers_;
+    std::queue<std::function<void()>> tasks_;
+    std::mutex queue_mutex_;
+    std::condition_variable condition_;
+    bool stop_;
+};
+
+// ============================================================
+// Parallel Test Progress Tracker
+// ============================================================
+
+struct ParallelProgress {
+    std::atomic<int> completed{0};
+    std::atomic<int> passed{0};
+    int total{0};
+    std::chrono::steady_clock::time_point start_time;
+    mutable std::mutex print_mutex;
+    
+    void init(int total_tests) {
+        completed = 0;
+        passed = 0;
+        total = total_tests;
+        start_time = std::chrono::steady_clock::now();
+    }
+    
+    void record(bool success) {
+        completed++;
+        if (success) passed++;
+    }
+    
+    void print_status() const {
+        std::lock_guard<std::mutex> lock(print_mutex);
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start_time).count();
+        int comp = completed.load();
+        int pass = passed.load();
+        double rate = comp > 0 ? 100.0 * pass / comp : 0.0;
+        std::cout << "\r[" << elapsed << "s] Tests: " << comp << "/" << total
+                  << " | Pass: " << std::fixed << std::setprecision(1) << rate << "%"
+                  << "   " << std::flush;
+    }
 };
 
 // ============================================================

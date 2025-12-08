@@ -19,7 +19,7 @@ namespace test_framework {
 
 class DirectBackend : public ITestBackend {
 public:
-    DirectBackend(unsigned int seed = 42) : rng_(seed), connected_(false) {}
+    DirectBackend(unsigned int seed = 42) : rng_(seed), seed_(seed), connected_(false) {}
     
     bool connect() override {
         connected_ = true;
@@ -43,6 +43,7 @@ public:
         else if (eq_type == "MLSE_ADAPTIVE") equalizer_ = m110a::api::Equalizer::MLSE_ADAPTIVE;
         else if (eq_type == "TURBO") equalizer_ = m110a::api::Equalizer::TURBO;
         else return false;
+        eq_type_ = eq_type;
         return true;
     }
     
@@ -87,13 +88,25 @@ public:
     }
     
     void reset_state() override {
-        rng_.seed(42);  // Reset to consistent state
+        rng_.seed(seed_);  // Reset to consistent state
+    }
+    
+    // Clone for parallel execution - each thread gets its own backend with unique RNG seed
+    std::unique_ptr<ITestBackend> clone() const override {
+        static std::atomic<unsigned int> clone_counter{1000};
+        auto backend = std::make_unique<DirectBackend>(clone_counter++);
+        backend->equalizer_ = equalizer_;
+        backend->eq_type_ = eq_type_;
+        backend->connected_ = true;
+        return backend;
     }
 
 private:
     std::mt19937 rng_;
+    unsigned int seed_;
     bool connected_;
     m110a::api::Equalizer equalizer_ = m110a::api::Equalizer::DFE;
+    std::string eq_type_ = "DFE";
     
     m110a::api::Mode parse_mode(const std::string& cmd) {
         if (cmd == "75S") return m110a::api::Mode::M75_SHORT;

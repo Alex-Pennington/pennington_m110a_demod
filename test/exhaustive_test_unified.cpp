@@ -239,6 +239,7 @@ int main(int argc, char* argv[]) {
     bool progressive_mode = false;
     bool prog_snr = false, prog_freq = false, prog_multipath = false;
     std::string equalizer = "DFE";  // Default equalizer
+    int parallel_threads = 1;  // Number of parallel threads (1 = sequential)
     
     // Helper to split comma-separated string
     auto split_csv = [](const std::string& s) -> std::vector<std::string> {
@@ -297,6 +298,10 @@ int main(int argc, char* argv[]) {
             mode_list = split_csv(argv[++i]);
         } else if (arg == "--eqs" && i + 1 < argc) {
             eq_list = split_csv(argv[++i]);
+        } else if ((arg == "--parallel" || arg == "-j") && i + 1 < argc) {
+            parallel_threads = std::stoi(argv[++i]);
+            if (parallel_threads < 1) parallel_threads = 1;
+            if (parallel_threads > 32) parallel_threads = 32;  // Reasonable limit
         } else if (arg == "--help" || arg == "-h") {
             std::cout << m110a::version_header() << "\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
@@ -323,7 +328,10 @@ int main(int argc, char* argv[]) {
             std::cout << "  --eq TYPE       Set equalizer type (default: DFE)\n";
             std::cout << "  --eqs LIST      Comma-separated list of equalizers\n";
             std::cout << "                  Types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3,\n";
-            std::cout << "                         MLSE_ADAPTIVE, TURBO\n";
+            std::cout << "                         MLSE_ADAPTIVE, TURBO\n\n";
+            std::cout << "Performance Options:\n";
+            std::cout << "  --parallel N    Run N tests in parallel (Direct API only)\n";
+            std::cout << "  -j N            Short form of --parallel\n";
             return 0;
         }
     }
@@ -389,6 +397,14 @@ int main(int argc, char* argv[]) {
     }
     if (!mode_filter.empty()) {
         std::cout << "Mode Filter: " << mode_filter << "\n";
+    }
+    
+    // Show parallel info (only for direct backend)
+    if (parallel_threads > 1 && !use_server) {
+        std::cout << "Parallel: " << parallel_threads << " threads\n";
+    } else if (parallel_threads > 1 && use_server) {
+        std::cout << "Note: Parallel execution not supported with server backend\n";
+        parallel_threads = 1;
     }
     std::cout << "\n";
     
@@ -526,46 +542,130 @@ int main(int argc, char* argv[]) {
     TestResults results;
     auto start_time = steady_clock::now();
     
-    int iteration = 0;
+    // Build list of all test combinations
+    struct TestJob {
+        std::string eq;
+        ModeInfo mode;
+        ChannelCondition channel;
+        std::string record_name;
+    };
     
-    while (iteration < max_iterations) {
-        iteration++;
-        
+    std::vector<TestJob> all_jobs;
+    for (int iter = 0; iter < max_iterations; iter++) {
         for (const auto& eq : eq_list) {
-            backend->set_equalizer(eq);
-            
             for (const auto& mode : modes) {
                 // Skip slow modes sometimes (only if we have multiple iterations)
                 if (max_iterations > 1) {
-                    if ((mode.cmd == "75S" || mode.cmd == "75L") && iteration % 5 != 0) continue;
-                    if ((mode.cmd == "150L" || mode.cmd == "300L") && iteration % 3 != 0) continue;
+                    if ((mode.cmd == "75S" || mode.cmd == "75L") && iter % 5 != 0) continue;
+                    if ((mode.cmd == "150L" || mode.cmd == "300L") && iter % 3 != 0) continue;
                 }
                 
                 for (const auto& channel : channels) {
                     // Skip some channels sometimes (only if we have multiple iterations)
-                    if (max_iterations > 1 && iteration % 2 != 0 && 
+                    if (max_iterations > 1 && iter % 2 != 0 && 
                         (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
                     
-                    auto now = steady_clock::now();
-                    auto elapsed = (int)duration_cast<seconds>(now - start_time).count();
-                    
-                    // Include eq in display
-                    std::string mode_with_eq = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
-                    print_progress(elapsed, mode_with_eq, channel.name, results.total_tests,
-                                   results.overall_pass_rate(), iteration, max_iterations);
-                    
-                    double ber;
-                    bool passed = backend->run_test(mode, channel, test_data, ber);
-                    
-                    // Record with eq prefix if multiple equalizers
-                    std::string record_name = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
-                    results.record(record_name, channel.name, passed, ber);
+                    TestJob job;
+                    job.eq = eq;
+                    job.mode = mode;
+                    job.channel = channel;
+                    job.record_name = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
+                    all_jobs.push_back(job);
                 }
             }
         }
     }
     
-    results.iterations = iteration;
+    // Parallel execution
+    if (parallel_threads > 1 && !use_server) {
+        std::cout << "Running " << all_jobs.size() << " tests with " << parallel_threads << " threads...\n";
+        
+        ParallelProgress progress;
+        progress.init((int)all_jobs.size());
+        
+        // Create thread pool
+        ThreadPool pool(parallel_threads);
+        
+        // Create worker backends (one per thread)
+        std::vector<std::unique_ptr<ITestBackend>> worker_backends;
+        for (int i = 0; i < parallel_threads; i++) {
+            worker_backends.push_back(backend->clone());
+        }
+        
+        std::atomic<size_t> job_index{0};
+        std::atomic<int> next_worker{0};
+        
+        // Enqueue all jobs
+        for (size_t i = 0; i < all_jobs.size(); i++) {
+            pool.enqueue([&, i]() {
+                const auto& job = all_jobs[i];
+                
+                // Get a worker backend (round-robin)
+                int worker_id = next_worker++ % parallel_threads;
+                auto* worker = worker_backends[worker_id].get();
+                
+                worker->set_equalizer(job.eq);
+                
+                double ber;
+                bool passed = worker->run_test(job.mode, job.channel, test_data, ber);
+                
+                results.record(job.record_name, job.channel.name, passed, ber);
+                progress.record(passed);
+                
+                // Print progress every 10 tests
+                if (progress.completed % 10 == 0) {
+                    progress.print_status();
+                }
+            });
+        }
+        
+        pool.wait_all();
+        progress.print_status();
+        std::cout << "\n";
+        
+    } else {
+        // Sequential execution (original code)
+        int iteration = 0;
+        
+        while (iteration < max_iterations) {
+            iteration++;
+            
+            for (const auto& eq : eq_list) {
+                backend->set_equalizer(eq);
+                
+                for (const auto& mode : modes) {
+                    // Skip slow modes sometimes (only if we have multiple iterations)
+                    if (max_iterations > 1) {
+                        if ((mode.cmd == "75S" || mode.cmd == "75L") && iteration % 5 != 0) continue;
+                        if ((mode.cmd == "150L" || mode.cmd == "300L") && iteration % 3 != 0) continue;
+                    }
+                    
+                    for (const auto& channel : channels) {
+                        // Skip some channels sometimes (only if we have multiple iterations)
+                        if (max_iterations > 1 && iteration % 2 != 0 && 
+                            (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
+                        
+                        auto now = steady_clock::now();
+                        auto elapsed = (int)duration_cast<seconds>(now - start_time).count();
+                        
+                        // Include eq in display
+                        std::string mode_with_eq = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
+                        print_progress(elapsed, mode_with_eq, channel.name, results.total_tests,
+                                       results.overall_pass_rate(), iteration, max_iterations);
+                        
+                        double ber;
+                        bool passed = backend->run_test(mode, channel, test_data, ber);
+                        
+                        // Record with eq prefix if multiple equalizers
+                        std::string record_name = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
+                        results.record(record_name, channel.name, passed, ber);
+                    }
+                }
+            }
+        }
+    }
+    
+    results.iterations = max_iterations;
     results.duration_seconds = (int)duration_cast<seconds>(
         steady_clock::now() - start_time).count();
     
