@@ -233,6 +233,7 @@ int main(int argc, char* argv[]) {
     int control_port = 4999;
     bool progressive_mode = false;
     bool prog_snr = false, prog_freq = false, prog_multipath = false;
+    std::string equalizer = "DFE";  // Default equalizer
     
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -265,6 +266,10 @@ int main(int argc, char* argv[]) {
             prog_multipath = true;
         } else if ((arg == "--csv" || arg == "-c") && i + 1 < argc) {
             csv_file = argv[++i];
+        } else if ((arg == "--eq" || arg == "--equalizer") && i + 1 < argc) {
+            equalizer = argv[++i];
+            // Convert to uppercase
+            for (auto& c : equalizer) c = std::toupper(c);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << m110a::version_header() << "\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
@@ -285,7 +290,11 @@ int main(int argc, char* argv[]) {
             std::cout << "  --prog-freq     Progressive frequency offset test only\n";
             std::cout << "  --prog-multipath Progressive multipath test only\n";
             std::cout << "  --csv FILE      Output progressive results to CSV file\n";
-            std::cout << "  -c FILE         Short form of --csv\n";
+            std::cout << "  -c FILE         Short form of --csv\n\n";
+            std::cout << "Equalizer Options:\n";
+            std::cout << "  --eq TYPE       Set equalizer type (default: DFE)\n";
+            std::cout << "                  Types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3,\n";
+            std::cout << "                         MLSE_ADAPTIVE, TURBO\n";
             return 0;
         }
     }
@@ -316,6 +325,15 @@ int main(int argc, char* argv[]) {
     std::cout << "==============================================\n";
     std::cout << m110a::build_info() << "\n";
     std::cout << "Backend: " << backend->backend_name() << "\n";
+    
+    // Set equalizer
+    if (!backend->set_equalizer(equalizer)) {
+        std::cerr << "Invalid equalizer type: " << equalizer << "\n";
+        std::cerr << "Valid types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO\n";
+        return 1;
+    }
+    std::cout << "Equalizer: " << equalizer << "\n";
+    
     if (progressive_mode) {
         std::cout << "Mode: PROGRESSIVE (find mode limits)\n";
         std::cout << "Tests: ";
