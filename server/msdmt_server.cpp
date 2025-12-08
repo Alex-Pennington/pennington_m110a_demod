@@ -689,6 +689,8 @@ void MSDMTServer::process_command(std::shared_ptr<ClientConnection> client, cons
         cmd_channel_off(client);
     } else if (cmd.type == "CHANNEL APPLY" || cmd.type == "RUN BERTEST") {
         cmd_run_ber_test(client, cmd.parameter);
+    } else if (cmd.type == "SET EQUALIZER" || cmd.type == "EQUALIZER") {
+        cmd_set_equalizer(client, cmd.parameter);
     } else {
         client->send(format_error(cmd.type, "UNKNOWN COMMAND"));
     }
@@ -804,6 +806,7 @@ void MSDMTServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, 
     m110a::api::RxConfig rx_cfg;
     rx_cfg.sample_rate = 48000;
     rx_cfg.mode = to_api_mode(current_mode_);  // Use current mode instead of auto-detect
+    rx_cfg.equalizer = current_equalizer_;  // Use configured equalizer
     
     auto result = m110a::api::decode(samples, rx_cfg);
     
@@ -1076,6 +1079,49 @@ void MSDMTServer::cmd_run_ber_test(std::shared_ptr<ClientConnection> client, con
     ss << "Applied [" << applied.str() << "] to " << int16_samples.size() 
        << " samples -> " << output_file;
     client->send(format_ok("RUN BERTEST", ss.str()));
+}
+
+void MSDMTServer::cmd_set_equalizer(std::shared_ptr<ClientConnection> client, const std::string& param) {
+    // Convert parameter to uppercase for comparison
+    std::string upper_param = param;
+    for (char& c : upper_param) c = std::toupper(c);
+    
+    m110a::api::Equalizer eq;
+    std::string eq_name;
+    
+    if (upper_param == "NONE" || upper_param == "OFF") {
+        eq = m110a::api::Equalizer::NONE;
+        eq_name = "NONE";
+    } else if (upper_param == "DFE" || upper_param == "LMS") {
+        eq = m110a::api::Equalizer::DFE;
+        eq_name = "DFE";
+    } else if (upper_param == "DFE_RLS" || upper_param == "RLS") {
+        eq = m110a::api::Equalizer::DFE_RLS;
+        eq_name = "DFE_RLS";
+    } else if (upper_param == "MLSE_L2" || upper_param == "MLSE2") {
+        eq = m110a::api::Equalizer::MLSE_L2;
+        eq_name = "MLSE_L2";
+    } else if (upper_param == "MLSE_L3" || upper_param == "MLSE3" || upper_param == "MLSE") {
+        eq = m110a::api::Equalizer::MLSE_L3;
+        eq_name = "MLSE_L3";
+    } else if (upper_param == "MLSE_ADAPTIVE" || upper_param == "ADAPTIVE") {
+        eq = m110a::api::Equalizer::MLSE_ADAPTIVE;
+        eq_name = "MLSE_ADAPTIVE";
+    } else if (upper_param == "TURBO") {
+        eq = m110a::api::Equalizer::TURBO;
+        eq_name = "TURBO";
+    } else {
+        client->send(format_error("SET EQUALIZER", 
+            "UNKNOWN: " + param + " (valid: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO)"));
+        return;
+    }
+    
+    current_equalizer_ = eq;
+    client->send(format_ok("SET EQUALIZER", eq_name));
+    
+    if (config_.log_commands) {
+        std::cout << "[EQUALIZER] Set to: " << eq_name << "\n";
+    }
 }
 
 // ============================================================

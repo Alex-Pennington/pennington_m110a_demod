@@ -272,6 +272,30 @@ int main() {
     }
     test_result("CMD:KILL TX", got_kill_ok, resp);
     
+    std::cout << "\n--- Testing SET EQUALIZER ---\n";
+    
+    // Test all equalizer types
+    std::vector<std::string> equalizers = {
+        "NONE", "DFE", "DFE_RLS", "MLSE_L2", "MLSE_L3", "MLSE_ADAPTIVE", "TURBO"
+    };
+    
+    for (const auto& eq : equalizers) {
+        send_cmd(ctrl, "SET EQUALIZER " + eq);
+        resp = recv_line(ctrl, 1000);
+        test_result("SET EQUALIZER " + eq, 
+                    resp.find("OK:EQUALIZER:" + eq) != std::string::npos, resp);
+    }
+    
+    // Test invalid equalizer
+    send_cmd(ctrl, "SET EQUALIZER INVALID");
+    resp = recv_line(ctrl);
+    test_result("SET EQUALIZER INVALID (should error)",
+                resp.find("ERROR:") != std::string::npos, resp);
+    
+    // Reset to default
+    send_cmd(ctrl, "SET EQUALIZER DFE");
+    recv_line(ctrl);
+    
     std::cout << "\n--- Testing Unknown Command ---\n";
     
     send_cmd(ctrl, "CMD:INVALID COMMAND");

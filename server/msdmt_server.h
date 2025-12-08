@@ -16,6 +16,7 @@
 #ifndef MSDMT_SERVER_H
 #define MSDMT_SERVER_H
 
+#include "api/modem_types.h"
 #include <string>
 #include <vector>
 #include <memory>
@@ -340,6 +341,7 @@ private:
     void cmd_channel_freq_offset(std::shared_ptr<ClientConnection> client, const std::string& offset_hz);
     void cmd_channel_off(std::shared_ptr<ClientConnection> client);
     void cmd_run_ber_test(std::shared_ptr<ClientConnection> client, const std::string& params);
+    void cmd_set_equalizer(std::shared_ptr<ClientConnection> client, const std::string& param);
     
     // Channel simulation state
     bool channel_sim_enabled_ = false;
@@ -350,6 +352,9 @@ private:
     float channel_multipath_gain_ = 0.5f;
     bool channel_freq_offset_enabled_ = false;
     float channel_freq_offset_hz_ = 0.0f;
+    
+    // RX equalizer setting
+    m110a::api::Equalizer current_equalizer_ = m110a::api::Equalizer::DFE;
 };
 
 // ============================================================
