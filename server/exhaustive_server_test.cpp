@@ -76,7 +76,14 @@ struct TestStats {
     double pass_rate() const { return total > 0 ? 100.0 * passed / total : 0.0; }
 };
 
-std::map<std::string, TestStats> category_stats;
+// Stats grouped by channel condition
+std::map<std::string, TestStats> channel_stats;
+
+// Stats grouped by mode
+std::map<std::string, TestStats> mode_stats;
+
+// Stats for mode × channel combinations
+std::map<std::string, std::map<std::string, TestStats>> mode_channel_stats;
 
 // ============================================================
 // Socket Utilities
@@ -436,7 +443,7 @@ void generate_report(const std::string& filename,
     
     // Calculate overall stats
     int grand_total = 0, grand_passed = 0;
-    for (const auto& [key, stats] : category_stats) {
+    for (const auto& [key, stats] : channel_stats) {
         grand_total += stats.total;
         grand_passed += stats.passed;
     }
@@ -467,11 +474,11 @@ void generate_report(const std::string& filename,
     report << "| **Total Failed** | " << (grand_total - grand_passed) << " |\n\n";
     
     report << "---\n\n";
-    report << "## Results by Category\n\n";
-    report << "| Category | Passed | Failed | Total | Pass Rate | Avg BER |\n";
-    report << "|----------|--------|--------|-------|-----------|--------|\n";
+    report << "## Results by Mode\n\n";
+    report << "| Mode | Passed | Failed | Total | Pass Rate | Avg BER |\n";
+    report << "|------|--------|--------|-------|-----------|--------|\n";
     
-    for (const auto& [key, stats] : category_stats) {
+    for (const auto& [key, stats] : mode_stats) {
         report << "| " << key
                << " | " << stats.passed
                << " | " << stats.failed
@@ -480,6 +487,77 @@ void generate_report(const std::string& filename,
                << " | " << std::scientific << std::setprecision(2) << stats.avg_ber()
                << " |\n";
     }
+    
+    report << "\n---\n\n";
+    report << "## Results by Channel Condition\n\n";
+    report << "| Channel | Passed | Failed | Total | Pass Rate | Avg BER |\n";
+    report << "|---------|--------|--------|-------|-----------|--------|\n";
+    
+    for (const auto& [key, stats] : channel_stats) {
+        report << "| " << key
+               << " | " << stats.passed
+               << " | " << stats.failed
+               << " | " << stats.total
+               << " | " << std::fixed << std::setprecision(1) << stats.pass_rate() << "%"
+               << " | " << std::scientific << std::setprecision(2) << stats.avg_ber()
+               << " |\n";
+    }
+    
+    report << "\n---\n\n";
+    report << "## Mode × Channel Matrix (Pass Rates)\n\n";
+    
+    // Get all channel names
+    std::vector<std::string> channel_names;
+    for (const auto& [ch, _] : channel_stats) {
+        channel_names.push_back(ch);
+    }
+    
+    // Header row
+    report << "| Mode |";
+    for (const auto& ch : channel_names) {
+        report << " " << ch << " |";
+    }
+    report << " **Total** |\n";
+    
+    // Separator
+    report << "|------|";
+    for (size_t i = 0; i < channel_names.size(); i++) {
+        report << ":------:|";
+    }
+    report << ":------:|\n";
+    
+    // Data rows
+    for (const auto& [mode, ch_map] : mode_channel_stats) {
+        report << "| **" << mode << "** |";
+        for (const auto& ch : channel_names) {
+            auto it = ch_map.find(ch);
+            if (it != ch_map.end() && it->second.total > 0) {
+                report << " " << std::fixed << std::setprecision(0) << it->second.pass_rate() << "% |";
+            } else {
+                report << " - |";
+            }
+        }
+        // Mode total
+        auto mode_it = mode_stats.find(mode);
+        if (mode_it != mode_stats.end()) {
+            report << " **" << std::fixed << std::setprecision(0) << mode_it->second.pass_rate() << "%** |";
+        } else {
+            report << " - |";
+        }
+        report << "\n";
+    }
+    
+    // Channel totals row
+    report << "| **Total** |";
+    for (const auto& ch : channel_names) {
+        auto it = channel_stats.find(ch);
+        if (it != channel_stats.end() && it->second.total > 0) {
+            report << " **" << std::fixed << std::setprecision(0) << it->second.pass_rate() << "%** |";
+        } else {
+            report << " - |";
+        }
+    }
+    report << " **" << std::fixed << std::setprecision(0) << grand_rate << "%** |\n";
     
     report << "\n---\n\n";
     report << "## Test Configuration\n\n";
@@ -537,7 +615,7 @@ int main(int argc, char* argv[]) {
         std::time_t now_time = std::chrono::system_clock::to_time_t(now);
         std::tm* tm = std::localtime(&now_time);
         std::ostringstream ss;
-        ss << "docs/test_reports/server_exhaustive_" << std::put_time(tm, "%Y%m%d_%H%M%S") << ".md";
+        ss << "../docs/test_reports/server_exhaustive_" << std::put_time(tm, "%Y%m%d_%H%M%S") << ".md";
         report_file = ss.str();
     }
     
@@ -604,9 +682,10 @@ int main(int argc, char* argv[]) {
                 double ber;
                 bool passed = run_single_test(conn, mode, channel, test_data, ber);
                 
-                // Record stats
-                std::string category = mode.name + "_" + channel.name;
-                category_stats[channel.name].record(passed, ber);
+                // Record stats - by channel, by mode, and by combination
+                channel_stats[channel.name].record(passed, ber);
+                mode_stats[mode.name].record(passed, ber);
+                mode_channel_stats[mode.name][channel.name].record(passed, ber);
                 total_tests++;
                 
                 // Check time
@@ -628,7 +707,30 @@ int main(int argc, char* argv[]) {
     std::cout << "Iterations: " << iteration << "\n";
     std::cout << "Total Tests: " << total_tests << "\n\n";
     
-    std::cout << std::left << std::setw(20) << "Category"
+    // Results by Mode
+    std::cout << "--- BY MODE ---\n";
+    std::cout << std::left << std::setw(12) << "Mode"
+              << std::right << std::setw(8) << "Passed"
+              << std::setw(8) << "Failed"
+              << std::setw(8) << "Total"
+              << std::setw(10) << "Rate"
+              << std::setw(12) << "Avg BER"
+              << "\n";
+    std::cout << std::string(58, '-') << "\n";
+    
+    for (const auto& [key, stats] : mode_stats) {
+        std::cout << std::left << std::setw(12) << key
+                  << std::right << std::setw(8) << stats.passed
+                  << std::setw(8) << stats.failed
+                  << std::setw(8) << stats.total
+                  << std::setw(9) << std::fixed << std::setprecision(1) << stats.pass_rate() << "%"
+                  << std::setw(12) << std::scientific << std::setprecision(2) << stats.avg_ber()
+                  << "\n";
+    }
+    
+    // Results by Channel
+    std::cout << "\n--- BY CHANNEL ---\n";
+    std::cout << std::left << std::setw(20) << "Channel"
               << std::right << std::setw(8) << "Passed"
               << std::setw(8) << "Failed"
               << std::setw(8) << "Total"
@@ -639,7 +741,7 @@ int main(int argc, char* argv[]) {
     
     int grand_total = 0, grand_passed = 0;
     
-    for (const auto& [key, stats] : category_stats) {
+    for (const auto& [key, stats] : channel_stats) {
         std::cout << std::left << std::setw(20) << key
                   << std::right << std::setw(8) << stats.passed
                   << std::setw(8) << stats.failed
@@ -652,9 +754,62 @@ int main(int argc, char* argv[]) {
         grand_passed += stats.passed;
     }
     
-    std::cout << std::string(66, '-') << "\n";
+    // Mode × Channel Matrix
+    std::cout << "\n--- MODE × CHANNEL MATRIX (Pass Rates) ---\n\n";
+    
+    // Get all channel names that were tested
+    std::vector<std::string> channel_names;
+    for (const auto& [ch, _] : channel_stats) {
+        channel_names.push_back(ch);
+    }
+    
+    // Header row - abbreviated channel names
+    std::cout << std::left << std::setw(8) << "Mode";
+    for (const auto& ch : channel_names) {
+        std::string abbrev = ch.length() > 8 ? ch.substr(0, 8) : ch;
+        std::cout << std::right << std::setw(9) << abbrev;
+    }
+    std::cout << std::right << std::setw(9) << "TOTAL" << "\n";
+    std::cout << std::string(8 + 9 * (channel_names.size() + 1), '-') << "\n";
+    
+    // Data rows
+    for (const auto& [mode, ch_map] : mode_channel_stats) {
+        std::cout << std::left << std::setw(8) << mode;
+        for (const auto& ch : channel_names) {
+            auto it = ch_map.find(ch);
+            if (it != ch_map.end() && it->second.total > 0) {
+                std::cout << std::right << std::setw(8) << std::fixed << std::setprecision(0) 
+                          << it->second.pass_rate() << "%";
+            } else {
+                std::cout << std::right << std::setw(9) << "-";
+            }
+        }
+        // Mode total
+        auto mode_it = mode_stats.find(mode);
+        if (mode_it != mode_stats.end()) {
+            std::cout << std::right << std::setw(8) << std::fixed << std::setprecision(0) 
+                      << mode_it->second.pass_rate() << "%";
+        }
+        std::cout << "\n";
+    }
+    
+    // Channel totals row
+    std::cout << std::left << std::setw(8) << "TOTAL";
+    for (const auto& ch : channel_names) {
+        auto it = channel_stats.find(ch);
+        if (it != channel_stats.end() && it->second.total > 0) {
+            std::cout << std::right << std::setw(8) << std::fixed << std::setprecision(0)
+                      << it->second.pass_rate() << "%";
+        } else {
+            std::cout << std::right << std::setw(9) << "-";
+        }
+    }
     double grand_rate = grand_total > 0 ? 100.0 * grand_passed / grand_total : 0.0;
-    std::cout << std::left << std::setw(20) << "TOTAL"
+    std::cout << std::right << std::setw(8) << std::fixed << std::setprecision(0) << grand_rate << "%\n";
+
+    std::cout << "\n";
+    std::cout << std::string(66, '-') << "\n";
+    std::cout << std::left << std::setw(20) << "OVERALL"
               << std::right << std::setw(8) << grand_passed
               << std::setw(8) << (grand_total - grand_passed)
               << std::setw(8) << grand_total

@@ -811,8 +811,16 @@ void MSDMTServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, 
         // Report detected mode
         broadcast_status(StatusCategory::RX, data_rate_mode_to_status_string(current_mode_));
         
+        // Strip trailing null bytes (padding) from decoded data
+        auto data = result.data;
+        while (!data.empty() && data.back() == 0x00) {
+            data.pop_back();
+        }
+        
         // Send decoded data to data clients
-        broadcast_data(result.data);
+        if (!data.empty()) {
+            broadcast_data(data);
+        }
         
         // Signal end of reception
         broadcast_status(StatusCategory::RX, "NO DCD");
@@ -1135,7 +1143,22 @@ std::string generate_pcm_filename(const std::string& prefix, const std::string& 
     ss << "_" << std::setfill('0') << std::setw(3) << ms.count();
     ss << ".pcm";
     
-    return ss.str();
+    std::string relative_path = ss.str();
+    
+    // Convert to absolute path for reliable cross-process access
+#ifdef _WIN32
+    char abs_path[MAX_PATH];
+    if (GetFullPathNameA(relative_path.c_str(), MAX_PATH, abs_path, nullptr) > 0) {
+        return std::string(abs_path);
+    }
+#else
+    char abs_path[PATH_MAX];
+    if (realpath(relative_path.c_str(), abs_path) != nullptr) {
+        return std::string(abs_path);
+    }
+#endif
+    
+    return relative_path;  // Fallback to relative if conversion fails
 }
 
 } // namespace server

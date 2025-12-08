@@ -110,9 +110,9 @@ int main() {
     std::string ready = recv_line(ctrl);
     std::cout << "Server: " << ready << "\n";
     
-    // Set mode
-    std::cout << "\n--- Setting mode 2400S ---\n";
-    send_cmd(ctrl, "CMD:DATA RATE:2400S");
+    // Set mode - test 300S specifically
+    std::cout << "\n--- Setting mode 300S ---\n";
+    send_cmd(ctrl, "CMD:DATA RATE:300S");
     std::string resp = recv_line(ctrl);
     std::cout << "Response: " << resp << "\n";
     
@@ -188,12 +188,29 @@ int main() {
         std::string rx_str(rx_data.begin(), rx_data.end());
         std::cout << "Data: \"" << rx_str << "\"\n";
         
+        // Hex dump
+        std::cout << "Hex: ";
+        for (size_t i = 0; i < rx_data.size(); i++) {
+            printf("%02X ", rx_data[i]);
+            if ((i+1) % 16 == 0) std::cout << "\n     ";
+        }
+        std::cout << "\n";
+        
         if (rx_str == test_msg) {
             std::cout << "\n*** MATCH! ***\n";
         } else {
             std::cout << "\n*** MISMATCH ***\n";
-            std::cout << "Expected: \"" << test_msg << "\"\n";
-            std::cout << "Got:      \"" << rx_str << "\"\n";
+            std::cout << "Expected " << test_msg.size() << " bytes: \"" << test_msg << "\"\n";
+            std::cout << "Got " << rx_data.size() << " bytes: \"" << rx_str.substr(0, test_msg.size()) << "...\"\n";
+            
+            // Show extra bytes
+            if (rx_data.size() > test_msg.size()) {
+                std::cout << "Extra bytes: ";
+                for (size_t i = test_msg.size(); i < rx_data.size(); i++) {
+                    printf("%02X ", rx_data[i]);
+                }
+                std::cout << "\n";
+            }
         }
     } else {
         std::cout << "ERROR: No data received!\n";
