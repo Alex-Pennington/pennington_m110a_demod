@@ -4,7 +4,7 @@
 
 Copyright © 2025 Phoenix Nest LLC
 
-Licensed under the GNU General Public License v3.0 - see [LICENSE](LICENSE) for details.
+See [EULA](phoenixnestmodem_eula.md) for license terms and conditions.
 
 ---
 
