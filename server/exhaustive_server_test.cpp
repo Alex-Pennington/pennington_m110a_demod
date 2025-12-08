@@ -629,6 +629,7 @@ int main(int argc, char* argv[]) {
     std::string host = "127.0.0.1";
     int control_port = 4999;
     std::string report_file;
+    std::string mode_filter;  // Empty = all modes, otherwise filter by mode name
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -640,12 +641,16 @@ int main(int argc, char* argv[]) {
             control_port = std::stoi(argv[++i]);
         } else if (arg == "--report" && i + 1 < argc) {
             report_file = argv[++i];
+        } else if (arg == "--mode" && i + 1 < argc) {
+            mode_filter = argv[++i];
         } else if (arg == "--help") {
             std::cout << "Usage: " << argv[0] << " [options]\n";
             std::cout << "  --duration N    Test duration in minutes (default: 3)\n";
             std::cout << "  --host IP       Server IP (default: 127.0.0.1)\n";
             std::cout << "  --port N        Control port (default: 4999)\n";
             std::cout << "  --report FILE   Output report file\n";
+            std::cout << "  --mode MODE     Test only specific mode (e.g., 600S, 1200L, 75S)\n";
+            std::cout << "                  Use 'SHORT' for all short modes, 'LONG' for all long modes\n";
             return 0;
         }
     }
@@ -669,7 +674,11 @@ int main(int argc, char* argv[]) {
     std::cout << "M110A Exhaustive Test (Server-Based)\n";
     std::cout << "==============================================\n";
     std::cout << "Duration: " << duration_minutes << " minutes\n";
-    std::cout << "Server: " << host << ":" << control_port << "\n\n";
+    std::cout << "Server: " << host << ":" << control_port << "\n";
+    if (!mode_filter.empty()) {
+        std::cout << "Mode Filter: " << mode_filter << "\n";
+    }
+    std::cout << "\n";
     
     // Connect to server
     ServerConnection conn(host, control_port, control_port - 1);
@@ -686,8 +695,29 @@ int main(int argc, char* argv[]) {
     std::vector<uint8_t> test_data(test_msg.begin(), test_msg.end());
     
     // Get test configurations
-    auto modes = get_modes();
+    auto all_modes = get_modes();
     auto channels = get_channel_conditions();
+    
+    // Filter modes if specified
+    std::vector<ModeInfo> modes;
+    for (const auto& m : all_modes) {
+        if (mode_filter.empty()) {
+            modes.push_back(m);
+        } else if (mode_filter == "SHORT" && m.cmd.back() == 'S') {
+            modes.push_back(m);
+        } else if (mode_filter == "LONG" && m.cmd.back() == 'L') {
+            modes.push_back(m);
+        } else if (m.cmd == mode_filter || m.name == mode_filter) {
+            modes.push_back(m);
+        }
+    }
+    
+    if (modes.empty()) {
+        std::cerr << "ERROR: No modes match filter '" << mode_filter << "'\n";
+        std::cerr << "Valid modes: 75S, 75L, 150S, 150L, 300S, 300L, 600S, 600L, 1200S, 1200L, 2400S, 2400L\n";
+        std::cerr << "Special: SHORT (all short), LONG (all long)\n";
+        return 1;
+    }
     
     // Timing
     auto start_time = steady_clock::now();
