@@ -1,3 +1,24 @@
+# M110A Modem Critical Patch - D1/D2 Position Fix
+# Date: 2025-12-08
+# Purpose: Fix mode detection for external/reference signal interoperability
+#
+# ISSUE: Current mode_detector.h uses incorrect D1/D2 symbol positions
+#        This causes mode detection to fail on signals from external sources
+#        (e.g., MS-DMT reference samples) even though loopback tests pass.
+#
+# ROOT CAUSE: Loopback tests pass because both TX and RX use the same
+#             (incorrect) positions - the bug cancels out internally.
+#
+# VALIDATION: Tested against 10 MS-DMT reference samples - all pass with fix.
+#
+# FILES TO REPLACE:
+#   1. src/m110a/mode_detector.h (complete replacement)
+#
+# OPTIONAL UPDATES:
+#   2. src/m110a/msdmt_decoder.h - Update D1/D2 comments (lines ~455)
+
+--- BEGIN REPLACEMENT FILE: src/m110a/mode_detector.h ---
+
 /**
  * D1/D2 Mode Detector
  * 
@@ -209,3 +230,40 @@ private:
 } // namespace m110a
 
 #endif // M110A_MODE_DETECTOR_H
+
+--- END REPLACEMENT FILE ---
+
+=============================================================================
+VALIDATION RESULTS (tested against MS-DMT reference samples):
+
+| Mode   | Expected D1,D2 | Detected | Status |
+|--------|---------------|----------|--------|
+| M150S  | 7, 4          | 7, 4     | ✓ PASS |
+| M150L  | 5, 4          | 5, 4     | ✓ PASS |
+| M300S  | 6, 7          | 6, 7     | ✓ PASS |
+| M300L  | 4, 7          | 4, 7     | ✓ PASS |
+| M600S  | 6, 6          | 6, 6     | ✓ PASS |
+| M600L  | 4, 6          | 4, 6     | ✓ PASS |
+| M1200S | 6, 5          | 6, 5     | ✓ PASS |
+| M1200L | 4, 5          | 4, 5     | ✓ PASS |
+| M2400S | 6, 4          | 6, 4     | ✓ PASS |
+| M2400L | 4, 4          | 4, 4     | ✓ PASS |
+
+=============================================================================
+KEY CHANGES FROM ORIGINAL:
+
+1. D1 position: 288-383 (96 sym) → 320-351 (32 sym)
+2. D2 position: 480-575 (96 sym) → 352-383 (32 sym)  
+3. Uses fixed PSCRAMBLE[32] table instead of LFSR scrambler
+4. Correlates against PSYMBOL Walsh patterns
+5. Confidence now out of 32 (not 96)
+
+=============================================================================
+WHY LOOPBACK TESTS STILL PASS WITHOUT THIS FIX:
+
+The bug is symmetric - both TX and RX use the same wrong positions.
+When you transmit with wrong positions and receive with wrong positions,
+they cancel out. This fix is ONLY needed for interoperability with
+external signal sources (real radios, MS-DMT software, etc.).
+
+=============================================================================

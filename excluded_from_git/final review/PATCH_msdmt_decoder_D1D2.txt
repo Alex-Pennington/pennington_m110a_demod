@@ -1,0 +1,54 @@
+# PATCH: msdmt_decoder.h D1/D2 Position Fix
+# 
+# This is a secondary fix for src/m110a/msdmt_decoder.h
+# The primary fix is mode_detector.h, but this decoder also has wrong positions.
+#
+# CHANGES NEEDED (3 locations):
+
+=============================================================================
+CHANGE 1: Lines 455-457 - Fix position comments and values
+=============================================================================
+
+BEFORE:
+        // D1 starts at symbol 288, D2 at 320
+        int d1_start = result.start_sample + 288 * sps_;
+        int d2_start = result.start_sample + 320 * sps_;
+
+AFTER:
+        // D1 starts at symbol 320, D2 at 352 (per empirical verification)
+        int d1_start = result.start_sample + 320 * sps_;
+        int d2_start = result.start_sample + 352 * sps_;
+
+=============================================================================
+CHANGE 2: Line 468 - Fix D1 PSCRAMBLE index
+=============================================================================
+
+BEFORE:
+                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[(288 + i) % 32]) % 8;
+
+AFTER:
+                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[i % 32]) % 8;
+
+=============================================================================
+CHANGE 3: Line 483 - Fix D2 PSCRAMBLE index
+=============================================================================
+
+BEFORE:
+                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[(320 + i) % 32]) % 8;
+
+AFTER:
+                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[i % 32]) % 8;
+
+=============================================================================
+EXPLANATION:
+
+The PSCRAMBLE table is a fixed 32-element pattern that is applied to each
+32-symbol D region (D1 and D2). The scramble index should be 0-31 for each
+region, not offset by the symbol position in the frame.
+
+Original code was using:
+  - D1: pscramble[(288+i) % 32] = pscramble[i] (happened to work by accident)
+  - D2: pscramble[(320+i) % 32] = pscramble[i] (happened to work by accident)
+
+But with the position fix, it should explicitly be pscramble[i % 32].
+=============================================================================
