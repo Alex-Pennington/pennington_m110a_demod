@@ -67,6 +67,8 @@ public:
         detect_cfg.sample_rate = config_.sample_rate;
         detect_cfg.carrier_freq = config_.carrier_freq;
         detect_cfg.baud_rate = 2400.0f;
+        detect_cfg.freq_search_range = config_.freq_search_range;
+        detect_cfg.freq_search_step = 0.5f;  // 2 Hz steps
         
         MSDMTDecoder detector(detect_cfg);
         auto detect_result = detector.decode(samples);
@@ -104,6 +106,8 @@ public:
         decode_cfg.baud_rate = 2400.0f;
         decode_cfg.unknown_data_len = mode_cfg.unknown_data_len;
         decode_cfg.known_data_len = mode_cfg.known_data_len;
+        decode_cfg.freq_search_range = config_.freq_search_range;
+        decode_cfg.freq_search_step = 0.5f;
         
         MSDMTDecoder decoder(decode_cfg);
         auto msdmt_result = decoder.decode(samples);
@@ -120,17 +124,20 @@ public:
         // Phase tracking corrects frequency offsets - only useful when no equalizer
         // (DFE/MLSE can handle small freq offsets via their adaptation)
         std::vector<complex_t> phase_corrected = msdmt_result.data_symbols;
-        float freq_offset_hz = 0.0f;
+        float freq_offset_hz = msdmt_result.freq_offset_hz;  // From frequency search
         
+        // Apply phase tracking to correct frequency offset
+        // - With NONE: full decision-directed tracking
+        // - With DFE/MLSE: probe-only tracking (less aggressive)
         if (config_.phase_tracking && 
-            config_.equalizer == Equalizer::NONE &&
             mode_cfg.unknown_data_len > 0 && mode_cfg.known_data_len > 0) {
             
+            bool probe_only = (config_.equalizer != Equalizer::NONE);
             auto [corrected, freq_off] = apply_phase_tracking(
                 msdmt_result.data_symbols,
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
-                false  // Full tracking for NONE
+                probe_only  // Probe-only when using equalizer
             );
             phase_corrected = std::move(corrected);
             freq_offset_hz = freq_off;
@@ -167,7 +174,20 @@ public:
         
         // Step 5: Decode using M110ACodec
         M110ACodec codec(mode_id);
-        auto decoded = codec.decode_with_probes(equalized_symbols);
+        std::vector<uint8_t> decoded;
+        
+        // Use SNR-weighted demapper if enabled
+        if (config_.use_snr_weighted_demapper) {
+            float snr_db = config_.assumed_snr_db;
+            if (config_.estimate_snr_from_probes) {
+                snr_db = codec.estimate_snr_from_probes(equalized_symbols);
+            }
+            DecodeOptions opts = DecodeOptions::snr_weighted(snr_db);
+            decoded = codec.decode_with_probes(equalized_symbols, opts);
+        } else {
+            // Legacy demapper
+            decoded = codec.decode_with_probes(equalized_symbols);
+        }
         
         if (decoded.empty()) {
             result.success = false;
@@ -394,6 +414,8 @@ private:
         detect_cfg.sample_rate = config_.sample_rate;
         detect_cfg.carrier_freq = config_.carrier_freq;
         detect_cfg.baud_rate = 2400.0f;
+        detect_cfg.freq_search_range = config_.freq_search_range;
+        detect_cfg.freq_search_step = 0.5f;
         
         MSDMTDecoder detector(detect_cfg);
         auto detect_result = detector.decode(samples);
@@ -422,12 +444,26 @@ private:
         decode_cfg.baud_rate = 2400.0f;
         decode_cfg.unknown_data_len = mode_cfg.unknown_data_len;
         decode_cfg.known_data_len = mode_cfg.known_data_len;
+        decode_cfg.freq_search_range = config_.freq_search_range;
+        decode_cfg.freq_search_step = 0.5f;
         
         MSDMTDecoder decoder(decode_cfg);
         auto msdmt_result = decoder.decode(samples);
         
         M110ACodec codec(mode_id);
-        auto decoded = codec.decode_with_probes(msdmt_result.data_symbols);
+        std::vector<uint8_t> decoded;
+        
+        // Use SNR-weighted demapper if enabled
+        if (config_.use_snr_weighted_demapper) {
+            float snr_db = config_.assumed_snr_db;
+            if (config_.estimate_snr_from_probes) {
+                snr_db = codec.estimate_snr_from_probes(msdmt_result.data_symbols);
+            }
+            DecodeOptions opts = DecodeOptions::snr_weighted(snr_db);
+            decoded = codec.decode_with_probes(msdmt_result.data_symbols, opts);
+        } else {
+            decoded = codec.decode_with_probes(msdmt_result.data_symbols);
+        }
         
         if (!decoded.empty()) {
             result.success = true;
@@ -933,13 +969,13 @@ private:
         // Configure phase tracker
         PhaseTrackerConfig pt_cfg;
         pt_cfg.symbol_rate = 2400.0f;
-        pt_cfg.max_freq_hz = 5.0f;
+        pt_cfg.max_freq_hz = 15.0f;  // Support up to ±15 Hz offset
         
         if (conservative) {
-            // Very conservative: minimal tracking for use with equalizers
-            // Only corrects gross frequency offset, doesn't track rapid changes
-            pt_cfg.alpha = 0.01f;   // Very slow phase updates
-            pt_cfg.beta = 0.0002f;  // Very slow frequency updates
+            // Conservative mode for use with equalizers
+            // Corrects frequency offset without interfering with DFE
+            pt_cfg.alpha = 0.02f;    // Moderate phase updates
+            pt_cfg.beta = 0.001f;    // Moderate frequency updates
             pt_cfg.decision_directed = false;
         } else {
             // Full tracking: more aggressive for NONE equalizer

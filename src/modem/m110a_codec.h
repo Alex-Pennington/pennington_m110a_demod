@@ -25,6 +25,7 @@
 #include "modem/gray_code.h"
 #include "modem/multimode_interleaver.h"
 #include "modem/viterbi.h"
+#include "modem/soft_demapper.h"
 #include <vector>
 #include <complex>
 #include <cmath>
@@ -43,6 +44,33 @@ static const std::array<std::complex<float>, 8> PSK8_POINTS = {{
     { 0.000f, -1.000f},  // 6: 270°
     { 0.707f, -0.707f}   // 7: 315°
 }};
+
+/**
+ * Decode options for M110ACodec
+ */
+struct DecodeOptions {
+    /// Use SNR-weighted soft demapper (computes proper LLRs)
+    /// If false, uses legacy position-based demapper
+    bool use_snr_weighted_demapper = false;
+    
+    /// Estimated channel SNR in dB (for SNR-weighted demapper)
+    float snr_db = 20.0f;
+    
+    /// Default options (legacy behavior)
+    static DecodeOptions legacy() {
+        DecodeOptions opts;
+        opts.use_snr_weighted_demapper = false;
+        return opts;
+    }
+    
+    /// SNR-weighted demapper options
+    static DecodeOptions snr_weighted(float snr_db) {
+        DecodeOptions opts;
+        opts.use_snr_weighted_demapper = true;
+        opts.snr_db = snr_db;
+        return opts;
+    }
+};
 
 /**
  * Unified Codec for MIL-STD-188-110A
@@ -402,6 +430,143 @@ public:
         }
         
         return decode_soft_bits(soft_bits);
+    }
+    
+    /**
+     * Decode all symbols with options (data + probes)
+     * Supports both legacy and SNR-weighted demapping.
+     * 
+     * @param all_symbols All received symbols (interleaved data + probes)
+     * @param opts Decode options (demapper choice, SNR)
+     * @return Decoded bytes
+     */
+    std::vector<uint8_t> decode_with_probes(const std::vector<complex_t>& all_symbols,
+                                             const DecodeOptions& opts) {
+        // If using legacy demapper, call original function
+        if (!opts.use_snr_weighted_demapper) {
+            return decode_with_probes(all_symbols);
+        }
+        
+        int unknown_len = config_.unknown_data_len;
+        int known_len = config_.known_data_len;
+        int rep = config_.symbol_repetition;
+        
+        // 75 bps modes have no probes - decode directly with legacy
+        if (unknown_len == 0 || known_len == 0) {
+            return decode(all_symbols);
+        }
+        
+        int pattern_len = unknown_len + known_len;
+        
+        // Detect 180° phase ambiguity using probe symbols
+        int phase_offset = detect_phase_offset(all_symbols, unknown_len, known_len);
+        
+        // Apply phase correction if needed
+        float phase_rotation = -phase_offset * (M_PI / 4.0f);
+        complex_t phase_rot(std::cos(phase_rotation), std::sin(phase_rotation));
+        
+        // Set up SNR-weighted demappers
+        SNRWeightedDemapper8PSK demapper_8psk;
+        SNRWeightedDemapperQPSK demapper_qpsk;
+        SNRWeightedDemapperBPSK demapper_bpsk;
+        
+        demapper_8psk.set_snr(opts.snr_db);
+        demapper_qpsk.set_snr(opts.snr_db);
+        demapper_bpsk.set_snr(opts.snr_db);
+        
+        DataScramblerFixed scrambler;
+        std::vector<soft_bit_t> soft_bits;
+        
+        size_t idx = 0;
+        while (idx + pattern_len <= all_symbols.size()) {
+            // Process data symbols with SNR-weighted soft demapping
+            for (int i = 0; i < unknown_len && idx + i < all_symbols.size(); i++) {
+                complex_t sym = all_symbols[idx + i];
+                
+                // Apply phase correction
+                sym *= phase_rot;
+                
+                // Descramble by rotating (scrambler affects phase)
+                int scr = scrambler.next();
+                float scr_angle = -scr * (M_PI / 4.0f);
+                complex_t scr_rot(std::cos(scr_angle), std::sin(scr_angle));
+                complex_t descrambled_sym = sym * scr_rot;
+                
+                // Use SNR-weighted demapper based on modulation
+                switch (config_.modulation) {
+                    case Modulation::BPSK: {
+                        soft_bit_t sb = demapper_bpsk.demap(descrambled_sym);
+                        soft_bits.push_back(sb);
+                        break;
+                    }
+                    case Modulation::QPSK: {
+                        auto bits = demapper_qpsk.demap(descrambled_sym);
+                        soft_bits.push_back(bits[0]);
+                        soft_bits.push_back(bits[1]);
+                        break;
+                    }
+                    case Modulation::PSK8: {
+                        auto bits = demapper_8psk.demap(descrambled_sym);
+                        soft_bits.push_back(bits[0]);
+                        soft_bits.push_back(bits[1]);
+                        soft_bits.push_back(bits[2]);
+                        break;
+                    }
+                }
+            }
+            
+            // Skip probe symbols but advance scrambler
+            for (int i = 0; i < known_len; i++) {
+                scrambler.next();
+            }
+            
+            idx += pattern_len;
+        }
+        
+        return decode_soft_bits(soft_bits);
+    }
+    
+    /**
+     * Estimate SNR from probe symbols
+     * Call this before decode_with_probes() to get SNR for DecodeOptions
+     * 
+     * @param all_symbols All received symbols (data + probes)
+     * @return Estimated SNR in dB
+     */
+    float estimate_snr_from_probes(const std::vector<complex_t>& all_symbols) const {
+        int unknown_len = config_.unknown_data_len;
+        int known_len = config_.known_data_len;
+        
+        if (unknown_len == 0 || known_len == 0) {
+            return 20.0f;  // Default for modes without probes
+        }
+        
+        int pattern_len = unknown_len + known_len;
+        
+        // Collect probe symbols and their expected values
+        std::vector<complex_t> received_probes;
+        std::vector<complex_t> expected_probes;
+        
+        DataScramblerFixed scrambler;
+        
+        size_t idx = 0;
+        while (idx + pattern_len <= all_symbols.size()) {
+            // Skip data symbols in scrambler
+            for (int i = 0; i < unknown_len; i++) scrambler.next();
+            
+            // Collect probe symbols
+            for (int i = 0; i < known_len && idx + unknown_len + i < all_symbols.size(); i++) {
+                complex_t sym = all_symbols[idx + unknown_len + i];
+                int scr = scrambler.next();
+                
+                received_probes.push_back(sym);
+                expected_probes.push_back(PSK8_POINTS[scr]);  // Probe data is 0, so just scrambler
+            }
+            
+            idx += pattern_len;
+        }
+        
+        return SNRWeightedDemapper8PSK::estimate_snr(received_probes, expected_probes);
     }
     
 private:

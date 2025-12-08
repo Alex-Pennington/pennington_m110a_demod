@@ -63,7 +63,7 @@ namespace api {
 
 /// API version
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 1;
+constexpr int VERSION_MINOR = 0;
 constexpr int VERSION_PATCH = 0;
 
 /// Get version string
@@ -152,10 +152,10 @@ inline DecodeResult decode(const Samples& samples,
 }
 
 /**
- * Decode with full configuration
+ * Decode with full RxConfig (for advanced settings)
  * 
  * @param samples Audio samples to decode
- * @param config RX configuration (includes equalizer, sample_rate, mode)
+ * @param config Full receiver configuration
  * @return Decode result
  */
 inline DecodeResult decode(const Samples& samples, const RxConfig& config) {

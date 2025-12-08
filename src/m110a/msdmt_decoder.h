@@ -39,6 +39,8 @@ struct MSDMTDecoderConfig {
     float rrc_alpha = 0.35f;
     int rrc_span = 6;  // symbols
     int max_search_symbols = 500;  // preamble search range
+    float freq_search_range = 10.0f;  // Hz, search ± this range for carrier
+    float freq_search_step = 1.0f;    // Hz, step size for frequency search
     bool verbose = false;
     
     // Mode-specific frame structure (default M2400S)
@@ -56,6 +58,7 @@ struct MSDMTDecodeResult {
     float accuracy = 0.0f;  // Hard decision accuracy on preamble
     int start_sample = 0;
     float phase_offset = 0.0f;
+    float freq_offset_hz = 0.0f;  // Detected frequency offset from nominal carrier
     
     // Mode detection
     int d1 = -1;
@@ -96,11 +99,44 @@ public:
     MSDMTDecodeResult decode(const std::vector<float>& rf_samples) {
         MSDMTDecodeResult result;
         
-        // Step 1: Downconvert and matched filter
-        auto filtered = downconvert_and_filter(rf_samples);
-        if (filtered.size() < 288 * sps_) {
-            return result;  // Signal too short
+        // Step 1: Frequency search - try multiple carrier offsets
+        // Always search all frequencies and pick the best one
+        float best_freq_offset = 0.0f;
+        float best_preamble_corr = 0.0f;
+        std::vector<complex_t> best_filtered;
+        
+        if (config_.freq_search_range > 0.0f) {
+            // Search all frequencies including zero
+            for (float freq_off = -config_.freq_search_range; 
+                 freq_off <= config_.freq_search_range; 
+                 freq_off += config_.freq_search_step) {
+                
+                auto filtered = downconvert_and_filter_with_offset(rf_samples, freq_off);
+                if (filtered.size() < 288 * sps_) continue;
+                
+                float corr = quick_preamble_correlation(filtered);
+                
+                if (corr > best_preamble_corr) {
+                    best_preamble_corr = corr;
+                    best_freq_offset = freq_off;
+                    best_filtered = std::move(filtered);
+                }
+            }
+            
+            if (best_filtered.empty()) {
+                return result;  // No valid frequency found
+            }
+            
+            result.freq_offset_hz = best_freq_offset;
+        } else {
+            // No frequency search
+            best_filtered = downconvert_and_filter(rf_samples);
+            if (best_filtered.size() < 288 * sps_) {
+                return result;  // Signal too short
+            }
         }
+        
+        auto& filtered = best_filtered;
         
         // Step 2: Find preamble with fine-grained timing
         find_preamble(filtered, result);
@@ -183,6 +219,120 @@ private:
         }
         
         return filtered;
+    }
+    
+    /**
+     * Downconvert with frequency offset and apply RRC matched filter
+     */
+    std::vector<complex_t> downconvert_and_filter_with_offset(
+            const std::vector<float>& rf_samples, float freq_offset_hz) {
+        // Downconvert with offset
+        std::vector<complex_t> bb(rf_samples.size());
+        float phase = 0.0f;
+        float phase_inc = 2.0f * PI * (config_.carrier_freq + freq_offset_hz) / config_.sample_rate;
+        
+        for (size_t i = 0; i < rf_samples.size(); i++) {
+            bb[i] = complex_t(rf_samples[i] * std::cos(phase), 
+                              -rf_samples[i] * std::sin(phase));
+            phase += phase_inc;
+            if (phase > 2*PI) phase -= 2*PI;
+        }
+        
+        // Apply matched filter
+        int half = rrc_taps_.size() / 2;
+        std::vector<complex_t> filtered(bb.size());
+        
+        for (size_t i = 0; i < bb.size(); i++) {
+            complex_t sum(0, 0);
+            for (size_t j = 0; j < rrc_taps_.size(); j++) {
+                int idx = static_cast<int>(i) - half + j;
+                if (idx >= 0 && idx < static_cast<int>(bb.size())) {
+                    sum += bb[idx] * rrc_taps_[j];
+                }
+            }
+            filtered[i] = sum;
+        }
+        
+        return filtered;
+    }
+    
+    /**
+     * Quick preamble correlation for frequency search
+     * Returns correlation metric (higher = better frequency match)
+     * Uses phase consistency between first and second half of preamble
+     * to detect frequency offset
+     */
+    float quick_preamble_correlation(const std::vector<complex_t>& filtered) {
+        // 8-PSK constellation
+        static const std::array<complex_t, 8> PSK8 = {{
+            complex_t( 1.000f,  0.000f),
+            complex_t( 0.707f,  0.707f),
+            complex_t( 0.000f,  1.000f),
+            complex_t(-0.707f,  0.707f),
+            complex_t(-1.000f,  0.000f),
+            complex_t(-0.707f, -0.707f),
+            complex_t( 0.000f, -1.000f),
+            complex_t( 0.707f, -0.707f)
+        }};
+        
+        // Generate expected preamble symbols
+        const int HALF_LEN = 144;  // Use 2 halves of 144 symbols each
+        std::vector<complex_t> expected;
+        for (int i = 0; i < 2 * HALF_LEN && i < (int)common_pattern_.size(); i++) {
+            expected.push_back(PSK8[common_pattern_[i]]);
+        }
+        
+        // Search for best correlation with phase consistency check
+        float best_metric = 0.0f;
+        int max_search = std::min((int)filtered.size() - 2 * HALF_LEN * sps_, 200 * sps_);
+        
+        for (int start = 0; start < max_search; start += sps_ * 8) {  // Every 8 symbols
+            // Compute correlation on first half
+            complex_t corr1(0, 0);
+            float power1 = 0.0f;
+            for (int i = 0; i < HALF_LEN; i++) {
+                int idx = start + i * sps_;
+                if (idx < (int)filtered.size()) {
+                    corr1 += filtered[idx] * std::conj(expected[i]);
+                    power1 += std::norm(filtered[idx]);
+                }
+            }
+            
+            // Compute correlation on second half
+            complex_t corr2(0, 0);
+            float power2 = 0.0f;
+            for (int i = HALF_LEN; i < 2 * HALF_LEN; i++) {
+                int idx = start + i * sps_;
+                if (idx < (int)filtered.size()) {
+                    corr2 += filtered[idx] * std::conj(expected[i]);
+                    power2 += std::norm(filtered[idx]);
+                }
+            }
+            
+            // Correlation magnitudes (how well preamble matches)
+            float mag1 = std::abs(corr1) / std::sqrt(power1 + 1e-10f);
+            float mag2 = std::abs(corr2) / std::sqrt(power2 + 1e-10f);
+            
+            // Phase difference between halves (should be ~0 if frequency is correct)
+            // Frequency offset causes phase to drift: delta_phase = 2*pi*df*dt
+            // For HALF_LEN=144 symbols at 2400 baud, dt = 60ms
+            // At 1 Hz offset, delta_phase = 2*pi*1*0.06 = 21.6 degrees
+            float phase1 = std::arg(corr1);
+            float phase2 = std::arg(corr2);
+            float phase_diff = std::abs(phase2 - phase1);
+            if (phase_diff > M_PI) phase_diff = 2*M_PI - phase_diff;
+            
+            // Metric: high correlation AND small phase difference
+            // Phase penalty: cos(phase_diff) ranges from 1 (0 diff) to -1 (180 diff)
+            float phase_factor = std::cos(phase_diff);
+            float metric = (mag1 + mag2) * 0.5f * std::max(0.0f, phase_factor);
+            
+            if (metric > best_metric) {
+                best_metric = metric;
+            }
+        }
+        
+        return best_metric;
     }
     
     /**

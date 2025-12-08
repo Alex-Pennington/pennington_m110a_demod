@@ -29,6 +29,9 @@
 #include <algorithm>
 #include <random>
 
+// Version info
+#include "../api/version.h"
+
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
         #define WIN32_LEAN_AND_MEAN
@@ -459,6 +462,8 @@ void generate_report(const std::string& filename,
     report << "## Test Information\n";
     report << "| Field | Value |\n";
     report << "|-------|-------|\n";
+    report << "| **Version** | " << m110a::version_full() << " |\n";
+    report << "| **Build** | " << m110a::build_info() << " |\n";
     report << "| **Date** | " << std::put_time(tm, "%B %d, %Y %H:%M") << " |\n";
     report << "| **Duration** | " << duration_sec << " seconds |\n";
     report << "| **Iterations** | " << iterations << " |\n";

@@ -90,7 +90,7 @@ struct RxConfig {
     float carrier_freq = CARRIER_FREQ_DEFAULT;
     
     /// Carrier frequency search range (+/- Hz)
-    float freq_search_range = 100.0f;
+    float freq_search_range = 10.0f;
     
     /// Equalizer algorithm
     Equalizer equalizer = Equalizer::DFE;
@@ -111,6 +111,21 @@ struct RxConfig {
     
     /// Maximum time to wait for signal (seconds, 0 = no timeout)
     float timeout_seconds = 0.0f;
+    
+    // === RX Improvement Options (v1.1) ===
+    
+    /// Use SNR-weighted soft demapper for better Viterbi input
+    /// Computes proper LLRs based on estimated channel SNR
+    /// Default: true (proven improvement in testing)
+    bool use_snr_weighted_demapper = true;
+    
+    /// Use probe-based SNR estimation for soft demapper
+    /// If false, assumes fixed SNR of 20 dB
+    bool estimate_snr_from_probes = true;
+    
+    /// Fixed SNR assumption when not estimating (dB)
+    /// Only used when estimate_snr_from_probes = false
+    float assumed_snr_db = 20.0f;
     
     /**
      * Validate configuration
