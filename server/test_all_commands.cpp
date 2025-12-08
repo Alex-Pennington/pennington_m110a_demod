@@ -280,20 +280,20 @@ int main() {
     };
     
     for (const auto& eq : equalizers) {
-        send_cmd(ctrl, "SET EQUALIZER " + eq);
+        send_cmd(ctrl, "CMD:SET EQUALIZER:" + eq);
         resp = recv_line(ctrl, 1000);
-        test_result("SET EQUALIZER " + eq, 
-                    resp.find("OK:EQUALIZER:" + eq) != std::string::npos, resp);
+        test_result("CMD:SET EQUALIZER:" + eq, 
+                    resp.find("OK:SET EQUALIZER:" + eq) != std::string::npos, resp);
     }
     
     // Test invalid equalizer
-    send_cmd(ctrl, "SET EQUALIZER INVALID");
+    send_cmd(ctrl, "CMD:SET EQUALIZER:INVALID");
     resp = recv_line(ctrl);
-    test_result("SET EQUALIZER INVALID (should error)",
+    test_result("CMD:SET EQUALIZER:INVALID (should error)",
                 resp.find("ERROR:") != std::string::npos, resp);
     
     // Reset to default
-    send_cmd(ctrl, "SET EQUALIZER DFE");
+    send_cmd(ctrl, "CMD:SET EQUALIZER:DFE");
     recv_line(ctrl);
     
     std::cout << "\n--- Testing Unknown Command ---\n";
