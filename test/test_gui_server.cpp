@@ -48,8 +48,15 @@ const char* HTML_PAGE = R"HTML(
         label { margin-bottom: 5px; color: #aaa; font-size: 12px; }
         select, input { padding: 8px 12px; border: 1px solid #333; border-radius: 4px; 
                        background: #0f0f23; color: #fff; min-width: 120px; }
+        select[multiple] { height: 180px; min-width: 160px; }
+        select[multiple] option { padding: 4px 8px; }
+        select[multiple] option:checked { background: #00d4ff; color: #000; }
+        .select-hint { font-size: 10px; color: #666; margin-top: 3px; }
         button { padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; 
                 font-weight: bold; margin-right: 10px; }
+        .test-summary { background: #0f3460; padding: 10px 15px; border-radius: 4px; 
+                       margin-bottom: 15px; font-size: 13px; color: #aaa; }
+        .test-summary strong { color: #00d4ff; }
         .btn-run { background: #00d4ff; color: #000; }
         .btn-run:hover { background: #00a8cc; }
         .btn-run:disabled { background: #444; color: #888; cursor: not-allowed; }
@@ -72,16 +79,13 @@ const char* HTML_PAGE = R"HTML(
 </head>
 <body>
     <div class="container">
-        <h1>🔧 M110A Modem Test Suite</h1>
+        <h1>M110A Modem Test Suite</h1>
         
         <div class="controls">
             <div class="row">
                 <div class="field">
-                    <label>Mode</label>
-                    <select id="mode">
-                        <option value="">All Modes</option>
-                        <option value="SHORT">All Short</option>
-                        <option value="LONG">All Long</option>
+                    <label>Modes (Ctrl+click to multi-select)</label>
+                    <select id="modes" multiple>
                         <option value="75S">75S</option>
                         <option value="75L">75L</option>
                         <option value="150S">150S</option>
@@ -95,11 +99,12 @@ const char* HTML_PAGE = R"HTML(
                         <option value="2400S">2400S</option>
                         <option value="2400L">2400L</option>
                     </select>
+                    <div class="select-hint">Empty = All modes</div>
                 </div>
                 <div class="field">
-                    <label>Equalizer</label>
-                    <select id="equalizer">
-                        <option value="DFE">DFE (Default)</option>
+                    <label>Equalizers (Ctrl+click to multi-select)</label>
+                    <select id="equalizers" multiple>
+                        <option value="DFE" selected>DFE</option>
                         <option value="NONE">None</option>
                         <option value="DFE_RLS">DFE RLS</option>
                         <option value="MLSE_L2">MLSE L=2</option>
@@ -107,6 +112,7 @@ const char* HTML_PAGE = R"HTML(
                         <option value="MLSE_ADAPTIVE">MLSE Adaptive</option>
                         <option value="TURBO">Turbo</option>
                     </select>
+                    <div class="select-hint">Empty = DFE only</div>
                 </div>
                 <div class="field">
                     <label>Iterations</label>
@@ -120,6 +126,27 @@ const char* HTML_PAGE = R"HTML(
                     </select>
                 </div>
             </div>
+            
+            <div class="row">
+                <div class="field">
+                    <label>Quick Select</label>
+                    <div class="checkbox-group">
+                        <button type="button" onclick="selectAllModes()" style="padding: 5px 10px;">All Modes</button>
+                        <button type="button" onclick="selectShortModes()" style="padding: 5px 10px;">Short Only</button>
+                        <button type="button" onclick="selectLongModes()" style="padding: 5px 10px;">Long Only</button>
+                        <button type="button" onclick="clearModes()" style="padding: 5px 10px;">Clear</button>
+                    </div>
+                </div>
+                <div class="field">
+                    <label>&nbsp;</label>
+                    <div class="checkbox-group">
+                        <button type="button" onclick="selectAllEqualizers()" style="padding: 5px 10px;">All EQs</button>
+                        <button type="button" onclick="clearEqualizers()" style="padding: 5px 10px;">Clear</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="test-summary" id="test-summary">Will run: <strong>All modes</strong> with <strong>DFE</strong> equalizer (12 tests)</div>
             
             <div class="row">
                 <div class="field">
@@ -143,8 +170,8 @@ const char* HTML_PAGE = R"HTML(
             </div>
             
             <div class="row">
-                <button class="btn-run" id="btn-run" onclick="runTest()">▶ Run Test</button>
-                <button class="btn-stop" id="btn-stop" onclick="stopTest()" disabled>■ Stop</button>
+                <button class="btn-run" id="btn-run" onclick="runTest()">[Run Test]</button>
+                <button class="btn-stop" id="btn-stop" onclick="stopTest()" disabled>[Stop]</button>
             </div>
             
             <div class="progress" id="progress-container" style="display: none;">
@@ -167,6 +194,50 @@ Available tests:
     
     <script>
         let eventSource = null;
+        const ALL_MODES = ['75S','75L','150S','150L','300S','300L','600S','600L','1200S','1200L','2400S','2400L'];
+        const ALL_EQS = ['DFE','NONE','DFE_RLS','MLSE_L2','MLSE_L3','MLSE_ADAPTIVE','TURBO'];
+        
+        // Get selected values from a multi-select
+        function getSelected(id) {
+            const sel = document.getElementById(id);
+            return Array.from(sel.selectedOptions).map(o => o.value);
+        }
+        
+        // Set selected values in a multi-select
+        function setSelected(id, values) {
+            const sel = document.getElementById(id);
+            Array.from(sel.options).forEach(o => o.selected = values.includes(o.value));
+            updateSummary();
+        }
+        
+        // Quick select helpers
+        function selectAllModes() { setSelected('modes', ALL_MODES); }
+        function selectShortModes() { setSelected('modes', ALL_MODES.filter(m => m.endsWith('S'))); }
+        function selectLongModes() { setSelected('modes', ALL_MODES.filter(m => m.endsWith('L'))); }
+        function clearModes() { setSelected('modes', []); }
+        function selectAllEqualizers() { setSelected('equalizers', ALL_EQS); }
+        function clearEqualizers() { setSelected('equalizers', []); }
+        
+        // Update test summary
+        function updateSummary() {
+            const modes = getSelected('modes');
+            const eqs = getSelected('equalizers');
+            const modeCount = modes.length || 12;
+            const eqCount = eqs.length || 1;
+            const totalTests = modeCount * eqCount;
+            
+            const modeStr = modes.length === 0 ? 'All modes' : 
+                           modes.length === 12 ? 'All modes' :
+                           modes.length <= 3 ? modes.join(', ') : 
+                           modes.length + ' modes';
+            const eqStr = eqs.length === 0 ? 'DFE' : 
+                         eqs.length === 7 ? 'All equalizers' :
+                         eqs.length <= 2 ? eqs.join(', ') : 
+                         eqs.length + ' equalizers';
+            
+            document.getElementById('test-summary').innerHTML = 
+                'Will run: <strong>' + modeStr + '</strong> with <strong>' + eqStr + '</strong> (' + totalTests + ' test combinations)';
+        }
         
         // Show/hide progressive options
         document.querySelectorAll('input[name="testtype"]').forEach(radio => {
@@ -176,20 +247,29 @@ Available tests:
             });
         });
         
+        // Update summary when selections change
+        document.getElementById('modes').addEventListener('change', updateSummary);
+        document.getElementById('equalizers').addEventListener('change', updateSummary);
+        
         function runTest() {
             const output = document.getElementById('output');
             const status = document.getElementById('status');
             const btnRun = document.getElementById('btn-run');
             const btnStop = document.getElementById('btn-stop');
             
-            // Build command
+            // Get selected modes and equalizers
+            let modes = getSelected('modes');
+            let eqs = getSelected('equalizers');
+            
+            // Default to all modes if none selected
+            if (modes.length === 0) modes = ALL_MODES;
+            // Default to DFE if none selected
+            if (eqs.length === 0) eqs = ['DFE'];
+            
+            // Build command - we'll pass modes and eqs as comma-separated lists
             let args = [];
-            
-            const mode = document.getElementById('mode').value;
-            if (mode) args.push('--mode', mode);
-            
-            const eq = document.getElementById('equalizer').value;
-            args.push('--eq', eq);
+            args.push('--modes', modes.join(','));
+            args.push('--eqs', eqs.join(','));
             
             const iters = document.getElementById('iterations').value;
             args.push('-n', iters);
@@ -274,7 +354,20 @@ Available tests:
 
 class TestGuiServer {
 public:
-    TestGuiServer(int port = 8080) : port_(port), running_(false), test_process_(nullptr) {}
+    TestGuiServer(int port = 8080) : port_(port), running_(false), test_process_(nullptr) {
+        // Get directory of this executable
+#ifdef _WIN32
+        char path[MAX_PATH];
+        GetModuleFileNameA(NULL, path, MAX_PATH);
+        exe_dir_ = path;
+        size_t last_slash = exe_dir_.find_last_of("\\/");
+        if (last_slash != std::string::npos) {
+            exe_dir_ = exe_dir_.substr(0, last_slash + 1);
+        }
+#else
+        exe_dir_ = "./";
+#endif
+    }
     
     bool start() {
 #ifdef _WIN32
@@ -337,6 +430,7 @@ public:
     
 private:
     int port_;
+    std::string exe_dir_;
     SOCKET server_sock_;
     bool running_;
     FILE* test_process_;
@@ -425,8 +519,8 @@ private:
             }
         }
         
-        // Build command line
-        std::string cmd = "exhaustive_test.exe";
+        // Build command line - use full path to exhaustive_test.exe
+        std::string cmd = "\"" + exe_dir_ + "exhaustive_test.exe\"";
         for (const auto& arg : args) {
             cmd += " " + arg;
         }

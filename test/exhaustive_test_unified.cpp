@@ -103,7 +103,7 @@ float run_progressive_freq_test(ITestBackend& backend, const ModeInfo& mode,
         double ber;
         bool passed = backend.run_test(mode, cond, test_data, ber);
         
-        std::cout << "\r  Freq ±" << std::setw(5) << std::fixed << std::setprecision(1) 
+        std::cout << "\r  Freq +/-" << std::setw(4) << std::fixed << std::setprecision(1) 
                   << freq << " Hz: " << (passed ? "PASS" : "FAIL") 
                   << " (BER=" << std::scientific << std::setprecision(2) << ber << ")   " << std::flush;
         return passed;
@@ -206,7 +206,7 @@ ProgressiveResult run_progressive_tests(ITestBackend& backend, const ModeInfo& m
         std::cout << "Frequency Offset Tolerance:\n";
         result.freq_offset_limit_hz = run_progressive_freq_test(backend, mode, test_data);
         result.freq_tested = true;
-        std::cout << "  -> Limit: ±" << result.freq_offset_limit_hz << " Hz\n";
+        std::cout << "  -> Limit: +/-" << result.freq_offset_limit_hz << " Hz\n";
     }
     
     if (test_multipath) {
@@ -229,6 +229,8 @@ int main(int argc, char* argv[]) {
     // Configuration
     int max_iterations = 1;
     std::string mode_filter;
+    std::vector<std::string> mode_list;  // List of specific modes
+    std::vector<std::string> eq_list;    // List of equalizers to test
     std::string report_file;
     std::string csv_file;
     bool use_server = false;
@@ -237,6 +239,24 @@ int main(int argc, char* argv[]) {
     bool progressive_mode = false;
     bool prog_snr = false, prog_freq = false, prog_multipath = false;
     std::string equalizer = "DFE";  // Default equalizer
+    
+    // Helper to split comma-separated string
+    auto split_csv = [](const std::string& s) -> std::vector<std::string> {
+        std::vector<std::string> result;
+        std::istringstream iss(s);
+        std::string token;
+        while (std::getline(iss, token, ',')) {
+            // Trim whitespace and convert to uppercase
+            size_t start = token.find_first_not_of(" \t");
+            size_t end = token.find_last_not_of(" \t");
+            if (start != std::string::npos) {
+                token = token.substr(start, end - start + 1);
+                for (auto& c : token) c = std::toupper(c);
+                result.push_back(token);
+            }
+        }
+        return result;
+    };
     
     // Parse arguments
     for (int i = 1; i < argc; i++) {
@@ -273,6 +293,10 @@ int main(int argc, char* argv[]) {
             equalizer = argv[++i];
             // Convert to uppercase
             for (auto& c : equalizer) c = std::toupper(c);
+        } else if (arg == "--modes" && i + 1 < argc) {
+            mode_list = split_csv(argv[++i]);
+        } else if (arg == "--eqs" && i + 1 < argc) {
+            eq_list = split_csv(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << m110a::version_header() << "\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
@@ -285,6 +309,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  -n N            Short form of --iterations\n";
             std::cout << "  --mode MODE     Test only specific mode (e.g., 600S, 1200L)\n";
             std::cout << "                  Use 'SHORT' for all short, 'LONG' for all long\n";
+            std::cout << "  --modes LIST    Comma-separated list of modes (e.g., 600S,1200L,2400S)\n";
             std::cout << "  --report FILE   Output report file\n\n";
             std::cout << "Progressive Test Options:\n";
             std::cout << "  --progressive   Run all progressive tests (SNR, freq, multipath)\n";
@@ -296,6 +321,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  -c FILE         Short form of --csv\n\n";
             std::cout << "Equalizer Options:\n";
             std::cout << "  --eq TYPE       Set equalizer type (default: DFE)\n";
+            std::cout << "  --eqs LIST      Comma-separated list of equalizers\n";
             std::cout << "                  Types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3,\n";
             std::cout << "                         MLSE_ADAPTIVE, TURBO\n";
             return 0;
@@ -329,13 +355,27 @@ int main(int argc, char* argv[]) {
     std::cout << m110a::build_info() << "\n";
     std::cout << "Backend: " << backend->backend_name() << "\n";
     
-    // Set equalizer
-    if (!backend->set_equalizer(equalizer)) {
-        std::cerr << "Invalid equalizer type: " << equalizer << "\n";
-        std::cerr << "Valid types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO\n";
-        return 1;
+    // Build equalizer list (use eq_list if provided, else single equalizer)
+    if (eq_list.empty()) {
+        eq_list.push_back(equalizer);
     }
-    std::cout << "Equalizer: " << equalizer << "\n";
+    std::cout << "Equalizers: ";
+    for (size_t i = 0; i < eq_list.size(); i++) {
+        if (i > 0) std::cout << ", ";
+        std::cout << eq_list[i];
+    }
+    std::cout << "\n";
+    
+    // Validate all equalizers
+    for (const auto& eq : eq_list) {
+        if (!backend->set_equalizer(eq)) {
+            std::cerr << "Invalid equalizer type: " << eq << "\n";
+            std::cerr << "Valid types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO\n";
+            return 1;
+        }
+    }
+    // Set back to first equalizer
+    backend->set_equalizer(eq_list[0]);
     
     if (progressive_mode) {
         std::cout << "Mode: PROGRESSIVE (find mode limits)\n";
@@ -369,10 +409,26 @@ int main(int argc, char* argv[]) {
     
     // Get modes
     auto all_modes = get_all_modes();
-    auto modes = filter_modes(all_modes, mode_filter);
+    std::vector<ModeInfo> modes;
+    
+    // If mode_list provided, use it; otherwise use mode_filter
+    if (!mode_list.empty()) {
+        for (const auto& m : all_modes) {
+            std::string upper_cmd = m.cmd;
+            for (auto& c : upper_cmd) c = std::toupper(c);
+            for (const auto& want : mode_list) {
+                if (upper_cmd == want || m.name == want) {
+                    modes.push_back(m);
+                    break;
+                }
+            }
+        }
+    } else {
+        modes = filter_modes(all_modes, mode_filter);
+    }
     
     if (modes.empty()) {
-        std::cerr << "ERROR: No modes match filter '" << mode_filter << "'\n";
+        std::cerr << "ERROR: No modes match filter\n";
         return 1;
     }
     
@@ -384,24 +440,38 @@ int main(int argc, char* argv[]) {
     if (progressive_mode) {
         auto start_time = steady_clock::now();
         
-        std::map<std::string, ProgressiveResult> progressive_results;
+        // Results grouped by equalizer
+        std::map<std::string, std::map<std::string, ProgressiveResult>> all_eq_results;
         
-        // Write CSV header
-        if (!csv_file.empty()) {
-            write_progressive_csv_header(csv_file, mode_filter, prog_snr, prog_freq, prog_multipath);
-            std::cout << "CSV file initialized: " << csv_file << "\n\n";
-        }
-        
-        for (const auto& mode : modes) {
-            auto result = run_progressive_tests(*backend, mode, test_data, 
-                                                prog_snr, prog_freq, prog_multipath);
-            progressive_results[mode.name] = result;
+        for (const auto& eq : eq_list) {
+            std::cout << "\n*** Testing with Equalizer: " << eq << " ***\n";
+            backend->set_equalizer(eq);
             
-            // Append to CSV
-            if (!csv_file.empty()) {
-                append_progressive_csv_row(csv_file, result, mode.data_rate_bps,
-                                           prog_snr, prog_freq, prog_multipath);
+            std::map<std::string, ProgressiveResult> progressive_results;
+            
+            // Write CSV header
+            if (!csv_file.empty() && eq == eq_list[0]) {
+                write_progressive_csv_header(csv_file, mode_filter, prog_snr, prog_freq, prog_multipath);
+                std::cout << "CSV file initialized: " << csv_file << "\n\n";
             }
+            
+            for (const auto& mode : modes) {
+                auto result = run_progressive_tests(*backend, mode, test_data, 
+                                                    prog_snr, prog_freq, prog_multipath);
+                result.mode_name = eq + ":" + mode.name;  // Prefix with eq name
+                progressive_results[mode.name] = result;
+                
+                // Append to CSV
+                if (!csv_file.empty()) {
+                    // Modify result name for CSV
+                    ProgressiveResult csv_result = result;
+                    csv_result.mode_name = eq + "_" + mode.name;
+                    append_progressive_csv_row(csv_file, csv_result, mode.data_rate_bps,
+                                               prog_snr, prog_freq, prog_multipath);
+                }
+            }
+            
+            all_eq_results[eq] = progressive_results;
         }
         
         auto total_elapsed = duration_cast<seconds>(steady_clock::now() - start_time).count();
@@ -412,30 +482,33 @@ int main(int argc, char* argv[]) {
         std::cout << "==============================================\n";
         std::cout << "Duration: " << total_elapsed << " seconds\n\n";
         
-        std::cout << std::setw(8) << "Mode" << " | ";
-        if (prog_snr) std::cout << std::setw(12) << "Min SNR (dB)" << " | ";
-        if (prog_freq) std::cout << std::setw(14) << "Max Freq (Hz)" << " | ";
-        if (prog_multipath) std::cout << std::setw(16) << "Max Multipath" << " | ";
-        std::cout << "\n";
-        
-        std::cout << std::string(8, '-') << "-+-";
-        if (prog_snr) std::cout << std::string(12, '-') << "-+-";
-        if (prog_freq) std::cout << std::string(14, '-') << "-+-";
-        if (prog_multipath) std::cout << std::string(16, '-') << "-+-";
-        std::cout << "\n";
-        
-        for (const auto& [name, result] : progressive_results) {
-            std::cout << std::setw(8) << name << " | ";
-            if (prog_snr) {
-                std::cout << std::setw(12) << result.snr_limit_db << " | ";
-            }
-            if (prog_freq) {
-                std::cout << std::setw(10) << "±" << result.freq_offset_limit_hz << " Hz | ";
-            }
-            if (prog_multipath) {
-                std::cout << std::setw(6) << result.multipath_limit_samples << " samples | ";
-            }
+        for (const auto& [eq, progressive_results] : all_eq_results) {
+            std::cout << "\n--- Equalizer: " << eq << " ---\n";
+            std::cout << std::setw(8) << "Mode" << " | ";
+            if (prog_snr) std::cout << std::setw(12) << "Min SNR (dB)" << " | ";
+            if (prog_freq) std::cout << std::setw(14) << "Max Freq (Hz)" << " | ";
+            if (prog_multipath) std::cout << std::setw(16) << "Max Multipath" << " | ";
             std::cout << "\n";
+            
+            std::cout << std::string(8, '-') << "-+-";
+            if (prog_snr) std::cout << std::string(12, '-') << "-+-";
+            if (prog_freq) std::cout << std::string(14, '-') << "-+-";
+            if (prog_multipath) std::cout << std::string(16, '-') << "-+-";
+            std::cout << "\n";
+            
+            for (const auto& [name, result] : progressive_results) {
+                std::cout << std::setw(8) << name << " | ";
+                if (prog_snr) {
+                    std::cout << std::setw(12) << result.snr_limit_db << " | ";
+                }
+                if (prog_freq) {
+                    std::cout << std::setw(8) << "+/-" << result.freq_offset_limit_hz << " Hz | ";
+                }
+                if (prog_multipath) {
+                    std::cout << std::setw(6) << result.multipath_limit_samples << " samples | ";
+                }
+                std::cout << "\n";
+            }
         }
         
         if (!csv_file.empty()) {
@@ -458,26 +531,36 @@ int main(int argc, char* argv[]) {
     while (iteration < max_iterations) {
         iteration++;
         
-        for (const auto& mode : modes) {
-            // Skip slow modes sometimes
-            if ((mode.cmd == "75S" || mode.cmd == "75L") && iteration % 5 != 0) continue;
-            if ((mode.cmd == "150L" || mode.cmd == "300L") && iteration % 3 != 0) continue;
+        for (const auto& eq : eq_list) {
+            backend->set_equalizer(eq);
             
-            for (const auto& channel : channels) {
-                // Skip some channels sometimes
-                if (iteration % 2 != 0 && 
-                    (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
+            for (const auto& mode : modes) {
+                // Skip slow modes sometimes (only if we have multiple iterations)
+                if (max_iterations > 1) {
+                    if ((mode.cmd == "75S" || mode.cmd == "75L") && iteration % 5 != 0) continue;
+                    if ((mode.cmd == "150L" || mode.cmd == "300L") && iteration % 3 != 0) continue;
+                }
                 
-                auto now = steady_clock::now();
-                auto elapsed = (int)duration_cast<seconds>(now - start_time).count();
-                
-                print_progress(elapsed, mode.name, channel.name, results.total_tests,
-                               results.overall_pass_rate(), iteration, max_iterations);
-                
-                double ber;
-                bool passed = backend->run_test(mode, channel, test_data, ber);
-                
-                results.record(mode.name, channel.name, passed, ber);
+                for (const auto& channel : channels) {
+                    // Skip some channels sometimes (only if we have multiple iterations)
+                    if (max_iterations > 1 && iteration % 2 != 0 && 
+                        (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
+                    
+                    auto now = steady_clock::now();
+                    auto elapsed = (int)duration_cast<seconds>(now - start_time).count();
+                    
+                    // Include eq in display
+                    std::string mode_with_eq = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
+                    print_progress(elapsed, mode_with_eq, channel.name, results.total_tests,
+                                   results.overall_pass_rate(), iteration, max_iterations);
+                    
+                    double ber;
+                    bool passed = backend->run_test(mode, channel, test_data, ber);
+                    
+                    // Record with eq prefix if multiple equalizers
+                    std::string record_name = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
+                    results.record(record_name, channel.name, passed, ber);
+                }
             }
         }
     }
