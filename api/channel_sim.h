@@ -204,8 +204,8 @@ inline void add_two_path(Samples& samples,
  * @param offset_hz Frequency offset in Hz (can be negative)
  * @param sample_rate Sample rate in Hz (default: 48000)
  * 
- * Output model:
- *   y[n] = x[n] * cos(2*pi*offset*n/fs)
+ * Implementation: Uses Hilbert transform to create analytic signal,
+ * applies frequency shift, then takes real part.
  * 
  * Typical HF values:
  *   - Crystal oscillator drift: ±1-5 Hz
@@ -216,13 +216,53 @@ inline void add_freq_offset(Samples& samples, float offset_hz,
                              float sample_rate = 48000.0f) {
     if (samples.empty() || offset_hz == 0.0f) return;
     
+    // For proper frequency shift of a real signal:
+    // 1. Create analytic signal: x_a(t) = x(t) + j*H{x(t)} where H is Hilbert transform
+    // 2. Frequency shift: y_a(t) = x_a(t) * e^(j*2*pi*f*t)
+    // 3. Take real part: y(t) = Re{y_a(t)}
+    //
+    // Simplified approach: Use FIR Hilbert transformer
+    // For small frequency offsets relative to bandwidth, we can approximate
+    // the Hilbert transform using a simple 90-degree phase shift filter
+    
+    const int HILBERT_LEN = 31;  // FIR Hilbert transformer length (must be odd)
+    std::vector<float> hilbert_coeffs(HILBERT_LEN);
+    int half = HILBERT_LEN / 2;
+    
+    // Design Hilbert transformer coefficients
+    for (int i = 0; i < HILBERT_LEN; i++) {
+        int n = i - half;
+        if (n == 0) {
+            hilbert_coeffs[i] = 0.0f;
+        } else if (n % 2 == 0) {
+            hilbert_coeffs[i] = 0.0f;  // Even indices are zero
+        } else {
+            // Odd indices: 2/(pi*n) with Hamming window
+            float window = 0.54f - 0.46f * std::cos(TWO_PI * i / (HILBERT_LEN - 1));
+            hilbert_coeffs[i] = window * 2.0f / (M_PI * n);
+        }
+    }
+    
+    // Compute Hilbert transform (imaginary part of analytic signal)
+    std::vector<float> hilbert_out(samples.size(), 0.0f);
+    for (size_t i = half; i < samples.size() - half; i++) {
+        float sum = 0.0f;
+        for (int j = 0; j < HILBERT_LEN; j++) {
+            sum += samples[i - half + j] * hilbert_coeffs[j];
+        }
+        hilbert_out[i] = sum;
+    }
+    
+    // Apply frequency shift: y = Re{(x + j*H{x}) * e^(j*2*pi*f*t)}
+    //                         = x*cos(wt) - H{x}*sin(wt)
     float phase = 0.0f;
     float phase_inc = TWO_PI * offset_hz / sample_rate;
     
-    for (auto& s : samples) {
-        s *= std::cos(phase);
+    for (size_t i = 0; i < samples.size(); i++) {
+        float cos_p = std::cos(phase);
+        float sin_p = std::sin(phase);
+        samples[i] = samples[i] * cos_p - hilbert_out[i] * sin_p;
         phase += phase_inc;
-        // Keep phase bounded to avoid precision loss
         if (phase > TWO_PI) phase -= TWO_PI;
         if (phase < -TWO_PI) phase += TWO_PI;
     }

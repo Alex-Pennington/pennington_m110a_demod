@@ -924,8 +924,8 @@ void MSDMTServer::cmd_channel_preset(std::shared_ptr<ClientConnection> client, c
 void MSDMTServer::cmd_channel_awgn(std::shared_ptr<ClientConnection> client, const std::string& snr_db) {
     try {
         float snr = std::stof(snr_db);
-        if (snr < 0.0f || snr > 60.0f) {
-            client->send(format_error("CHANNEL AWGN", "SNR must be 0-60 dB"));
+        if (snr < -20.0f || snr > 60.0f) {
+            client->send(format_error("CHANNEL AWGN", "SNR must be -20 to 60 dB"));
             return;
         }
         channel_awgn_enabled_ = true;

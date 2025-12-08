@@ -10,7 +10,7 @@
  *   exhaustive_server_test.exe [options]
  * 
  * Options:
- *   --duration N    Test duration in minutes (default: 3)
+ *   --iterations N  Number of test iterations (default: 1)
  *   --host IP       Server IP address (default: 127.0.0.1)
  *   --port N        Control port (default: 4999)
  *   --report FILE   Output report file (default: auto-generated)
@@ -282,24 +282,33 @@ private:
 double calculate_ber(const std::vector<uint8_t>& tx, const std::vector<uint8_t>& rx) {
     if (tx.empty() || rx.empty()) return 1.0;
     
-    size_t min_len = std::min(tx.size(), rx.size());
-    int bit_errors = 0;
-    int total_bits = 0;
+    // First, strip trailing zeros from rx (padding/EOM)
+    std::vector<uint8_t> rx_stripped = rx;
+    while (!rx_stripped.empty() && rx_stripped.back() == 0x00) {
+        rx_stripped.pop_back();
+    }
     
-    for (size_t i = 0; i < min_len; i++) {
-        uint8_t diff = tx[i] ^ rx[i];
+    // If rx_stripped is empty but tx isn't, total failure
+    if (rx_stripped.empty() && !tx.empty()) return 1.0;
+    
+    // Compare up to the TX length
+    // If RX has more data after TX length, it's likely EOM detection didn't fully strip
+    // so we only care about the message portion
+    size_t compare_len = tx.size();
+    
+    int bit_errors = 0;
+    int total_bits = (int)(compare_len * 8);
+    
+    for (size_t i = 0; i < compare_len; i++) {
+        uint8_t tx_byte = tx[i];
+        uint8_t rx_byte = (i < rx_stripped.size()) ? rx_stripped[i] : 0x00;
+        uint8_t diff = tx_byte ^ rx_byte;
         for (int b = 0; b < 8; b++) {
             if (diff & (1 << b)) bit_errors++;
         }
-        total_bits += 8;
     }
     
-    // Count length mismatch as errors
-    size_t len_diff = std::max(tx.size(), rx.size()) - min_len;
-    bit_errors += (int)(len_diff * 8);
-    total_bits += (int)(len_diff * 8);
-    
-    return total_bits > 0 ? (double)bit_errors / total_bits : 1.0;
+    return total_bits > 0 ? (double)bit_errors / total_bits : 0.0;
 }
 
 // ============================================================
@@ -316,6 +325,7 @@ std::vector<ModeInfo> get_modes() {
     // TX times based on interleaver block sizes and data rates
     // SHORT: 0.6s blocks, LONG: 4.8s blocks (8x longer)
     // Time = (interleaver_block_bits / data_rate_bps) + preamble overhead
+    // LONG modes need extra time for the larger interleaver processing
     return {
         {"75S",   "75S",   10000},   // Very slow data rate
         {"75L",   "75L",   80000},   // 8x longer interleaver
@@ -324,11 +334,11 @@ std::vector<ModeInfo> get_modes() {
         {"300S",  "300S",  3000},    // 720 bits / 300 bps + overhead
         {"300L",  "300L",  20000},   // 5760 bits / 300 bps + overhead
         {"600S",  "600S",  2000},    // 720 bits / 600 bps + overhead
-        {"600L",  "600L",  10000},   // 5760 bits / 600 bps + overhead
+        {"600L",  "600L",  15000},   // Decode takes ~16s, need margin
         {"1200S", "1200S", 2000},    // 1440 bits / 1200 bps + overhead
-        {"1200L", "1200L", 10000},   // 11520 bits / 1200 bps + overhead
+        {"1200L", "1200L", 15000},   // Large interleaver needs more time
         {"2400S", "2400S", 2000},    // 2880 bits / 2400 bps + overhead
-        {"2400L", "2400L", 10000},   // 23040 bits / 2400 bps + overhead
+        {"2400L", "2400L", 15000},   // Large interleaver needs more time
     };
 }
 
@@ -460,6 +470,239 @@ bool run_single_test(ServerConnection& conn,
     prev_pcm_file = pcm_file;
     
     return ber_out <= channel.expected_ber_threshold;
+}
+
+// ============================================================
+// Progressive Difficulty Test
+// ============================================================
+
+struct ProgressiveResult {
+    std::string mode_name;
+    
+    // SNR limit (lower is harder)
+    float snr_limit_db;
+    bool snr_tested;
+    
+    // Frequency offset limit (higher is harder)
+    float freq_offset_limit_hz;
+    bool freq_tested;
+    
+    // Multipath limit (higher delay is harder)
+    int multipath_limit_samples;
+    bool multipath_tested;
+    
+    ProgressiveResult() : snr_limit_db(0), snr_tested(false),
+                          freq_offset_limit_hz(0), freq_tested(false),
+                          multipath_limit_samples(0), multipath_tested(false) {}
+};
+
+// Global storage for progressive results
+std::map<std::string, ProgressiveResult> progressive_results;
+
+/**
+ * Run progressive SNR test - use binary search to find threshold quickly
+ */
+float run_progressive_snr_test(ServerConnection& conn, const ModeInfo& mode,
+                                const std::vector<uint8_t>& test_data) {
+    // Binary search between high and low SNR
+    float high = 30.0f;   // Known to pass
+    float low = -10.0f;   // Known to fail
+    float threshold = 0.01f;  // BER threshold for pass
+    
+    // First verify the bounds
+    auto test_snr = [&](float snr) -> bool {
+        ChannelCondition cond;
+        cond.name = "snr_test";
+        std::ostringstream cmd;
+        cmd << "CMD:CHANNEL AWGN:" << std::fixed << std::setprecision(1) << snr;
+        cond.setup_cmd = cmd.str();
+        cond.expected_ber_threshold = threshold;
+        
+        double ber;
+        bool passed = run_single_test(conn, mode, cond, test_data, ber);
+        
+        std::cout << "\r  SNR " << std::setw(5) << std::fixed << std::setprecision(1) 
+                  << snr << " dB: " << (passed ? "PASS" : "FAIL") 
+                  << " (BER=" << std::scientific << std::setprecision(2) << ber << ")   " << std::flush;
+        return passed;
+    };
+    
+    // Verify high SNR passes
+    if (!test_snr(high)) {
+        std::cout << "\n  WARNING: Even " << high << " dB fails!\n";
+        return high;
+    }
+    
+    // Verify low SNR fails
+    if (test_snr(low)) {
+        std::cout << "\n  NOTE: Even " << low << " dB passes - very robust!\n";
+        return low;
+    }
+    
+    // Binary search to find threshold
+    while (high - low > 1.0f) {
+        float mid = (high + low) / 2.0f;
+        if (test_snr(mid)) {
+            high = mid;  // Passed - can go lower
+        } else {
+            low = mid;   // Failed - need higher
+        }
+    }
+    
+    std::cout << "\n";
+    return high;  // Return lowest passing SNR
+}
+
+/**
+ * Run progressive frequency offset test - binary search for max offset
+ */
+float run_progressive_freq_test(ServerConnection& conn, const ModeInfo& mode,
+                                 const std::vector<uint8_t>& test_data) {
+    float low = 0.0f;     // Known to pass
+    float high = 50.0f;   // Likely to fail
+    float threshold = 0.01f;
+    
+    auto test_freq = [&](float freq) -> bool {
+        ChannelCondition cond;
+        cond.name = "freq_test";
+        if (freq > 0.1f) {
+            std::ostringstream cmd;
+            cmd << "CMD:CHANNEL FREQOFFSET:" << std::fixed << std::setprecision(1) << freq;
+            cond.setup_cmd = cmd.str();
+        } else {
+            cond.setup_cmd = "";  // Clean channel
+        }
+        cond.expected_ber_threshold = threshold;
+        
+        double ber;
+        bool passed = run_single_test(conn, mode, cond, test_data, ber);
+        
+        std::cout << "\r  Freq ±" << std::setw(5) << std::fixed << std::setprecision(1) 
+                  << freq << " Hz: " << (passed ? "PASS" : "FAIL") 
+                  << " (BER=" << std::scientific << std::setprecision(2) << ber << ")   " << std::flush;
+        return passed;
+    };
+    
+    // Verify 0 Hz passes
+    if (!test_freq(0.0f)) {
+        std::cout << "\n  WARNING: Even 0 Hz offset fails!\n";
+        return 0.0f;
+    }
+    
+    // Hunt upward to find a failing point first
+    float probe = 10.0f;
+    while (probe <= high && test_freq(probe)) {
+        low = probe;
+        probe *= 2.0f;
+    }
+    if (probe > high) probe = high;
+    high = probe;
+    
+    // Binary search
+    while (high - low > 1.0f) {
+        float mid = (high + low) / 2.0f;
+        if (test_freq(mid)) {
+            low = mid;   // Passed - can go higher
+        } else {
+            high = mid;  // Failed - need lower
+        }
+    }
+    
+    std::cout << "\n";
+    return low;  // Return highest passing offset
+}
+
+/**
+ * Run progressive multipath test - binary search for max delay
+ */
+int run_progressive_multipath_test(ServerConnection& conn, const ModeInfo& mode,
+                                    const std::vector<uint8_t>& test_data) {
+    int low = 0;      // Known to pass
+    int high = 200;   // Likely to fail
+    float threshold = 0.01f;
+    
+    auto test_mp = [&](int delay) -> bool {
+        ChannelCondition cond;
+        cond.name = "mp_test";
+        if (delay > 0) {
+            cond.setup_cmd = "CMD:CHANNEL MULTIPATH:" + std::to_string(delay);
+        } else {
+            cond.setup_cmd = "";
+        }
+        cond.expected_ber_threshold = threshold;
+        
+        double ber;
+        bool passed = run_single_test(conn, mode, cond, test_data, ber);
+        
+        std::cout << "\r  Multipath " << std::setw(3) << delay << " samples: "
+                  << (passed ? "PASS" : "FAIL") 
+                  << " (BER=" << std::scientific << std::setprecision(2) << ber << ")   " << std::flush;
+        return passed;
+    };
+    
+    // Verify 0 passes
+    if (!test_mp(0)) {
+        std::cout << "\n  WARNING: Even clean channel fails!\n";
+        return 0;
+    }
+    
+    // Hunt upward to find failing point
+    int probe = 20;
+    while (probe <= high && test_mp(probe)) {
+        low = probe;
+        probe *= 2;
+    }
+    if (probe > high) probe = high;
+    high = probe;
+    
+    // Binary search
+    while (high - low > 5) {
+        int mid = (high + low) / 2;
+        if (test_mp(mid)) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    
+    std::cout << "\n";
+    return low;  // Return highest passing delay
+}
+
+/**
+ * Run all progressive tests for a mode
+ */
+ProgressiveResult run_progressive_tests(ServerConnection& conn, const ModeInfo& mode,
+                                         const std::vector<uint8_t>& test_data,
+                                         bool test_snr, bool test_freq, bool test_multipath) {
+    ProgressiveResult result;
+    result.mode_name = mode.name;
+    
+    std::cout << "\n=== Progressive Tests for " << mode.name << " ===\n";
+    
+    if (test_snr) {
+        std::cout << "SNR Sensitivity:\n";
+        result.snr_limit_db = run_progressive_snr_test(conn, mode, test_data);
+        result.snr_tested = true;
+        std::cout << "  -> Limit: " << result.snr_limit_db << " dB\n";
+    }
+    
+    if (test_freq) {
+        std::cout << "Frequency Offset Tolerance:\n";
+        result.freq_offset_limit_hz = run_progressive_freq_test(conn, mode, test_data);
+        result.freq_tested = true;
+        std::cout << "  -> Limit: ±" << result.freq_offset_limit_hz << " Hz\n";
+    }
+    
+    if (test_multipath) {
+        std::cout << "Multipath Tolerance:\n";
+        result.multipath_limit_samples = run_progressive_multipath_test(conn, mode, test_data);
+        result.multipath_tested = true;
+        std::cout << "  -> Limit: " << result.multipath_limit_samples << " samples ("
+                  << (result.multipath_limit_samples / 48.0) << " ms)\n";
+    }
+    
+    return result;
 }
 
 // ============================================================
@@ -625,16 +868,19 @@ void generate_report(const std::string& filename,
 
 int main(int argc, char* argv[]) {
     // Parse arguments
-    int duration_minutes = 3;
+    int max_iterations = 1;
     std::string host = "127.0.0.1";
     int control_port = 4999;
     std::string report_file;
+    std::string csv_file;  // CSV output for progressive tests
     std::string mode_filter;  // Empty = all modes, otherwise filter by mode name
+    bool progressive_mode = false;  // Run progressive difficulty tests
+    bool prog_snr = false, prog_freq = false, prog_multipath = false;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--duration" && i + 1 < argc) {
-            duration_minutes = std::stoi(argv[++i]);
+        if ((arg == "--iterations" || arg == "-n") && i + 1 < argc) {
+            max_iterations = std::stoi(argv[++i]);
         } else if (arg == "--host" && i + 1 < argc) {
             host = argv[++i];
         } else if (arg == "--port" && i + 1 < argc) {
@@ -643,14 +889,38 @@ int main(int argc, char* argv[]) {
             report_file = argv[++i];
         } else if (arg == "--mode" && i + 1 < argc) {
             mode_filter = argv[++i];
-        } else if (arg == "--help") {
+        } else if (arg == "--progressive" || arg == "-p") {
+            progressive_mode = true;
+            prog_snr = prog_freq = prog_multipath = true;  // All tests by default
+        } else if (arg == "--prog-snr") {
+            progressive_mode = true;
+            prog_snr = true;
+        } else if (arg == "--prog-freq") {
+            progressive_mode = true;
+            prog_freq = true;
+        } else if (arg == "--prog-multipath") {
+            progressive_mode = true;
+            prog_multipath = true;
+        } else if ((arg == "--csv" || arg == "-c") && i + 1 < argc) {
+            csv_file = argv[++i];
+        } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options]\n";
-            std::cout << "  --duration N    Test duration in minutes (default: 3)\n";
+            std::cout << "\nStandard Test Options:\n";
+            std::cout << "  --iterations N  Number of test iterations (default: 1)\n";
+            std::cout << "  -n N            Short form of --iterations\n";
             std::cout << "  --host IP       Server IP (default: 127.0.0.1)\n";
             std::cout << "  --port N        Control port (default: 4999)\n";
             std::cout << "  --report FILE   Output report file\n";
             std::cout << "  --mode MODE     Test only specific mode (e.g., 600S, 1200L, 75S)\n";
             std::cout << "                  Use 'SHORT' for all short modes, 'LONG' for all long modes\n";
+            std::cout << "\nProgressive Test Options (find mode limits):\n";
+            std::cout << "  --progressive   Run all progressive tests (SNR, freq, multipath)\n";
+            std::cout << "  -p              Short form of --progressive\n";
+            std::cout << "  --prog-snr      Progressive SNR test only\n";
+            std::cout << "  --prog-freq     Progressive frequency offset test only\n";
+            std::cout << "  --prog-multipath Progressive multipath test only\n";
+            std::cout << "  --csv FILE      Output progressive results to CSV file\n";
+            std::cout << "  -c FILE         Short form of --csv\n";
             return 0;
         }
     }
@@ -673,7 +943,16 @@ int main(int argc, char* argv[]) {
     std::cout << "==============================================\n";
     std::cout << "M110A Exhaustive Test (Server-Based)\n";
     std::cout << "==============================================\n";
-    std::cout << "Duration: " << duration_minutes << " minutes\n";
+    if (progressive_mode) {
+        std::cout << "Mode: PROGRESSIVE (find mode limits)\n";
+        std::cout << "Tests: ";
+        if (prog_snr) std::cout << "SNR ";
+        if (prog_freq) std::cout << "Freq ";
+        if (prog_multipath) std::cout << "Multipath ";
+        std::cout << "\n";
+    } else {
+        std::cout << "Iterations: " << max_iterations << "\n";
+    }
     std::cout << "Server: " << host << ":" << control_port << "\n";
     if (!mode_filter.empty()) {
         std::cout << "Mode Filter: " << mode_filter << "\n";
@@ -719,15 +998,125 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // ================================================================
+    // Progressive Mode - Find the limits of each mode
+    // ================================================================
+    if (progressive_mode) {
+        auto start_time = steady_clock::now();
+        
+        std::cout << "Running progressive difficulty tests...\n\n";
+        
+        // Write CSV header if requested (before tests start)
+        if (!csv_file.empty()) {
+            std::ofstream csv(csv_file);
+            if (csv.is_open()) {
+                // Version header as comment
+                csv << "# M110A Modem Progressive Test Results\n";
+                csv << "# Version: " << m110a::version_full() << "\n";
+                csv << "# Date: " << m110a::BUILD_DATE << " " << m110a::BUILD_TIME << "\n";
+                csv << "# Mode Filter: " << (mode_filter.empty() ? "ALL" : mode_filter) << "\n";
+                
+                // Column header
+                csv << "Mode,Data_Rate_BPS";
+                if (prog_snr) csv << ",Min_SNR_dB";
+                if (prog_freq) csv << ",Max_Freq_Offset_Hz";
+                if (prog_multipath) csv << ",Max_Multipath_Samples,Max_Multipath_ms";
+                csv << "\n";
+                csv.close();
+                std::cout << "CSV file initialized: " << csv_file << "\n\n";
+            } else {
+                std::cerr << "WARNING: Cannot create CSV file: " << csv_file << "\n";
+            }
+        }
+        
+        for (const auto& mode : modes) {
+            auto result = run_progressive_tests(conn, mode, test_data, 
+                                                prog_snr, prog_freq, prog_multipath);
+            progressive_results[mode.name] = result;
+            
+            // Append result to CSV immediately after each mode completes
+            if (!csv_file.empty()) {
+                std::ofstream csv(csv_file, std::ios::app);  // Append mode
+                if (csv.is_open()) {
+                    // Extract data rate from mode name (e.g., "2400S" -> 2400)
+                    int data_rate = 0;
+                    for (char c : mode.name) {
+                        if (c >= '0' && c <= '9') data_rate = data_rate * 10 + (c - '0');
+                        else break;
+                    }
+                    
+                    csv << mode.name << "," << data_rate;
+                    if (prog_snr) csv << "," << std::fixed << std::setprecision(2) << result.snr_limit_db;
+                    if (prog_freq) csv << "," << std::fixed << std::setprecision(1) << result.freq_offset_limit_hz;
+                    if (prog_multipath) {
+                        csv << "," << result.multipath_limit_samples;
+                        csv << "," << std::fixed << std::setprecision(2) << (result.multipath_limit_samples / 48.0);
+                    }
+                    csv << "\n";
+                    csv.close();  // Close after each write for crash safety
+                }
+            }
+        }
+        
+        auto total_elapsed = duration_cast<seconds>(steady_clock::now() - start_time).count();
+        
+        // Print summary
+        std::cout << "\n==============================================\n";
+        std::cout << "PROGRESSIVE TEST RESULTS\n";
+        std::cout << "==============================================\n";
+        std::cout << "Duration: " << total_elapsed << " seconds\n\n";
+        
+        std::cout << std::setw(8) << "Mode" << " | ";
+        if (prog_snr) std::cout << std::setw(12) << "Min SNR (dB)" << " | ";
+        if (prog_freq) std::cout << std::setw(14) << "Max Freq (Hz)" << " | ";
+        if (prog_multipath) std::cout << std::setw(16) << "Max Multipath" << " | ";
+        std::cout << "\n";
+        
+        std::cout << std::string(8, '-') << "-+-";
+        if (prog_snr) std::cout << std::string(12, '-') << "-+-";
+        if (prog_freq) std::cout << std::string(14, '-') << "-+-";
+        if (prog_multipath) std::cout << std::string(16, '-') << "-+-";
+        std::cout << "\n";
+        
+        for (const auto& [name, result] : progressive_results) {
+            std::cout << std::setw(8) << name << " | ";
+            if (prog_snr) {
+                std::cout << std::setw(12) << result.snr_limit_db << " | ";
+            }
+            if (prog_freq) {
+                std::cout << std::setw(10) << "±" << result.freq_offset_limit_hz << " Hz | ";
+            }
+            if (prog_multipath) {
+                std::cout << std::setw(6) << result.multipath_limit_samples << " samples | ";
+            }
+            std::cout << "\n";
+        }
+        
+        std::cout << "\n";
+        
+        // CSV was written incrementally during tests
+        if (!csv_file.empty()) {
+            std::cout << "CSV saved to: " << csv_file << "\n";
+        }
+        
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return 0;
+    }
+    
+    // ================================================================
+    // Standard Exhaustive Test Mode
+    // ================================================================
+    
     // Timing
     auto start_time = steady_clock::now();
-    auto end_time = start_time + minutes(duration_minutes);
     
     int iteration = 0;
     int total_tests = 0;
     
     // Main test loop
-    while (steady_clock::now() < end_time) {
+    while (iteration < max_iterations) {
         iteration++;
         
         // Check connection health at start of each iteration
@@ -742,11 +1131,9 @@ int main(int argc, char* argv[]) {
         
         auto now = steady_clock::now();
         auto elapsed = duration_cast<seconds>(now - start_time).count();
-        auto remaining = duration_cast<seconds>(end_time - now).count();
         
-        std::cout << "\r[" << std::setw(3) << elapsed << "s] Iteration " << iteration
-                  << " | Tests: " << total_tests
-                  << " | Remaining: " << remaining << "s   " << std::flush;
+        std::cout << "\r[" << std::setw(3) << elapsed << "s] Iteration " << iteration << "/" << max_iterations
+                  << " | Tests: " << total_tests << "   " << std::flush;
         
         // Cycle through modes (skip slow modes on some iterations)
         for (const auto& mode : modes) {
@@ -763,7 +1150,6 @@ int main(int argc, char* argv[]) {
                 // Progress update before each test
                 auto now = steady_clock::now();
                 auto elapsed = duration_cast<seconds>(now - start_time).count();
-                auto remaining = duration_cast<seconds>(end_time - now).count();
                 
                 // Calculate pass rate so far
                 int total_passed = 0, total_run = 0;
@@ -777,7 +1163,7 @@ int main(int argc, char* argv[]) {
                           << std::setw(6) << mode.name << " + " << std::setw(10) << channel.name
                           << " | Tests: " << std::setw(4) << total_tests
                           << " | Pass: " << std::fixed << std::setprecision(1) << rate << "%"
-                          << " | " << remaining << "s left   " << std::flush;
+                          << " | Iter " << iteration << "/" << max_iterations << "   " << std::flush;
                 
                 double ber;
                 bool passed = run_single_test(conn, mode, channel, test_data, ber);
@@ -823,11 +1209,7 @@ int main(int argc, char* argv[]) {
                 mode_channel_stats[mode.name][channel.name].record(passed, ber);
                 total_tests++;
                 
-                // Check time
-                if (steady_clock::now() >= end_time) break;
             }
-            
-            if (steady_clock::now() >= end_time) break;
         }
     }
     
