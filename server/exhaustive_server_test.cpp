@@ -209,6 +209,32 @@ public:
         return {};
     }
     
+    // Check if connection is healthy
+    bool is_connected() {
+        if (control_sock == INVALID_SOCK || data_sock == INVALID_SOCK) {
+            return false;
+        }
+        // Try a simple query
+        std::string resp = send_command("CMD:GET MODE", 500);
+        return resp.find("OK:") != std::string::npos || resp.find("MODE:") != std::string::npos;
+    }
+    
+    // Reconnect if needed
+    bool ensure_connected() {
+        if (is_connected()) return true;
+        
+        std::cout << "\n[RECONNECT] Connection lost, reconnecting..." << std::flush;
+        disconnect();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        
+        if (connect_to_server()) {
+            std::cout << " OK\n" << std::flush;
+            return true;
+        }
+        std::cout << " FAILED\n" << std::flush;
+        return false;
+    }
+    
 private:
     socket_t connect_socket(int port) {
         socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -664,6 +690,12 @@ int main(int argc, char* argv[]) {
     while (steady_clock::now() < end_time) {
         iteration++;
         
+        // Check connection health at start of each iteration
+        if (!conn.ensure_connected()) {
+            std::cerr << "\n[ERROR] Cannot reconnect to server, aborting.\n";
+            break;
+        }
+        
         auto now = steady_clock::now();
         auto elapsed = duration_cast<seconds>(now - start_time).count();
         auto remaining = duration_cast<seconds>(end_time - now).count();
@@ -684,8 +716,43 @@ int main(int argc, char* argv[]) {
                 if (iteration % 2 != 0 && 
                     (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
                 
+                // Progress update before each test
+                auto now = steady_clock::now();
+                auto elapsed = duration_cast<seconds>(now - start_time).count();
+                auto remaining = duration_cast<seconds>(end_time - now).count();
+                
+                // Calculate pass rate so far
+                int total_passed = 0, total_run = 0;
+                for (const auto& [k, s] : mode_stats) {
+                    total_passed += s.passed;
+                    total_run += s.total;
+                }
+                double rate = total_run > 0 ? 100.0 * total_passed / total_run : 0.0;
+                
+                std::cout << "\r[" << std::setw(3) << elapsed << "s] "
+                          << std::setw(6) << mode.name << " + " << std::setw(10) << channel.name
+                          << " | Tests: " << std::setw(4) << total_tests
+                          << " | Pass: " << std::fixed << std::setprecision(1) << rate << "%"
+                          << " | " << remaining << "s left   " << std::flush;
+                
                 double ber;
                 bool passed = run_single_test(conn, mode, channel, test_data, ber);
+                
+                // Track consecutive failures to detect connection issues
+                static int consecutive_failures = 0;
+                if (passed) {
+                    consecutive_failures = 0;
+                } else {
+                    consecutive_failures++;
+                    if (consecutive_failures >= 10) {
+                        std::cout << "\n[WARNING] 10 consecutive failures - checking connection...\n";
+                        if (!conn.ensure_connected()) {
+                            std::cerr << "[ERROR] Cannot reconnect, aborting.\n";
+                            goto test_complete;  // Exit nested loops
+                        }
+                        consecutive_failures = 0;
+                    }
+                }
                 
                 // Record stats - by channel, by mode, and by combination
                 channel_stats[channel.name].record(passed, ber);
@@ -700,6 +767,7 @@ int main(int argc, char* argv[]) {
             if (steady_clock::now() >= end_time) break;
         }
     }
+    test_complete:
     
     auto total_elapsed = duration_cast<seconds>(steady_clock::now() - start_time).count();
     
