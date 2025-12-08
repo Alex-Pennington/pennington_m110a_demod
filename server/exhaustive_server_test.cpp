@@ -362,23 +362,38 @@ bool run_single_test(ServerConnection& conn,
                      double& ber_out) {
     ber_out = 1.0;
     
+    // Debug log - overwritten each test
+    std::ofstream dbg("debug_test.log");
+    dbg << "=== Test: " << mode.name << " + " << channel.name << " ===\n";
+    dbg << "Time: " << std::chrono::system_clock::now().time_since_epoch().count() << "\n\n";
+    
     // 1. Set mode
+    dbg << "[1] Setting mode: CMD:DATA RATE:" << mode.cmd << "\n";
     std::string resp = conn.send_command("CMD:DATA RATE:" + mode.cmd);
+    dbg << "    Response: " << resp << "\n";
     if (resp.find("OK:") == std::string::npos) {
+        dbg << "    FAIL: No OK in response\n";
+        dbg.close();
         return false;
     }
     
     // 2. Enable recording
+    dbg << "[2] Enable recording\n";
     conn.send_command("CMD:RECORD TX:ON");
     conn.send_command("CMD:RECORD PREFIX:" + mode.name + "_" + channel.name);
     
     // 3. Send test data
+    dbg << "[3] Sending " << test_data.size() << " bytes of test data\n";
     conn.send_data(test_data);
     
     // 4. Trigger TX
+    dbg << "[4] Triggering TX (timeout: " << (mode.tx_time_ms + 2000) << "ms)\n";
     conn.last_pcm_file.clear();
     resp = conn.send_command("CMD:SENDBUFFER", mode.tx_time_ms + 2000);
+    dbg << "    Response: " << resp << "\n";
     if (resp.find("OK:") == std::string::npos) {
+        dbg << "    FAIL: TX did not complete\n";
+        dbg.close();
         return false;
     }
     
@@ -387,21 +402,28 @@ bool run_single_test(ServerConnection& conn,
     
     // 5. Get PCM filename
     std::string pcm_file = conn.last_pcm_file;
+    dbg << "[5] PCM file: " << (pcm_file.empty() ? "(empty)" : pcm_file) << "\n";
     if (pcm_file.empty()) {
-        // Try to find it in tx_pcm_out
+        dbg << "    FAIL: No PCM file received\n";
+        dbg.close();
         return false;
     }
     
     // 6. Configure channel
+    dbg << "[6] Configuring channel: " << (channel.setup_cmd.empty() ? "clean" : channel.setup_cmd) << "\n";
     conn.send_command("CMD:CHANNEL OFF");  // Reset first
     if (!channel.setup_cmd.empty()) {
         resp = conn.send_command(channel.setup_cmd);
+        dbg << "    Response: " << resp << "\n";
         if (resp.find("OK:") == std::string::npos) {
+            dbg << "    FAIL: Channel config failed\n";
+            dbg.close();
             return false;
         }
     }
     
     // 7. Inject PCM for decode - send command and wait for COMPLETE
+    dbg << "[7] Injecting PCM: " << pcm_file << "\n";
     {
         std::string full_cmd = "CMD:RXAUDIOINJECT:" + pcm_file + "\n";
         send(conn.control_sock, full_cmd.c_str(), (int)full_cmd.length(), 0);
@@ -425,29 +447,41 @@ bool run_single_test(ServerConnection& conn,
             }
             
             if (!line.empty()) {
+                dbg << "    RX: " << line << "\n";
                 if (line.find("RXAUDIOINJECT:COMPLETE") != std::string::npos) {
                     got_complete = true;
                     break;
                 }
                 if (line.find("ERROR:") != std::string::npos) {
+                    dbg << "    FAIL: Error during inject\n";
+                    dbg.close();
                     return false;
                 }
             }
         }
         
         if (!got_complete) {
+            dbg << "    FAIL: Timeout waiting for COMPLETE\n";
+            dbg.close();
             return false;
         }
     }
     
     // 8. Receive decoded data (should already be in TCP buffer)
+    dbg << "[8] Receiving decoded data\n";
     std::vector<uint8_t> rx_data = conn.receive_data(2000);
+    dbg << "    Received: " << rx_data.size() << " bytes\n";
     
     // 9. Calculate BER
     ber_out = calculate_ber(test_data, rx_data);
+    dbg << "[9] BER: " << ber_out << " (threshold: " << channel.expected_ber_threshold << ")\n";
     
     // 10. Turn off channel sim
     conn.send_command("CMD:CHANNEL OFF");
+    
+    bool passed = ber_out <= channel.expected_ber_threshold;
+    dbg << "[10] Result: " << (passed ? "PASS" : "FAIL") << "\n";
+    dbg.close();
     
     return ber_out <= channel.expected_ber_threshold;
 }
@@ -693,7 +727,11 @@ int main(int argc, char* argv[]) {
         // Check connection health at start of each iteration
         if (!conn.ensure_connected()) {
             std::cerr << "\n[ERROR] Cannot reconnect to server, aborting.\n";
-            break;
+            // Generate partial report before exit
+            generate_report(report_file, 
+                duration_cast<seconds>(steady_clock::now() - start_time).count(),
+                iteration, total_tests);
+            std::exit(1);
         }
         
         auto now = steady_clock::now();
@@ -748,7 +786,11 @@ int main(int argc, char* argv[]) {
                         std::cout << "\n[WARNING] 10 consecutive failures - checking connection...\n";
                         if (!conn.ensure_connected()) {
                             std::cerr << "[ERROR] Cannot reconnect, aborting.\n";
-                            goto test_complete;  // Exit nested loops
+                            // Generate partial report before exit
+                            generate_report(report_file, 
+                                duration_cast<seconds>(steady_clock::now() - start_time).count(),
+                                iteration, total_tests);
+                            std::exit(1);
                         }
                         consecutive_failures = 0;
                     }
@@ -767,7 +809,6 @@ int main(int argc, char* argv[]) {
             if (steady_clock::now() >= end_time) break;
         }
     }
-    test_complete:
     
     auto total_elapsed = duration_cast<seconds>(steady_clock::now() - start_time).count();
     
