@@ -9,11 +9,15 @@
 namespace m110a {
 
 /**
- * MIL-STD-188-110A Scrambler/Descrambler (7-bit version)
+ * MIL-STD-188-110A Scrambler/Descrambler
  * 
- * Polynomial: 1 + x^-6 + x^-7
+ * Implementation based on MIL-STD-188-110A Appendix C:
+ *   Section C.3.4: Scrambler
+ *   Figure C-4: Scrambler Block Diagram
  * 
- * This is a 7-bit LFSR that produces a pseudo-random sequence.
+ * Polynomial: 1 + x^-6 + x^-7 (7-bit LFSR)
+ * 
+ * This 7-bit LFSR produces a pseudo-random sequence.
  * For 8-PSK, we clock it 3 times to get a tribit (3 bits) which
  * maps to one of 8 phase increments.
  * 

@@ -4,7 +4,11 @@
  * Extracts D1/D2 mode identification sequences from preamble symbols
  * and looks up the corresponding data mode.
  * 
- * Per MIL-STD-188-110A preamble structure:
+ * Implementation based on MIL-STD-188-110A Appendix C:
+ *   Section C.5.2.2: Preamble Structure
+ *   Table C-VI: D1/D2 Pattern Assignments
+ * 
+ * Preamble structure (per empirical verification):
  *   Frame 1: symbols 288-383 contain D1 (96 symbols)
  *   Frame 2: symbols 0-95 contain D2 (96 symbols)
  */

@@ -10,10 +10,13 @@
 namespace m110a {
 
 /**
- * Block Interleaver/Deinterleaver for M110A
+ * Block Interleaver/Deinterleaver for MIL-STD-188-110A
  * 
- * M110A uses a block interleaver to spread burst errors across
- * the codeword, making them easier for the Viterbi decoder to correct.
+ * Implementation based on MIL-STD-188-110A Appendix C:
+ *   Section C.3.5: Interleaver
+ * 
+ * Block interleaver spreads burst errors across the codeword,
+ * making them easier for the Viterbi decoder to correct.
  * 
  * Interleave modes:
  *   ZERO:  No interleaving

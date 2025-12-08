@@ -4,6 +4,10 @@
 /**
  * MIL-STD-188-110A Preamble Encoder/Decoder
  * 
+ * Implementation based on MIL-STD-188-110A Appendix C:
+ *   Section C.5.2: Preamble Structure and Encoding
+ *   Section C.5.2.2: Preamble Symbol Sequence
+ * 
  * Preamble structure (all 8PSK at mode's symbol rate):
  *   - 288 common symbols: Known scrambled pattern (sync)
  *   - 64 mode symbols: Mode ID with repetition coding

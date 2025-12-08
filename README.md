@@ -276,11 +276,14 @@ Probe: 16 symbols (channel estimation)
 
 ## MS-DMT Compatibility
 
-Tested against MS-DMT v3.00.2.22 reference implementation:
+Tested for interoperability with MS-DMT v3.00.2.22 reference implementation:
 - All 10 standard modes verified (M150-M2400, short and long interleave)
-- Reference samples included in `refrence_pcm/` directory
-- Known message: "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890"
+- Reference test samples included in `refrence_pcm/` directory for validation
+- Known test message: "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890"
 - Compatible TCP/IP server interface on ports 4998 (data), 4999 (control), 5000 (UDP discovery)
+
+Note: This implementation was developed independently from the MIL-STD-188-110A specification.
+MS-DMT compatibility is for interoperability testing only.
 
 ## Documentation
 
@@ -381,13 +384,14 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 
 ## References
 
-- MIL-STD-188-110A: Interoperability and Performance Standards for Data Modems
+- MIL-STD-188-110A: Interoperability and Performance Standards for Data Modems (primary specification)
 - MIL-STD-188-110B/C: Updated versions (partial compatibility)
 - STANAG 4539: NATO equivalent standard
+- MS-DMT v3.00.2.22: Used for interoperability validation
 
 ## Acknowledgments
 
-- MS-DMT project for reference implementation and test samples
+- U.S. Department of Defense for the MIL-STD-188-110A specification
 - GNU Radio community for DSP insights
 - Fldigi project for protocol documentation
 

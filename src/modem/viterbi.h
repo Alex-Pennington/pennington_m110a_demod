@@ -13,8 +13,13 @@
 namespace m110a {
 
 /**
- * Convolutional Encoder (K=7, rate 1/2)
+ * Convolutional Encoder and Viterbi Decoder
  * 
+ * Implementation based on MIL-STD-188-110A Appendix C:
+ *   Section C.3.3: Convolutional Encoder
+ *   Table C-III: Encoder Polynomials
+ * 
+ * Encoder: K=7, rate 1/2
  * Generator polynomials (octal):
  *   G1 = 155 (0x6D) = 1101101
  *   G2 = 117 (0x4F) = 1001111
