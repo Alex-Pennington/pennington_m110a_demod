@@ -194,6 +194,7 @@ ProgressiveResult run_progressive_tests(ITestBackend& backend, const ModeInfo& m
     std::cout << "\n=== Progressive Tests for " << mode.name << " ===\n";
     
     if (test_snr) {
+        backend.reset_state();  // Ensure consistent RNG state
         std::cout << "SNR Sensitivity:\n";
         result.snr_limit_db = run_progressive_snr_test(backend, mode, test_data);
         result.snr_tested = true;
@@ -201,6 +202,7 @@ ProgressiveResult run_progressive_tests(ITestBackend& backend, const ModeInfo& m
     }
     
     if (test_freq) {
+        backend.reset_state();  // Ensure consistent RNG state
         std::cout << "Frequency Offset Tolerance:\n";
         result.freq_offset_limit_hz = run_progressive_freq_test(backend, mode, test_data);
         result.freq_tested = true;
@@ -208,6 +210,7 @@ ProgressiveResult run_progressive_tests(ITestBackend& backend, const ModeInfo& m
     }
     
     if (test_multipath) {
+        backend.reset_state();  // Ensure consistent RNG state
         std::cout << "Multipath Tolerance:\n";
         result.multipath_limit_samples = run_progressive_multipath_test(backend, mode, test_data);
         result.multipath_tested = true;

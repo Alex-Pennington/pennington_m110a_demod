@@ -85,6 +85,10 @@ public:
     std::string backend_name() const override {
         return "Direct API";
     }
+    
+    void reset_state() override {
+        rng_.seed(42);  // Reset to consistent state
+    }
 
 private:
     std::mt19937 rng_;

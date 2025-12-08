@@ -325,6 +325,9 @@ public:
         return true; 
     }
     
+    // Optional: Reset backend state (reseed RNG, clear caches, etc.)
+    virtual void reset_state() {}
+    
     // Backend name for reporting
     virtual std::string backend_name() const = 0;
 };
