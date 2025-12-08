@@ -1,6 +1,6 @@
 # MIL-STD-188-110A HF Modem
 
-A complete software implementation of the MIL-STD-188-110A serial-tone HF data modem standard, supporting all 11 data modes from 75 bps to 4800 bps with advanced equalization and turbo processing.
+A high-performance implementation of the MIL-STD-188-110A serial-tone HF data modem standard, supporting all 11 data modes from 75 bps to 4800 bps with advanced equalization, turbo processing, and comprehensive testing infrastructure.
 
 ## Features
 
@@ -40,6 +40,9 @@ Seven equalizer implementations for different channel conditions:
 - **Adaptive MLSE**: Channel length estimation and tracking
 - **Automatic Mode Detection**: Preamble correlation with D1/D2 decoding
 - **Frequency Offset Compensation**: ±10 Hz acquisition range
+- **Parallel Test Execution**: Multi-threaded test harness with up to 16 threads
+- **Web-Based GUI**: Interactive test interface at `http://localhost:8080`
+- **MS-DMT Compatible Server**: Network interface on TCP ports 4998/4999/5000
 
 ## Architecture
 
@@ -64,16 +67,17 @@ Seven equalizer implementations for different channel conditions:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Directory Structure
+## Project Structure
 
 ```
-m110a_demod/
-├── api/                    # High-level modem API
+pennington_m110a_demod/
+├── api/                    # Public API headers
 │   ├── modem.h            # Main include
 │   ├── modem_rx.cpp/h     # Receiver implementation
 │   ├── modem_tx.cpp/h     # Transmitter implementation
-│   └── modem_config.h     # Configuration structures
-├── src/
+│   ├── modem_config.h     # Configuration structures
+│   └── channel_sim.h      # Channel simulation
+├── src/                    # Core modem implementation
 │   ├── common/            # Shared types and constants
 │   ├── dsp/               # DSP primitives (NCO, filters, AGC)
 │   ├── equalizer/         # DFE, MLSE, Turbo equalizers
@@ -81,38 +85,75 @@ m110a_demod/
 │   ├── m110a/             # Protocol-specific (preamble, modes)
 │   ├── modem/             # Codec chain (Viterbi, interleaver)
 │   └── sync/              # Synchronization (timing, frequency)
-├── test/                  # Unit and integration tests
-├── examples/              # Usage examples
-├── tools/                 # Command-line utilities
+├── test/                  # Test suite and GUI
+│   ├── exhaustive_test_unified.cpp  # Main test executable
+│   ├── test_gui_server.cpp          # Web GUI server
+│   └── test_framework.h             # Test infrastructure
+├── server/                # TCP/IP server interface
+│   ├── msdmt_server.cpp   # MS-DMT compatible server
+│   └── main.cpp           # Server entry point
 ├── docs/                  # Documentation
-└── ref_pcm/               # MS-DMT reference samples
+├── refrence_pcm/          # MS-DMT reference test vectors
+└── build.ps1              # PowerShell build script
 ```
 
 ## Building
 
 ### Requirements
-- C++17 compatible compiler (GCC 8+, Clang 7+, MSVC 2019+)
-- CMake 3.16+ (optional)
+- **Compiler**: MSVC with C++17 support (Visual Studio 2019+)
+- **Build System**: PowerShell 5.1+ with build.ps1 script
+- **Runtime**: Windows x64
 
-### Quick Build (Header-Only Core)
-```cpp
-// Most components are header-only
-#include "api/modem.h"
+### Build All Components
+
+```powershell
+.\build.ps1 -Target all
 ```
 
-### CMake Build
-```bash
-mkdir build && cd build
-cmake .. -DBUILD_TESTS=ON -DBUILD_EXAMPLES=ON
-make -j$(nproc)
+Build targets:
+- `all` - Build all executables (modem, test suite, GUI, server)
+- `unified` - Test suite only (`exhaustive_test.exe`)
+- `gui` - Web GUI only (`test_gui.exe`)
+- `server` - Modem server only (`m110a_server.exe`)
+
+## Quick Start
+
+### Run Server & GUI
+
+```powershell
+# Start modem server (TCP ports 4998/4999/5000)
+.\server\m110a_server.exe
+
+# Start test GUI (opens browser to http://localhost:8080)
+.\test\test_gui.exe
 ```
 
-### Manual Compilation
-```bash
-g++ -std=c++17 -O3 -I src -o modem tools/m110a_modem.cpp src/io/pcm_file.cpp
+### Run Tests from Command Line
+
+```powershell
+# Single test
+.\test\exhaustive_test.exe --mode 2400S --eq DFE -n 1
+
+# Multiple modes and equalizers
+.\test\exhaustive_test.exe --modes 2400S,1200S,600L --eqs DFE,TURBO,NONE -n 5
+
+# Parallel execution with 4 threads
+.\test\exhaustive_test.exe --modes 2400S,1200L,600S --parallel 4 -n 10
+
+# Progressive test suite (all modes/equalizers)
+.\test\exhaustive_test.exe --progressive -n 50
+
+# Test with Server backend
+.\test\exhaustive_test.exe --mode 1200S --backend server --server-host localhost --server-port 4998 -n 1
 ```
 
 ## Usage
+
+### Direct API Usage
+
+## API Examples
+
+The following examples demonstrate the C++ API. See [api/README.md](api/README.md) for complete API documentation.
 
 ### Basic Transmission
 ```cpp
@@ -196,6 +237,17 @@ All modes verified with loopback testing and MS-DMT reference sample compatibili
 - CPU: Runs real-time on Raspberry Pi 4 for all modes
 - Latency: Mode-dependent (short interleave ~0.6s, long interleave ~4.8s)
 
+### Test Framework Performance
+
+Parallel test execution performance (Windows, 8-core CPU):
+- **Sequential**: ~42s for 22 tests
+- **Parallel (4 threads)**: ~11s for 22 tests (3.8x speedup)
+- **Bottleneck**: Modem `decode()` processing time
+
+Test backends:
+- **Direct API Backend**: In-process modem testing (supports parallel execution)
+- **Server Backend**: TCP/IP testing via MS-DMT compatible interface (sequential only)
+
 ## Protocol Details
 
 ### Frame Structure
@@ -226,59 +278,65 @@ Probe: 16 symbols (channel estimation)
 
 Tested against MS-DMT v3.00.2.22 reference implementation:
 - All 10 standard modes verified (M150-M2400, short and long interleave)
-- Reference samples included in `ref_pcm/` directory
+- Reference samples included in `refrence_pcm/` directory
 - Known message: "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890"
+- Compatible TCP/IP server interface on ports 4998 (data), 4999 (control), 5000 (UDP discovery)
 
 ## Documentation
 
-- `docs/API.md` - API reference
-- `docs/PROTOCOL.md` - MIL-STD-188-110A protocol details
-- `docs/EQUALIZERS.md` - Equalizer theory and usage
-- `docs/TURBO_EQUALIZATION.md` - Turbo processing details
-- `docs/RX_CHAIN.md` - Receiver signal flow
-- `docs/TX_CHAIN.md` - Transmitter signal flow
+- [API Documentation](api/README.md) - Public API reference
+- [Implementation Plan](docs/IMPLEMENTATION_PLAN.md) - Development roadmap
+- [Test Matrix](docs/M110A_MODES_AND_TEST_MATRIX.md) - Mode test coverage
+- [Project Status](docs/PROJECT_STATUS.md) - Current status and milestones
+- [Development Journal](docs/development_journal.md) - Session-by-session progress
+- [Protocol Details](docs/PROTOCOL.md) - MIL-STD-188-110A protocol specifics
+- [Equalizers](docs/EQUALIZERS.md) - Equalizer theory and usage
+- [RX Chain](docs/RX_CHAIN.md) - Receiver signal flow
+- [TX Chain](docs/TX_CHAIN.md) - Transmitter signal flow
 
 ## Testing
 
-### Run All Tests
-```bash
-# Build and run test suite
-cd build && ctest --output-on-failure
+### Web GUI Test Interface
+
+```powershell
+.\test\test_gui.exe
 ```
 
-### Test Individual Components
-```bash
-# Loopback test all modes
-./test/test_pcm_loopback
+Browser opens to `http://localhost:8080` with:
+- Multi-select mode and equalizer lists
+- Backend selection (Direct API or Server)
+- Parallel thread count (1-16 threads, Direct API only)
+- Test type (Standard or Progressive)
+- Real-time test output streaming
 
-# Turbo equalizer stress test
-./test/test_turbo_severe
+### Command Line Testing
 
-# MS-DMT reference sample test
-./test/test_msdmt_e2e
+```powershell
+# Run all tests
+.\test\exhaustive_test.exe --progressive -n 100
+
+# Specific mode and equalizer
+.\test\exhaustive_test.exe --mode 1200L --eq TURBO -n 10
+
+# Multiple configurations in parallel
+.\test\exhaustive_test.exe --modes 2400S,1200S,600S --eqs DFE,TURBO --parallel 4 -n 20
 ```
 
-## Examples
+### Test Backends
 
-See `examples/` directory:
-- `simple_loopback.cpp` - Basic TX/RX demonstration
-- `auto_detect.cpp` - Automatic mode detection
-- `channel_test.cpp` - Testing with simulated channels
-- `file_demod.cpp` - Demodulate from WAV/PCM file
+**Direct API Backend** (default):
+- In-process modem testing
+- Supports parallel execution
+- Faster execution
+- Full control over test parameters
 
-## Command Line Tools
+**Server Backend**:
+- Tests via TCP/IP (MS-DMT compatible)
+- Validates server interface
+- Sequential execution only
+- Requires `m110a_server.exe` running
 
-### m110a_modem
-```bash
-# Transmit
-./m110a_modem tx --mode 2400S --input data.bin --output signal.wav
-
-# Receive  
-./m110a_modem rx --input signal.wav --output decoded.bin
-
-# Loopback test
-./m110a_modem test --mode 1200L --snr 10
-```
+## API Examples
 
 ## Development History
 
@@ -289,13 +347,22 @@ This implementation was developed over 22+ sessions, progressing through:
 4. RLS adaptive filtering
 5. Turbo equalization with SISO Viterbi decoder
 6. MS-DMT compatibility fixes
+7. Parallel test execution framework
+8. Web-based test GUI
+
+## Version
+
+Current version: **1.2.0+build.57** (turbo branch)
+
+See [VERSION_ITERATION_INSTRUCTIONS.md](docs/VERSION_ITERATION_INSTRUCTIONS.md) for versioning details.
 
 ## Known Limitations
 
 - M75 (75 bps Walsh) mode: Basic implementation, may need tuning for weak signals
 - No ALE (Automatic Link Establishment) integration
 - Single-channel only (no diversity combining)
-- No built-in audio device interface (file I/O only)
+- File I/O based (no real-time audio device interface in current build)
+- Windows-focused build system (PowerShell script)
 
 ## Contributing
 
@@ -305,10 +372,12 @@ Contributions welcome! Areas of interest:
 - Real-time audio interface
 - Performance optimization
 - Additional test vectors
+- Cross-platform build support (CMake)
+- Linux/macOS compatibility
 
 ## License
 
-[Add your license here - GPLv3 recommended for compatibility with similar projects]
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
 ## References
 
@@ -321,3 +390,9 @@ Contributions welcome! Areas of interest:
 - MS-DMT project for reference implementation and test samples
 - GNU Radio community for DSP insights
 - Fldigi project for protocol documentation
+
+## Repository
+
+- GitHub: [pennington_m110a_demod](https://github.com/Alex-Pennington/pennington_m110a_demod)
+- Branch: `turbo` (active development)
+- Default branch: `master`
