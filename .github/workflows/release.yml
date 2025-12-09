@@ -1,0 +1,105 @@
+name: Build and Release with Attestation
+
+on:
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Version tag (e.g., v1.2.0-build148)'
+        required: true
+        default: 'v1.2.0'
+  # Trigger on version tags
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup MinGW
+        uses: egor-tensin/setup-mingw@v2
+        with:
+          platform: x64
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          # Build all components
+          ./build.ps1 -Target release
+          
+          # List what was built
+          Get-ChildItem -Path . -Filter "M110A_Modem_*.zip" | ForEach-Object {
+            Write-Host "Built: $($_.Name) ($([math]::Round($_.Length/1MB, 2)) MB)"
+          }
+
+      - name: Find Release Artifact
+        id: find_artifact
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path . -Filter "M110A_Modem_*.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          $sha = Get-ChildItem -Path . -Filter "M110A_Modem_*.SHA256.txt" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          
+          echo "ZIP_FILE=$($zip.Name)" >> $env:GITHUB_OUTPUT
+          echo "ZIP_PATH=$($zip.FullName)" >> $env:GITHUB_OUTPUT
+          echo "SHA_FILE=$($sha.Name)" >> $env:GITHUB_OUTPUT
+          echo "SHA_PATH=$($sha.FullName)" >> $env:GITHUB_OUTPUT
+          
+          Write-Host "Release artifact: $($zip.Name)"
+          Write-Host "Checksum file: $($sha.Name)"
+
+      - name: Generate Artifact Attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ steps.find_artifact.outputs.ZIP_PATH }}
+
+      - name: Determine Version Tag
+        id: version
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.version_tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          echo "TAG=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Release tag: $tag"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: M110A Modem ${{ steps.version.outputs.TAG }}
+          body: |
+            ## M110A MIL-STD-110A Modem Release
+            
+            ### Verification
+            This release includes cryptographic attestation. Verify authenticity with:
+            ```
+            gh attestation verify ${{ steps.find_artifact.outputs.ZIP_FILE }} --owner Alex-Pennington
+            ```
+            
+            ### SHA256 Checksum
+            See `${{ steps.find_artifact.outputs.SHA_FILE }}` for file checksums.
+            
+            ### Contents
+            - `m110a_server.exe` - TCP/IP modem server
+            - `test_gui.exe` - Web-based test interface
+            - `exhaustive_test.exe` - Comprehensive test suite
+            - Documentation and reference PCM files
+          files: |
+            ${{ steps.find_artifact.outputs.ZIP_PATH }}
+            ${{ steps.find_artifact.outputs.SHA_PATH }}
+          draft: false
+          prerelease: false
