@@ -33,17 +33,22 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: mingw-w64-x86_64-gcc
+          install: mingw-w64-x86_64-gcc git
+
+      - name: Get Build Info
+        id: buildinfo
+        shell: pwsh
+        run: |
+          $buildNum = (git rev-list --count HEAD)
+          $commitHash = (git rev-parse --short HEAD)
+          echo "BUILD_NUM=$buildNum" >> $env:GITHUB_OUTPUT
+          echo "COMMIT_HASH=$commitHash" >> $env:GITHUB_OUTPUT
+          Write-Host "Build: $buildNum, Commit: $commitHash"
 
       - name: Build Release
         shell: msys2 {0}
         run: |
-          # Build all components using the build script logic
-          VERSION=$(grep -oP 'Version = "\K[^"]+' build.ps1 || echo "1.2.0")
-          BUILD_NUM=$(git rev-list --count HEAD)
-          COMMIT_HASH=$(git rev-parse --short HEAD)
-          
-          echo "Building M110A Modem v${VERSION}+build.${BUILD_NUM}.${COMMIT_HASH}"
+          echo "Building M110A Modem v1.2.0+build.${{ steps.buildinfo.outputs.BUILD_NUM }}.${{ steps.buildinfo.outputs.COMMIT_HASH }}"
           
           # Build server
           g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES \
@@ -71,9 +76,8 @@ jobs:
       - name: Create Release Package
         shell: pwsh
         run: |
-          # Get version info
-          $buildNum = (git rev-list --count HEAD)
-          $commitHash = (git rev-parse --short HEAD)
+          # Get version info from earlier step
+          $buildNum = "${{ steps.buildinfo.outputs.BUILD_NUM }}"
           $version = "1.2.0"
           
           # Create release directory
