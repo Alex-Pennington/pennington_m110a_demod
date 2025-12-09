@@ -15,8 +15,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
-  attestations: write
 
 jobs:
   build-and-release:
@@ -119,11 +117,6 @@ jobs:
           echo "SHA_FILE=M110A_Modem_v${version}_Build${buildNum}.SHA256.txt" >> $env:GITHUB_OUTPUT
         id: package
 
-      - name: Generate Artifact Attestation
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: ${{ steps.package.outputs.ZIP_FILE }}
-
       - name: Determine Version Tag
         id: version
         shell: pwsh
@@ -145,13 +138,14 @@ jobs:
             ## M110A MIL-STD-110A Modem Release
             
             ### Verification
-            This release includes cryptographic attestation. Verify authenticity with:
-            ```
-            gh attestation verify ${{ steps.package.outputs.ZIP_FILE }} --owner Alex-Pennington
-            ```
+            Verify file integrity using the SHA256 checksum file.
             
-            ### SHA256 Checksum
-            See `${{ steps.package.outputs.SHA_FILE }}` for file checksums.
+            **Note:** Artifact attestation requires a public repository.
+            For private repos, verify using the SHA256 checksum:
+            ```powershell
+            (Get-FileHash ${{ steps.package.outputs.ZIP_FILE }} -Algorithm SHA256).Hash
+            ```
+            Compare with the hash in `${{ steps.package.outputs.SHA_FILE }}`
             
             ### Contents
             - `m110a_server.exe` - TCP/IP modem server

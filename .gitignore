@@ -14,3 +14,9 @@ rx_pcm_in/
 .vscode/
 *.suo
 *.user
+
+# GPG signing (keep private key secret!)
+gpg/private_key.asc
+gpg/gnupg/
+gpg/*.exe
+gpg/GnuPG/
