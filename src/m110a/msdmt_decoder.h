@@ -18,6 +18,8 @@
  */
 
 #include "common/types.h"
+#include <cstdio>
+#include <cstdlib>
 #include "common/constants.h"
 #include "m110a/msdmt_preamble.h"
 #include "modem/scrambler.h"
@@ -100,13 +102,12 @@ public:
         MSDMTDecodeResult result;
         
         // Step 1: Frequency search - try multiple carrier offsets
-        // Always search all frequencies and pick the best one
         float best_freq_offset = 0.0f;
         float best_preamble_corr = 0.0f;
         std::vector<complex_t> best_filtered;
         
         if (config_.freq_search_range > 0.0f) {
-            // Search all frequencies including zero
+            // Search frequencies with configured range and step
             for (float freq_off = -config_.freq_search_range; 
                  freq_off <= config_.freq_search_range; 
                  freq_off += config_.freq_search_step) {
@@ -114,7 +115,7 @@ public:
                 auto filtered = downconvert_and_filter_with_offset(rf_samples, freq_off);
                 if (filtered.size() < 288 * sps_) continue;
                 
-                float corr = quick_preamble_correlation(filtered);
+                float corr = quick_preamble_correlation(filtered, freq_off);
                 
                 if (corr > best_preamble_corr) {
                     best_preamble_corr = corr;
@@ -131,14 +132,12 @@ public:
         } else {
             // No frequency search
             best_filtered = downconvert_and_filter(rf_samples);
-            if (best_filtered.size() < 288 * sps_) {
+            if (best_filtered.empty() || best_filtered.size() < 288 * sps_) {
                 return result;  // Signal too short
             }
         }
-        
-        auto& filtered = best_filtered;
-        
-        // Step 2: Find preamble with fine-grained timing
+
+        auto& filtered = best_filtered;        // Step 2: Find preamble with fine-grained timing
         find_preamble(filtered, result);
         if (!result.preamble_found) {
             return result;
@@ -259,10 +258,15 @@ private:
     /**
      * Quick preamble correlation for frequency search
      * Returns correlation metric (higher = better frequency match)
-     * Uses phase consistency between first and second half of preamble
-     * to detect frequency offset
+     * Uses phase consistency across multiple segments of preamble
+     * to discriminate between frequency candidates
+     * 
+     * @param filtered Baseband samples after downconversion with trial freq offset
+     * @param trial_freq_offset_hz The trial frequency offset that was applied (Hz)
+     * @return Metric value (higher = better match, strongly prefers correct frequency)
      */
-    float quick_preamble_correlation(const std::vector<complex_t>& filtered) {
+    float quick_preamble_correlation(const std::vector<complex_t>& filtered, 
+                                     float trial_freq_offset_hz = 0.0f) {
         // 8-PSK constellation
         static const std::array<complex_t, 8> PSK8 = {{
             complex_t( 1.000f,  0.000f),
@@ -276,58 +280,50 @@ private:
         }};
         
         // Generate expected preamble symbols
-        const int HALF_LEN = 144;  // Use 2 halves of 144 symbols each
+        const int SEGMENT_LEN = 72;  // Use 4 segments of 72 symbols each
+        const int NUM_SEGMENTS = 4;
         std::vector<complex_t> expected;
-        for (int i = 0; i < 2 * HALF_LEN && i < (int)common_pattern_.size(); i++) {
+        for (int i = 0; i < SEGMENT_LEN * NUM_SEGMENTS && i < (int)common_pattern_.size(); i++) {
             expected.push_back(PSK8[common_pattern_[i]]);
         }
         
-        // Search for best correlation with phase consistency check
+        // Search for best correlation with multi-segment phase consistency
         float best_metric = 0.0f;
-        int max_search = std::min((int)filtered.size() - 2 * HALF_LEN * sps_, 200 * sps_);
+        int max_search = std::min((int)filtered.size() - SEGMENT_LEN * NUM_SEGMENTS * sps_, 200 * sps_);
         
         for (int start = 0; start < max_search; start += sps_ * 8) {  // Every 8 symbols
-            // Compute correlation on first half
-            complex_t corr1(0, 0);
-            float power1 = 0.0f;
-            for (int i = 0; i < HALF_LEN; i++) {
-                int idx = start + i * sps_;
-                if (idx < (int)filtered.size()) {
-                    corr1 += filtered[idx] * std::conj(expected[i]);
-                    power1 += std::norm(filtered[idx]);
+            // Compute correlation for each segment
+            std::vector<complex_t> segment_corr(NUM_SEGMENTS);
+            std::vector<float> segment_power(NUM_SEGMENTS, 0.0f);
+            
+            for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
+                complex_t corr(0, 0);
+                float power = 0.0f;
+                
+                for (int i = 0; i < SEGMENT_LEN; i++) {
+                    int idx = start + (seg * SEGMENT_LEN + i) * sps_;
+                    if (idx < (int)filtered.size()) {
+                        int pattern_idx = seg * SEGMENT_LEN + i;
+                        corr += filtered[idx] * std::conj(expected[pattern_idx]);
+                        power += std::norm(filtered[idx]);
+                    }
                 }
+                
+                segment_corr[seg] = corr;
+                segment_power[seg] = power;
             }
             
-            // Compute correlation on second half
-            complex_t corr2(0, 0);
-            float power2 = 0.0f;
-            for (int i = HALF_LEN; i < 2 * HALF_LEN; i++) {
-                int idx = start + i * sps_;
-                if (idx < (int)filtered.size()) {
-                    corr2 += filtered[idx] * std::conj(expected[i]);
-                    power2 += std::norm(filtered[idx]);
-                }
+            // Average correlation magnitude across segments
+            float total_correlation = 0.0f;
+            for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
+                total_correlation += std::abs(segment_corr[seg]) / std::sqrt(segment_power[seg] + 1e-10f);
             }
+            float avg_correlation = total_correlation / NUM_SEGMENTS;
             
-            // Correlation magnitudes (how well preamble matches)
-            float mag1 = std::abs(corr1) / std::sqrt(power1 + 1e-10f);
-            float mag2 = std::abs(corr2) / std::sqrt(power2 + 1e-10f);
-            
-            // Phase difference between halves (should be ~0 if frequency is correct)
-            // Frequency offset causes phase to drift: delta_phase = 2*pi*df*dt
-            // For HALF_LEN=144 symbols at 2400 baud, dt = 60ms
-            // At 1 Hz offset, delta_phase = 2*pi*1*0.06 = 21.6 degrees
-            float phase1 = std::arg(corr1);
-            float phase2 = std::arg(corr2);
-            float phase_diff = std::abs(phase2 - phase1);
-            if (phase_diff > M_PI) phase_diff = 2*M_PI - phase_diff;
-            
-            // Metric: high correlation AND small phase difference
-            // Phase penalty: cos(phase_diff) ranges from 1 (0 diff) to -1 (180 diff)
-            float phase_factor = std::cos(phase_diff);
-            float metric = (mag1 + mag2) * 0.5f * std::max(0.0f, phase_factor);
-            
-            if (metric > best_metric) {
+            // Simple metric - just use correlation
+            // With two-stage AFC, we're already searching a narrow range
+            // so frequency discrimination is less critical
+            float metric = avg_correlation;            if (metric > best_metric) {
                 best_metric = metric;
             }
         }

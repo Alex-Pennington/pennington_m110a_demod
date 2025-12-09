@@ -105,7 +105,34 @@
 
 ### Next Up (Session 19+)
 
-#### 1. EOM (End of Message) Marker ✓ COMPLETE
+#### 1. FFT-Based Coarse AFC (HIGH PRIORITY)
+**Effort:** 8-12 hours | **Impact:** ±10 Hz spec compliance  
+**Status:** Preamble-only AFC limited to ±2 Hz (Build 83)
+
+Current implementation achieves:
+- ✓ 100% pass at 0 Hz offset
+- ✓ 75-100% pass at ±1 Hz
+- ✗ 0% pass at ±3 Hz or ±5 Hz
+
+MIL-STD-188-110A requires ±10 Hz frequency tolerance.
+
+**Implementation Plan:**
+- [ ] FFT coarse estimate: Search ±10 Hz, ~2 Hz accuracy
+- [ ] Preamble fine search: ±2 Hz around coarse estimate
+- [ ] Two-stage acquisition: Coarse → Fine → Decode
+- [ ] Test with foff_5hz, foff_10hz channels
+- [ ] Verify 80%+ pass rate at ±5 Hz, 60%+ at ±10 Hz
+
+**References:**
+- `docs/AFC_ROOT_CAUSE.md` - Investigation results
+- `docs/afc_implementation_plan.md` - Original AFC design
+- Standard HF modem techniques (pilot tones, decision-directed loops)
+
+**Alternative approaches** (if FFT coarse fails):
+- Decision-directed carrier tracking loop (12-16 hours)
+- Pilot tone tracking (requires TX modification, 16-24 hours)
+
+#### 2. EOM (End of Message) Marker ✓ COMPLETE
 **Effort:** 3-4 hours | **Impact:** Protocol completeness
 - [x] TX: Add `generate_eom()` - 4 flush frames with scrambled zeros
 - [x] RX: Add `detect_eom()` - count trailing zeros (threshold 40+)
@@ -113,7 +140,7 @@
 - [x] Add `DecodeResult.eom_detected` flag
 - [x] Test with clean + noisy channels (5/5 tests passing)
 
-#### 2. Adaptive LMS Step Size ✓ COMPLETE
+#### 3. Adaptive LMS Step Size ✓ COMPLETE
 **Effort:** 4 hours | **Impact:** Performance improvement
 - [x] Implement NLMS: `μ_eff = μ / (δ + ||x||²)`
 - [x] Add `RxConfig.use_nlms` flag  

@@ -70,32 +70,45 @@ public:
         state_ = RxState::SEARCHING;
         DecodeResult result;
         
-        // Step 1: First pass - detect mode with default settings
-        MSDMTDecoderConfig detect_cfg;
-        detect_cfg.sample_rate = config_.sample_rate;
-        detect_cfg.carrier_freq = config_.carrier_freq;
-        detect_cfg.baud_rate = 2400.0f;
-        detect_cfg.freq_search_range = config_.freq_search_range;
-        detect_cfg.freq_search_step = 0.5f;  // 2 Hz steps
+        ModeId mode_id;
+        float detected_freq_offset = 0.0f;
         
-        MSDMTDecoder detector(detect_cfg);
-        auto detect_result = detector.decode(samples);
-        
-        // Check mode detection
-        if (detect_result.mode_name == "UNKNOWN" || detect_result.correlation < 0.5f) {
-            result.success = false;
-            result.error = Error(ErrorCode::RX_MODE_DETECT_FAILED, 
-                                "Mode detection failed (corr=" + 
-                                std::to_string(detect_result.correlation) + ")");
-            state_ = RxState::ERROR;
-            return result;
+        // Check if we should use known mode or auto-detect
+        if (config_.mode != Mode::AUTO) {
+            // Known mode - skip detection, use specified mode directly
+            mode_id = api_to_internal_mode(config_.mode);
+            result.mode = config_.mode;
+            state_ = RxState::RECEIVING;
+        } else {
+            // Auto mode - perform mode detection
+            // Step 1: First pass - detect mode with default settings
+            MSDMTDecoderConfig detect_cfg;
+            detect_cfg.sample_rate = config_.sample_rate;
+            detect_cfg.carrier_freq = config_.carrier_freq;
+            detect_cfg.baud_rate = 2400.0f;
+            detect_cfg.freq_search_range = config_.freq_search_range;
+            detect_cfg.freq_search_step = 0.5f;  // 2 Hz steps
+            
+            MSDMTDecoder detector(detect_cfg);
+            auto detect_result = detector.decode(samples);
+            
+            // Check mode detection
+            if (detect_result.mode_name == "UNKNOWN" || detect_result.correlation < 0.5f) {
+                result.success = false;
+                result.error = Error(ErrorCode::RX_MODE_DETECT_FAILED, 
+                                    "Mode detection failed (corr=" + 
+                                    std::to_string(detect_result.correlation) + ")");
+                state_ = RxState::ERROR;
+                return result;
+            }
+            
+            state_ = RxState::RECEIVING;
+            
+            // Convert mode name to ModeId
+            mode_id = string_to_mode_id(detect_result.mode_name);
+            result.mode = internal_to_api_mode(mode_id);
+            detected_freq_offset = detect_result.freq_offset_hz;
         }
-        
-        state_ = RxState::RECEIVING;
-        
-        // Convert mode name to ModeId
-        ModeId mode_id = string_to_mode_id(detect_result.mode_name);
-        result.mode = internal_to_api_mode(mode_id);
         
         // M75 modes not yet supported
         if (mode_id == ModeId::M75NS || mode_id == ModeId::M75NL) {
@@ -560,6 +573,25 @@ private:
             case ModeId::M2400L: return Mode::M2400_LONG;
             case ModeId::M4800S: return Mode::M4800_SHORT;
             default: return Mode::AUTO;
+        }
+    }
+    
+    static ModeId api_to_internal_mode(Mode mode) {
+        switch (mode) {
+            case Mode::M75_SHORT: return ModeId::M75NS;
+            case Mode::M75_LONG: return ModeId::M75NL;
+            case Mode::M150_SHORT: return ModeId::M150S;
+            case Mode::M150_LONG: return ModeId::M150L;
+            case Mode::M300_SHORT: return ModeId::M300S;
+            case Mode::M300_LONG: return ModeId::M300L;
+            case Mode::M600_SHORT: return ModeId::M600S;
+            case Mode::M600_LONG: return ModeId::M600L;
+            case Mode::M1200_SHORT: return ModeId::M1200S;
+            case Mode::M1200_LONG: return ModeId::M1200L;
+            case Mode::M2400_SHORT: return ModeId::M2400S;
+            case Mode::M2400_LONG: return ModeId::M2400L;
+            case Mode::M4800_SHORT: return ModeId::M4800S;
+            default: return ModeId::M2400S;  // Fallback to M2400S
         }
     }
     

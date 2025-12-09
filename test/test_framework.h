@@ -189,10 +189,10 @@ inline std::vector<ChannelCondition> get_standard_channels() {
         channels.push_back(c);
     }
     {
-        ChannelCondition c("poor_hf", "CMD:CHANNEL PRESET:POOR", 0.10);
-        c.snr_db = 15.0f;
+        ChannelCondition c("poor_hf", "CMD:CHANNEL PRESET:POOR", 0.10);  // 10% BER threshold
+        c.snr_db = 12.0f;
         c.multipath_delay_samples = 48;
-        c.freq_offset_hz = 3.0f;
+        c.freq_offset_hz = 5.0f;  // 5 Hz offset - tests AFC with known mode
         channels.push_back(c);
     }
     

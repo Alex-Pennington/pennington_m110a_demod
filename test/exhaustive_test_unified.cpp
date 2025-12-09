@@ -378,6 +378,7 @@ int main(int argc, char* argv[]) {
     std::string reference_dir = "../refrence_pcm";
     std::string equalizer = "DFE";  // Default equalizer
     int parallel_threads = 1;  // Number of parallel threads (1 = sequential)
+    bool use_auto_detect = false;  // Use auto-detection (default: known mode)
     
     // Helper to split comma-separated string
     auto split_csv = [](const std::string& s) -> std::vector<std::string> {
@@ -445,6 +446,8 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--ref-dir" && i + 1 < argc) {
             reference_dir = argv[++i];
             reference_mode = true;
+        } else if (arg == "--use-auto-detect") {
+            use_auto_detect = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << m110a::version_header() << "\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
@@ -478,7 +481,11 @@ int main(int argc, char* argv[]) {
             std::cout << "Reference Sample Test Options:\n";
             std::cout << "  --reference     Test MS-DMT reference samples for interoperability\n";
             std::cout << "  --ref           Short form of --reference\n";
-            std::cout << "  --ref-dir DIR   Reference sample directory (default: ../refrence_pcm)\n";
+            std::cout << "  --ref-dir DIR   Reference sample directory (default: ../refrence_pcm)\n\n";
+            std::cout << "Mode Detection Options:\n";
+            std::cout << "  --use-auto-detect  Use auto mode detection instead of known mode\n";
+            std::cout << "                     (slower, tests AFC+detection under stress)\n";
+            std::cout << "                     Default: known mode (faster, AFC-friendly)\n";
             return 0;
         }
     }
@@ -500,7 +507,7 @@ int main(int argc, char* argv[]) {
     if (use_server) {
         backend = std::make_unique<ServerBackend>(host, control_port, control_port - 1);
     } else {
-        backend = std::make_unique<DirectBackend>();
+        backend = std::make_unique<DirectBackend>(42, use_auto_detect);
     }
     
     // Print header
@@ -509,6 +516,7 @@ int main(int argc, char* argv[]) {
     std::cout << "==============================================\n";
     std::cout << m110a::build_info() << "\n";
     std::cout << "Backend: " << backend->backend_name() << "\n";
+    std::cout << "Mode Detection: " << (use_auto_detect ? "AUTO (tests AFC+detection)" : "KNOWN (AFC-friendly)") << "\n";
     
     // Build equalizer list (use eq_list if provided, else single equalizer)
     if (eq_list.empty()) {
@@ -762,16 +770,8 @@ int main(int argc, char* argv[]) {
     for (int iter = 0; iter < max_iterations; iter++) {
         for (const auto& eq : eq_list) {
             for (const auto& mode : modes) {
-                // Skip slow modes sometimes (only if we have multiple iterations)
-                if (max_iterations > 1) {
-                    if ((mode.cmd == "75S" || mode.cmd == "75L") && iter % 5 != 0) continue;
-                    if ((mode.cmd == "150L" || mode.cmd == "300L") && iter % 3 != 0) continue;
-                }
-                
                 for (const auto& channel : channels) {
-                    // Skip some channels sometimes (only if we have multiple iterations)
-                    if (max_iterations > 1 && iter % 2 != 0 && 
-                        (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
+                    // No skipping - this is EXHAUSTIVE testing
                     
                     TestJob job;
                     job.eq = eq;
@@ -842,16 +842,10 @@ int main(int argc, char* argv[]) {
                 backend->set_equalizer(eq);
                 
                 for (const auto& mode : modes) {
-                    // Skip slow modes sometimes (only if we have multiple iterations)
-                    if (max_iterations > 1) {
-                        if ((mode.cmd == "75S" || mode.cmd == "75L") && iteration % 5 != 0) continue;
-                        if ((mode.cmd == "150L" || mode.cmd == "300L") && iteration % 3 != 0) continue;
-                    }
+                    // No skipping - this is EXHAUSTIVE testing
                     
                     for (const auto& channel : channels) {
-                        // Skip some channels sometimes (only if we have multiple iterations)
-                        if (max_iterations > 1 && iteration % 2 != 0 && 
-                            (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
+                        // No skipping - this is EXHAUSTIVE testing
                         
                         auto now = steady_clock::now();
                         auto elapsed = (int)duration_cast<seconds>(now - start_time).count();

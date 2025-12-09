@@ -1141,17 +1141,11 @@ int main(int argc, char* argv[]) {
         std::cout << "\r[" << std::setw(3) << elapsed << "s] Iteration " << iteration << "/" << max_iterations
                   << " | Tests: " << total_tests << "   " << std::flush;
         
-        // Cycle through modes (skip slow modes on some iterations)
+        // Cycle through modes (EXHAUSTIVE - no skipping)
         for (const auto& mode : modes) {
-            // Skip very slow modes more often
-            if ((mode.cmd == "75S" || mode.cmd == "75L") && iteration % 5 != 0) continue;
-            if ((mode.cmd == "150L" || mode.cmd == "300L") && iteration % 3 != 0) continue;
-            
             // Cycle through channel conditions
             for (const auto& channel : channels) {
-                // Skip some channel conditions to save time
-                if (iteration % 2 != 0 && 
-                    (channel.name == "foff_5hz" || channel.name == "poor_hf")) continue;
+                // No skipping - this is EXHAUSTIVE testing
                 
                 // Progress update before each test
                 auto now = steady_clock::now();

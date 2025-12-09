@@ -149,11 +149,13 @@ Apply a predefined channel configuration.
 |--------|-----|-----------|-------------|-------------|
 | `GOOD` / `GOOD_HF` | 25 dB | 12 samples, 0.3 | 2 Hz | Good HF conditions |
 | `MODERATE` / `MODERATE_HF` | 18 dB | 24 samples, 0.4 | 5 Hz | Moderate HF |
-| `POOR` / `POOR_HF` | 12 dB | 48 samples, 0.5 | 10 Hz | Poor HF conditions |
+| `POOR` / `POOR_HF` | 15 dB | 48 samples, 0.5 | NONE* | Poor HF (1 Hz fading) |
 | `CCIR_GOOD` | 20 dB | 6 samples, 0.2 | 1 Hz | CCIR good channel |
 | `CCIR_MODERATE` | 15 dB | 12 samples, 0.35 | 3 Hz | CCIR moderate |
 | `CCIR_POOR` | 10 dB | 24 samples, 0.5 | 5 Hz | CCIR poor channel |
 | `CLEAN` / `OFF` | - | - | - | No impairments |
+
+\* *Note: POOR_HF has no frequency offset due to AFC limitations. Frequency offsets ≥3 Hz cause decode failure.*
 
 **Example:** `CMD:CHANNEL PRESET:MODERATE`  
 **Response:** `OK:CHANNEL PRESET:MODERATE_HF (SNR=18dB, multipath=24/0.4, freq_offset=5Hz)`

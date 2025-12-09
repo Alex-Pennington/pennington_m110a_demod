@@ -90,7 +90,11 @@ struct RxConfig {
     float carrier_freq = CARRIER_FREQ_DEFAULT;
     
     /// Carrier frequency search range (+/- Hz)
-    float freq_search_range = 10.0f;
+    // AFC search range (Hz) - searches from -range to +range
+    // Default: ±5 Hz (preamble-based AFC practical limit)
+    // Note: MIL-STD-188-110A spec requires ±10 Hz, but achieving this
+    // requires pilot tones or decision-directed tracking (future work)
+    float freq_search_range = 5.0f;
     
     /// Equalizer algorithm
     Equalizer equalizer = Equalizer::DFE;

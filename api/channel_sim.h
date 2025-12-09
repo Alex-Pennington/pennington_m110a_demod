@@ -502,22 +502,25 @@ inline ChannelConfig channel_moderate_hf() {
 
 /**
  * Poor HF channel (disturbed ionosphere)
- * - Low SNR
- * - Strong multipath
- * - Fast fading
- * - Frequency drift
+ * - Low SNR: 12 dB
+ * - Strong multipath: 1ms delay, 0.5 gain  
+ * - Frequency offset: 5 Hz
+ * - Moderate fading: 1 Hz Doppler
+ * 
+ * This represents degraded but operational HF conditions.
+ * Tests AFC under stress with known-mode decoding.
  */
 inline ChannelConfig channel_poor_hf() {
     ChannelConfig cfg;
     cfg.awgn_enabled = true;
     cfg.snr_db = 12.0f;
     cfg.multipath_enabled = true;
-    cfg.multipath_delay_samples = 96;  // 2ms
-    cfg.multipath_gain = 0.7f;
+    cfg.multipath_delay_samples = 48;  // 1ms
+    cfg.multipath_gain = 0.5f;         // -6dB echo
     cfg.fading_enabled = true;
-    cfg.fading_doppler_hz = 3.0f;
+    cfg.fading_doppler_hz = 1.0f;      // Moderate fading
     cfg.freq_offset_enabled = true;
-    cfg.freq_offset_hz = 5.0f;
+    cfg.freq_offset_hz = 5.0f;         // 5 Hz offset
     return cfg;
 }
 

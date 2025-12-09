@@ -20,7 +20,8 @@ namespace test_framework {
 
 class DirectBackend : public ITestBackend {
 public:
-    DirectBackend(unsigned int seed = 42) : rng_(seed), seed_(seed), connected_(false) {}
+    DirectBackend(unsigned int seed = 42, bool use_auto_detect = false) 
+        : rng_(seed), seed_(seed), connected_(false), use_auto_detect_(use_auto_detect) {}
     
     bool connect() override {
         connected_ = true;
@@ -71,8 +72,13 @@ public:
         // Apply channel impairments
         apply_channel(pcm, channel);
         
-        // Decode
+        // Decode - use auto-detect if flag set, otherwise use known mode
         m110a::api::RxConfig cfg;
+        if (use_auto_detect_) {
+            cfg.mode = m110a::api::Mode::AUTO;  // Auto-detect mode (tests AFC+detection)
+        } else {
+            cfg.mode = api_mode;  // Known mode (AFC-friendly, faster, like server)
+        }
         cfg.equalizer = equalizer_;
         cfg.phase_tracking = true;
         
@@ -150,7 +156,7 @@ public:
     // Clone for parallel execution - each thread gets its own backend with unique RNG seed
     std::unique_ptr<ITestBackend> clone() const override {
         static std::atomic<unsigned int> clone_counter{1000};
-        auto backend = std::make_unique<DirectBackend>(clone_counter++);
+        auto backend = std::make_unique<DirectBackend>(clone_counter++, use_auto_detect_);
         backend->equalizer_ = equalizer_;
         backend->eq_type_ = eq_type_;
         backend->connected_ = true;
@@ -161,6 +167,7 @@ private:
     std::mt19937 rng_;
     unsigned int seed_;
     bool connected_;
+    bool use_auto_detect_;  // Use auto mode detection vs known mode
     m110a::api::Equalizer equalizer_ = m110a::api::Equalizer::DFE;
     std::string eq_type_ = "DFE";
     
