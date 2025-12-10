@@ -260,6 +260,16 @@ $CXX = "g++"
 $CXXFLAGS = "-std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES"
 $LDFLAGS = "-static -lws2_32"
 
+# Common source files used by multiple targets
+$MODEM_SOURCES = @(
+    "api/modem_tx.cpp",
+    "api/modem_rx.cpp"
+)
+
+$PCM_SOURCES = @(
+    "src/io/pcm_file.cpp"
+)
+
 function Build-Server {
     Write-Host "`n=== Building Server ===" -ForegroundColor Yellow
     
@@ -269,10 +279,8 @@ function Build-Server {
     
     $sources = @(
         "server/main.cpp",
-        "server/brain_server.cpp",
-        "api/modem_tx.cpp",
-        "api/modem_rx.cpp"
-    )
+        "server/brain_server.cpp"
+    ) + $MODEM_SOURCES
     
     $cmd = "$CXX $CXXFLAGS -o server/m110a_server.exe $($sources -join ' ') $LDFLAGS"
     Write-Host $cmd -ForegroundColor DarkGray
@@ -305,11 +313,8 @@ function Build-UnifiedTest {
     Write-Host "`n=== Building Unified Exhaustive Test ===" -ForegroundColor Yellow
     
     $sources = @(
-        "test/exhaustive_test_unified.cpp",
-        "api/modem_tx.cpp",
-        "api/modem_rx.cpp",
-        "src/io/pcm_file.cpp"
-    )
+        "test/exhaustive_test_unified.cpp"
+    ) + $MODEM_SOURCES + $PCM_SOURCES
     
     $cmd = "$CXX $CXXFLAGS -o test/exhaustive_test.exe $($sources -join ' ') $LDFLAGS"
     Write-Host $cmd -ForegroundColor DarkGray
@@ -326,7 +331,12 @@ function Build-UnifiedTest {
 function Build-UnitTests {
     Write-Host "`n=== Building Unit Tests ===" -ForegroundColor Yellow
     
-    $cmd = "$CXX $CXXFLAGS -o test/test_channel_params.exe test/test_channel_params.cpp $LDFLAGS"
+    # Unit tests need modem API and PCM file support
+    $sources = @(
+        "test/test_channel_params.cpp"
+    ) + $MODEM_SOURCES + $PCM_SOURCES
+    
+    $cmd = "$CXX $CXXFLAGS -o test/test_channel_params.exe $($sources -join ' ') $LDFLAGS"
     Write-Host $cmd -ForegroundColor DarkGray
     
     Invoke-Expression $cmd
@@ -341,7 +351,16 @@ function Build-UnitTests {
 function Build-TestGui {
     Write-Host "`n=== Building Test GUI Server ===" -ForegroundColor Yellow
     
-    $cmd = "$CXX $CXXFLAGS -o test/test_gui.exe test/test_gui_server.cpp $LDFLAGS -lshell32"
+    # Test GUI is now in test/test_gui/ subdirectory (refactored modular structure)
+    $guiSource = "test/test_gui/main.cpp"
+    
+    # Check if refactored version exists, fallback to legacy if not
+    if (-not (Test-Path $guiSource)) {
+        $guiSource = "test/test_gui_server.cpp"
+        Write-Host "  Using legacy test_gui_server.cpp" -ForegroundColor DarkYellow
+    }
+    
+    $cmd = "$CXX $CXXFLAGS -o test/test_gui.exe $guiSource $LDFLAGS -lshell32"
     Write-Host $cmd -ForegroundColor DarkGray
     
     Invoke-Expression $cmd
