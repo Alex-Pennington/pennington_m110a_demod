@@ -28,12 +28,6 @@
 - License validation on startup
 - Parallel execution support
 
-✅ **license_gen.exe** (95 KB) - ADMIN ONLY
-- Hardware ID retrieval (--hwid)
-- License key generation
-- Checksum validation
-- Configurable expiration (1-3650 days)
-
 ### 2. Documentation
 
 ✅ **INSTALL.md** (3 KB)
@@ -121,21 +115,7 @@
 
 ### Test Results
 
-#### Test 1: License Generator
-```bash
-> license_gen.exe --hwid
-Hardware ID: 000906edbfebfbff
-✅ PASS
-```
-
-#### Test 2: Key Generation
-```bash
-> license_gen.exe TEST01 000906edbfebfbff 365
-LICENSE KEY: TEST01-000906edbfebfbff-20261209-33F16C7F
-✅ PASS
-```
-
-#### Test 3: Server with License
+#### Test 1: Server with License
 ```bash
 > m110a_server.exe
 License: TEST01
@@ -223,21 +203,22 @@ Hardware ID: 000906edbfebfbff
 ## Release Package Contents
 
 ```
-release/ (Total: ~11 MB)
+release/ (Total: ~15 MB)
 ├── bin/
-│   ├── m110a_server.exe      (553 KB) ✅
-│   └── exhaustive_test.exe   (586 KB) ✅
+│   ├── m110a_server.exe      (554 KB) ✅
+│   ├── exhaustive_test.exe   (614 KB) ✅
+│   ├── test_gui.exe          (555 KB) ✅
+│   └── melpe_vocoder.exe     (462 KB) ✅
 ├── docs/
-│   ├── API.md                (8 KB) ✅
 │   ├── PROTOCOL.md           (6 KB) ✅
 │   └── CHANNEL_SIMULATION.md (13 KB) ✅
 ├── examples/
-│   └── refrence_pcm/         (12 files, ~9 MB) ✅
-├── license_gen.exe           (95 KB) ✅ ADMIN ONLY
+│   ├── refrence_pcm/         (24 files, ~9 MB) ✅
+│   └── melpe_test_audio/     (test audio files) ✅
 ├── license.key.template      ✅
 ├── INSTALL.md                (3 KB) ✅
 ├── QUICKSTART.md             (1 KB) ✅
-├── README.md                 (15 KB) ✅
+├── README.md                 (18 KB) ✅
 ├── EULA.md                   (12 KB) ✅
 └── RELEASE_INFO.txt          (1 KB) ✅
 ```
@@ -248,9 +229,9 @@ release/ (Total: ~11 MB)
 
 ### Step 1: Obtain Hardware ID
 ```bash
-cd release
-license_gen.exe --hwid
-# Output: Hardware ID: XXXXXXXXXXXX
+cd release/bin
+m110a_server.exe
+# On startup displays: Hardware ID: XXXXXXXXXXXX
 ```
 
 ### Step 2: Request License
@@ -259,12 +240,8 @@ Send to Phoenix Nest Software:
 - Hardware ID from Step 1
 - Desired license duration
 
-### Step 3: Generate License (Phoenix Nest Admin)
-```bash
-license_gen.exe CUSTOMER_ID HARDWARE_ID DAYS
-# Example: license_gen.exe ACME01 A3B4C5D6E7F8 365
-# Output: ACME01-A3B4C5D6E7F8-20261209-CHECKSUM
-```
+### Step 3: Receive License
+Phoenix Nest Admin generates and sends license key file.
 
 ### Step 4: Activate
 Customer receives `license.key` file:

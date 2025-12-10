@@ -160,7 +160,7 @@ inline std::string eula_notice() {
 
 $CXX = "g++"
 $CXXFLAGS = "-std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES"
-$LDFLAGS = "-lws2_32"
+$LDFLAGS = "-static -lws2_32"
 
 function Build-Server {
     Write-Host "`n=== Building Server ===" -ForegroundColor Yellow

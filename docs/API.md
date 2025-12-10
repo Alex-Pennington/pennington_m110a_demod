@@ -105,7 +105,7 @@ if (status != LicenseStatus::VALID) {
 
 Activation steps:
 
-1. Call `LicenseManager::get_hardware_id()` (or run `license_gen.exe --hwid`) to read the fingerprint produced by the `license_manager` flow.
+1. Call `LicenseManager::get_hardware_id()` to read the fingerprint produced by the `license_manager` flow (the server also displays this on startup).
 2. Go to https://www.organicengineer.com/projects and submit the hardware ID to obtain a license key.
 3. Store the returned key as `license.key` next to the binary that will link against the modem API.
 4. During startup, invoke `LicenseManager::load_license_file()` and block modem usage until it returns `LicenseStatus::VALID`.

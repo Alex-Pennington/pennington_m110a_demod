@@ -50,7 +50,7 @@ g++ -std=c++17 -O2 -I.. -o test_client test_client.cpp
 
 The server performs a hardware-locked license check on startup using the shared `license_manager` activation flow (`m110a::LicenseManager` in `src/common/license.h`).
 
-1. Run `license_gen.exe --hwid` (or call `LicenseManager::get_hardware_id()` in your tooling) to capture the hardware ID reported by `license_manager`.
+1. Run `m110a_server.exe` to display your hardware ID on startup, or call `LicenseManager::get_hardware_id()` in your tooling.
 2. Go to https://www.organicengineer.com/projects to request a license key that matches the hardware ID.
 3. Save the received key as `license.key` beside `m110a_server.exe` (or wherever you launch the binary from).
 4. Launch the server once; `license_manager` automatically validates the key and prints the status if there is a mismatch or expiration.

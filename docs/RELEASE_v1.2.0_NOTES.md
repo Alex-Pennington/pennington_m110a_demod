@@ -25,7 +25,6 @@ This release packages the M110A MIL-STD-188-110A compatible modem as a productio
 - **License Key Format:** `CUSTOMER-HWID-EXPIRY-CHECKSUM`
 - **Validation:** Startup license check with expiration enforcement
 - **Trial Mode:** 30-day trial with single channel limitation (framework ready)
-- **Admin Tool:** `license_gen.exe` for key generation
 
 ### Components
 
@@ -65,45 +64,23 @@ Comprehensive test suite for all modem modes.
 exhaustive_test.exe [--server] [--channel TYPE] [--mode MODE] [--csv FILE]
 ```
 
-#### 3. license_gen.exe (95 KB)
-Admin-only tool for generating customer license keys.
-
-**Features:**
-- Hardware ID retrieval
-- License key generation with validation
-- Configurable expiration (1-3650 days)
-- Checksum verification
-
-**Usage:**
-```bash
-# Get hardware ID
-license_gen.exe --hwid
-
-# Generate license
-license_gen.exe CUSTOMER_ID HARDWARE_ID [DAYS]
-```
-
 ## Release Package Structure
 
 ```
 release/
 ├── bin/
-│   ├── m110a_server.exe
-│   └── exhaustive_test.exe
+│   ├── m110a_server.exe      # TCP/IP modem server
+│   ├── exhaustive_test.exe   # Test suite
+│   ├── test_gui.exe          # Web-based GUI (port 8080)
+│   └── melpe_vocoder.exe     # MELPe voice codec
 ├── docs/
-│   ├── API.md
-│   ├── PROTOCOL.md
-│   └── CHANNEL_SIMULATION.md
+│   ├── PROTOCOL.md           # TCP/IP protocol reference
+│   └── CHANNEL_SIMULATION.md # Channel impairment guide
 ├── examples/
-│   └── refrence_pcm/
-│       ├── 75_BPS_*.pcm
-│       ├── 150_BPS_*.pcm
-│       ├── 300_BPS_*.pcm
-│       ├── 600_BPS_*.pcm
-│       ├── 1200_BPS_*.pcm
-│       ├── 2400_BPS_*.pcm
-│       └── *_metadata.json
-├── license_gen.exe (admin only)
+│   ├── refrence_pcm/         # Reference PCM files (12 modes)
+│   │   ├── tx_*.pcm          # Brain modem TX reference
+│   │   └── *_metadata.json   # Mode metadata
+│   └── melpe_test_audio/     # MELPe test audio files
 ├── license.key.template
 ├── INSTALL.md
 ├── QUICKSTART.md
@@ -116,7 +93,7 @@ release/
 
 1. Extract release package
 2. Obtain license:
-   - Run: `license_gen.exe --hwid`
+   - Run: `m110a_server.exe` to display your hardware ID
    - Go to https://www.organicengineer.com/projects to obtain a license key using your hardware ID
    - Receive `license.key` file
 3. Place `license.key` in `bin/` directory
@@ -175,7 +152,6 @@ See `docs/AFC_ROOT_CAUSE.md` for detailed analysis.
 
 ### v1.2.0 (Build 92) - December 8, 2024
 - **Licensing System:** Hardware-locked licensing with CPU fingerprinting
-- **Admin Tools:** license_gen.exe for key generation
 - **Release Package:** Complete distribution with documentation
 - **AFC Investigation:** Characterized ±2 Hz working range (Builds 83-86)
 - **Server Integration:** License validation in m110a_server.exe
