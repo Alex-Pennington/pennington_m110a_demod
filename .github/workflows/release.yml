@@ -1,17 +1,10 @@
-name: Build and Release with Attestation
+name: Build and Release
 
 on:
-     workflow_dispatch:
-       inputs:
-         version_tag:
-           description: 'Version tag (e.g., v1.2.0-build148)'
-           required: true
-           default: 'v1.2.0'
-     push:
-       branches:
-         - master
-       tags:
-         - 'v*'
+  push:
+    tags:
+      - 'v*'
+
 permissions:
   contents: write
 
@@ -20,144 +13,29 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Setup MinGW
-        uses: msys2/setup-msys2@v2
+      - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
-          install: mingw-w64-x86_64-gcc git
+          install: mingw-w64-x86_64-gcc
 
-      - name: Get Build Info
-        id: buildinfo
-        shell: pwsh
-        run: |
-          $buildNum = (git rev-list --count HEAD)
-          $commitHash = (git rev-parse --short HEAD)
-          echo "BUILD_NUM=$buildNum" >> $env:GITHUB_OUTPUT
-          echo "COMMIT_HASH=$commitHash" >> $env:GITHUB_OUTPUT
-          Write-Host "Build: $buildNum, Commit: $commitHash"
-
-      - name: Build Release
+      - name: Build
         shell: msys2 {0}
         run: |
-          echo "Building M110A Modem v1.2.0+build.${{ steps.buildinfo.outputs.BUILD_NUM }}.${{ steps.buildinfo.outputs.COMMIT_HASH }}"
-          
-          # Build server
-          g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES \
-              -o server/m110a_server.exe \
-              server/main.cpp server/msdmt_server.cpp \
-              api/modem_tx.cpp api/modem_rx.cpp \
-              -lws2_32
-          
-          # Build exhaustive test
-          g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES \
-              -o test/exhaustive_test.exe \
-              test/exhaustive_test.cpp \
-              api/modem_tx.cpp api/modem_rx.cpp \
-              -lws2_32
-          
-          # Build test GUI (needs src/common for license.h)
-          g++ -std=c++17 -O2 -I. -Isrc -Isrc/common -D_USE_MATH_DEFINES \
-              -o test/test_gui.exe \
-              test/test_gui_server.cpp \
-              -lws2_32 -lshell32
-          
-          echo "Build complete"
-          ls -la server/*.exe test/*.exe
+          g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -o server/m110a_server.exe server/main.cpp server/msdmt_server.cpp api/modem_tx.cpp api/modem_rx.cpp -lws2_32
+          g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -o test/exhaustive_test.exe test/exhaustive_test.cpp api/modem_tx.cpp api/modem_rx.cpp -lws2_32
+          g++ -std=c++17 -O2 -I. -Isrc -Isrc/common -D_USE_MATH_DEFINES -o test/test_gui.exe test/test_gui_server.cpp -lws2_32 -lshell32
 
-      - name: Create Release Package
+      - name: Package
         shell: pwsh
         run: |
-          # Get version info from earlier step
-          $buildNum = "${{ steps.buildinfo.outputs.BUILD_NUM }}"
-          $version = "1.2.0"
-          
-          # Create release directory
-          $releaseDir = "release_package"
-          New-Item -ItemType Directory -Force -Path "$releaseDir/bin"
-          New-Item -ItemType Directory -Force -Path "$releaseDir/docs"
-          New-Item -ItemType Directory -Force -Path "$releaseDir/examples/refrence_pcm"
-          
-          # Copy executables
-          Copy-Item "server/m110a_server.exe" "$releaseDir/bin/"
-          Copy-Item "test/exhaustive_test.exe" "$releaseDir/bin/"
-          Copy-Item "test/test_gui.exe" "$releaseDir/bin/"
-          
-          # Copy docs
-          Copy-Item "docs/PROTOCOL.md" "$releaseDir/docs/" -ErrorAction SilentlyContinue
-          Copy-Item "docs/CHANNEL_SIMULATION.md" "$releaseDir/docs/" -ErrorAction SilentlyContinue
-          Copy-Item "release/README.md" "$releaseDir/" -ErrorAction SilentlyContinue
-          Copy-Item "release/EULA.md" "$releaseDir/" -ErrorAction SilentlyContinue
-          Copy-Item "release/QUICKSTART.md" "$releaseDir/" -ErrorAction SilentlyContinue
-          Copy-Item "release/INSTALL.md" "$releaseDir/" -ErrorAction SilentlyContinue
-          
-          # Copy reference PCM files
-          Copy-Item "refrence_pcm/*.json" "$releaseDir/examples/refrence_pcm/" -ErrorAction SilentlyContinue
-          Copy-Item "refrence_pcm/*.pcm" "$releaseDir/examples/refrence_pcm/" -ErrorAction SilentlyContinue
-          
-          # Create zip
-          $zipName = "M110A_Modem_v${version}_Build${buildNum}.zip"
-          Compress-Archive -Path "$releaseDir/*" -DestinationPath $zipName -Force
-          
-          # Create SHA256
-          $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
-          "$hash  $zipName" | Out-File -FilePath "M110A_Modem_v${version}_Build${buildNum}.SHA256.txt" -Encoding ASCII
-          
-          Write-Host "Created: $zipName"
-          Write-Host "SHA256: $hash"
-          
-          # Set outputs for next steps
-          echo "ZIP_FILE=$zipName" >> $env:GITHUB_OUTPUT
-          echo "SHA_FILE=M110A_Modem_v${version}_Build${buildNum}.SHA256.txt" >> $env:GITHUB_OUTPUT
-        id: package
+          New-Item -ItemType Directory -Force -Path release_package/bin
+          Copy-Item server/m110a_server.exe, test/exhaustive_test.exe, test/test_gui.exe release_package/bin/
+          Compress-Archive -Path release_package/* -DestinationPath M110A_Modem_${{ github.ref_name }}.zip
 
-      - name: Determine Version Tag
-        id: version
-        shell: pwsh
-        run: |
-          $buildNum = "${{ steps.buildinfo.outputs.BUILD_NUM }}"
-          
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $tag = "${{ github.event.inputs.version_tag }}"
-          } elseif ("${{ github.ref }}".StartsWith("refs/tags/")) {
-            $tag = "${{ github.ref_name }}"
-          } else {
-            $tag = "v1.2.0-build$buildNum"
-          }
-          
-          echo "TAG=$tag" >> $env:GITHUB_OUTPUT
-          Write-Host "Release tag: $tag"
-
-      - name: Create GitHub Release
+      - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.TAG }}
-          name: M110A Modem ${{ steps.version.outputs.TAG }}
-          body: |
-            ## M110A MIL-STD-110A Modem Release
-            
-            ### Verification
-            Verify file integrity using the SHA256 checksum file.
-            
-            **Note:** Artifact attestation requires a public repository.
-            For private repos, verify using the SHA256 checksum:
-            ```powershell
-            (Get-FileHash ${{ steps.package.outputs.ZIP_FILE }} -Algorithm SHA256).Hash
-            ```
-            Compare with the hash in `${{ steps.package.outputs.SHA_FILE }}`
-            
-            ### Contents
-            - `m110a_server.exe` - TCP/IP modem server
-            - `test_gui.exe` - Web-based test interface
-            - `exhaustive_test.exe` - Comprehensive test suite
-            - Documentation and reference PCM files
-          files: |
-            ${{ steps.package.outputs.ZIP_FILE }}
-            ${{ steps.package.outputs.SHA_FILE }}
-          draft: false
-          prerelease: false
+          files: M110A_Modem_${{ github.ref_name }}.zip
