@@ -1,11 +1,11 @@
-/**
+﻿/**
  * AFC Debug Test - Direct Metric Analysis
  * 
  * Shows exactly what metric values each trial frequency produces
  */
 
 #include "../api/modem.h"
-#include "../src/m110a/msdmt_decoder.h"
+#include "../src/m110a/brain_decoder.h"
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -48,7 +48,7 @@ int main() {
     apply_freq_offset(tx_samples, ACTUAL_OFFSET);
     
     // Create decoder - use public API
-    MSDMTDecoder decoder(48000.0f, 4, 2400.0f);  // 48kHz sample rate, 4 sps, 2400 symbols/sec
+    BrainDecoder decoder(48000.0f, 4, 2400.0f);  // 48kHz sample rate, 4 sps, 2400 symbols/sec
     
     // Test all trial frequencies from -10 to +10 Hz
     std::cout << "Actual Offset: " << ACTUAL_OFFSET << " Hz\n";
@@ -95,9 +95,9 @@ int main() {
     std::cout << "Best metric:     " << best_metric << "\n";
     
     if (std::abs(best_trial - ACTUAL_OFFSET) < 0.1f) {
-        std::cout << "\n✓ AFC WORKS - Found correct frequency!\n";
+        std::cout << "\nâœ“ AFC WORKS - Found correct frequency!\n";
     } else {
-        std::cout << "\n✗ AFC FAILS - Selected wrong frequency by " 
+        std::cout << "\nâœ— AFC FAILS - Selected wrong frequency by " 
                   << std::abs(best_trial - ACTUAL_OFFSET) << " Hz\n";
     }
     

@@ -1,15 +1,15 @@
-// Copyright (C) 2025 Phoenix Nest LLC
+﻿// Copyright (C) 2025 Phoenix Nest LLC
 // Phoenix Nest Modem - MIL-STD-188-110A HF Data Modem
 // Licensed under Phoenix Nest EULA - see phoenixnestmodem_eula.md
 /**
  * @file modem_rx.cpp
- * @brief ModemRX implementation using MSDMTDecoder + M110ACodec
+ * @brief ModemRX implementation using BrainDecoder + M110ACodec
  * 
- * MS-DMT compatible receiver with optional DFE equalization.
+ * Brain Modem compatible receiver with optional DFE equalization.
  */
 
 #include "api/modem_rx.h"
-#include "m110a/msdmt_decoder.h"
+#include "m110a/brain_decoder.h"
 #include "modem/m110a_codec.h"
 #include "m110a/mode_config.h"
 #include "equalizer/dfe.h"
@@ -82,7 +82,7 @@ public:
         } else {
             // Auto mode - perform mode detection
             // Step 1: First pass - detect mode with default settings
-            MSDMTDecoderConfig detect_cfg;
+            BrainDecoderConfig detect_cfg;
             detect_cfg.sample_rate = config_.sample_rate;
             detect_cfg.carrier_freq = config_.carrier_freq;
             detect_cfg.baud_rate = 2400.0f;
@@ -92,7 +92,7 @@ public:
             detect_cfg.coarse_search_range = config_.coarse_search_range;
             detect_cfg.fine_search_range = config_.fine_search_range;  // 2 Hz steps
             
-            MSDMTDecoder detector(detect_cfg);
+            BrainDecoder detector(detect_cfg);
             auto detect_result = detector.decode(samples);
             
             // Check mode detection
@@ -124,7 +124,7 @@ public:
         // Step 2: Get mode-specific settings and re-decode
         const auto& mode_cfg = ModeDatabase::get(mode_id);
         
-        MSDMTDecoderConfig decode_cfg;
+        BrainDecoderConfig decode_cfg;
         decode_cfg.sample_rate = config_.sample_rate;
         decode_cfg.carrier_freq = config_.carrier_freq;
         decode_cfg.baud_rate = 2400.0f;
@@ -137,23 +137,23 @@ public:
         decode_cfg.coarse_search_range = config_.coarse_search_range;
         decode_cfg.fine_search_range = config_.fine_search_range;
         
-        MSDMTDecoder decoder(decode_cfg);
-        auto msdmt_result = decoder.decode(samples);
+        BrainDecoder decoder(decode_cfg);
+        auto brain_result = decoder.decode(samples);
         
         // DEBUG: Trace mode detection and symbol extraction
         std::cerr << "[RX DEBUG] Mode: " << mode_cfg.name 
                   << " preamble_frames: " << mode_cfg.preamble_frames
                   << " preamble_symbols: " << mode_cfg.preamble_symbols()
-                  << " detected_mode: " << msdmt_result.mode_name
-                  << " preamble_corr: " << msdmt_result.correlation
-                  << " data_symbols: " << msdmt_result.data_symbols.size()
+                  << " detected_mode: " << brain_result.mode_name
+                  << " preamble_corr: " << brain_result.correlation
+                  << " data_symbols: " << brain_result.data_symbols.size()
                   << " interleaver_rows: " << mode_cfg.interleaver.rows
                   << " interleaver_cols: " << mode_cfg.interleaver.cols
                   << " block_size: " << (mode_cfg.interleaver.rows * mode_cfg.interleaver.cols)
                   << std::endl;
         
         // Check we got data symbols
-        if (msdmt_result.data_symbols.empty()) {
+        if (brain_result.data_symbols.empty()) {
             result.success = false;
             result.error = Error(ErrorCode::RX_NO_SIGNAL, "No data symbols extracted");
             state_ = RxState::ERROR;
@@ -163,8 +163,8 @@ public:
         // Step 3: Apply phase tracking if enabled
         // Phase tracking corrects frequency offsets - only useful when no equalizer
         // (DFE/MLSE can handle small freq offsets via their adaptation)
-        std::vector<complex_t> phase_corrected = msdmt_result.data_symbols;
-        float freq_offset_hz = msdmt_result.freq_offset_hz;  // From frequency search
+        std::vector<complex_t> phase_corrected = brain_result.data_symbols;
+        float freq_offset_hz = brain_result.freq_offset_hz;  // From frequency search
         
         // Apply phase tracking to correct frequency offset
         // - With NONE: full decision-directed tracking
@@ -174,7 +174,7 @@ public:
             
             bool probe_only = (config_.equalizer != Equalizer::NONE);
             auto [corrected, freq_off] = apply_phase_tracking(
-                msdmt_result.data_symbols,
+                brain_result.data_symbols,
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
                 probe_only  // Probe-only when using equalizer
@@ -194,7 +194,7 @@ public:
                 phase_corrected,
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
-                msdmt_result.preamble_symbols,  // Use preamble for pretraining
+                brain_result.preamble_symbols,  // Use preamble for pretraining
                 config_.use_nlms                 // Use NLMS if enabled
             );
         } else if ((config_.equalizer == Equalizer::MLSE_L2 || 
@@ -208,7 +208,7 @@ public:
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
                 channel_memory,
-                msdmt_result.preamble_symbols
+                brain_result.preamble_symbols
             );
         } else if (config_.equalizer == Equalizer::MLSE_ADAPTIVE &&
                    mode_cfg.unknown_data_len > 0 && mode_cfg.known_data_len > 0) {
@@ -218,7 +218,7 @@ public:
                 phase_corrected,
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
-                msdmt_result.preamble_symbols
+                brain_result.preamble_symbols
             );
         } else if (config_.equalizer == Equalizer::TURBO &&
                    mode_cfg.unknown_data_len > 0 && mode_cfg.known_data_len > 0) {
@@ -231,7 +231,7 @@ public:
                 mode_id,
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
-                msdmt_result.preamble_symbols
+                brain_result.preamble_symbols
             );
             equalized_symbols = std::move(turbo_result.symbols);
             
@@ -259,7 +259,7 @@ public:
                 
                 result.success = true;
                 result.data = turbo_decoded;
-                result.snr_db = estimate_snr_from_symbols(msdmt_result.data_symbols);
+                result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
                 result.freq_offset_hz = freq_offset_hz;
                 
                 // Update stats
@@ -311,7 +311,7 @@ public:
         
         result.success = true;
         result.data = decoded;
-        result.snr_db = estimate_snr_from_symbols(msdmt_result.data_symbols);
+        result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
         result.freq_offset_hz = freq_offset_hz;
         
         // Update stats
@@ -512,7 +512,7 @@ private:
     
     DecodeResult decode_internal(const Samples& samples) {
         // First pass - detect mode
-        MSDMTDecoderConfig detect_cfg;
+        BrainDecoderConfig detect_cfg;
         detect_cfg.sample_rate = config_.sample_rate;
         detect_cfg.carrier_freq = config_.carrier_freq;
         detect_cfg.baud_rate = 2400.0f;
@@ -522,7 +522,7 @@ private:
         detect_cfg.coarse_search_range = config_.coarse_search_range;
         detect_cfg.fine_search_range = config_.fine_search_range;
         
-        MSDMTDecoder detector(detect_cfg);
+        BrainDecoder detector(detect_cfg);
         auto detect_result = detector.decode(samples);
         
         DecodeResult result;
@@ -543,7 +543,7 @@ private:
         // Second pass - decode with correct settings
         const auto& mode_cfg = ModeDatabase::get(mode_id);
         
-        MSDMTDecoderConfig decode_cfg;
+        BrainDecoderConfig decode_cfg;
         decode_cfg.sample_rate = config_.sample_rate;
         decode_cfg.carrier_freq = config_.carrier_freq;
         decode_cfg.baud_rate = 2400.0f;
@@ -556,8 +556,8 @@ private:
         decode_cfg.coarse_search_range = config_.coarse_search_range;
         decode_cfg.fine_search_range = config_.fine_search_range;
         
-        MSDMTDecoder decoder(decode_cfg);
-        auto msdmt_result = decoder.decode(samples);
+        BrainDecoder decoder(decode_cfg);
+        auto brain_result = decoder.decode(samples);
         
         M110ACodec codec(mode_id);
         std::vector<uint8_t> decoded;
@@ -566,18 +566,18 @@ private:
         if (config_.use_snr_weighted_demapper) {
             float snr_db = config_.assumed_snr_db;
             if (config_.estimate_snr_from_probes) {
-                snr_db = codec.estimate_snr_from_probes(msdmt_result.data_symbols);
+                snr_db = codec.estimate_snr_from_probes(brain_result.data_symbols);
             }
             DecodeOptions opts = DecodeOptions::snr_weighted(snr_db);
-            decoded = codec.decode_with_probes(msdmt_result.data_symbols, opts);
+            decoded = codec.decode_with_probes(brain_result.data_symbols, opts);
         } else {
-            decoded = codec.decode_with_probes(msdmt_result.data_symbols);
+            decoded = codec.decode_with_probes(brain_result.data_symbols);
         }
         
         if (!decoded.empty()) {
             result.success = true;
             result.data = decoded;
-            result.snr_db = estimate_snr_from_symbols(msdmt_result.data_symbols);
+            result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
         }
         
         return result;
@@ -669,7 +669,7 @@ private:
      * - This padding decodes as zeros (can be 30+ bytes)
      * - Need to distinguish EOM zeros from padding zeros
      * 
-     * EOM produces: 4 × unknown_len × 3 / 16 bytes ≈ 24 bytes for M2400S
+     * EOM produces: 4 Ã— unknown_len Ã— 3 / 16 bytes â‰ˆ 24 bytes for M2400S
      * 
      * To distinguish from padding, we require:
      * - At least 40 trailing zeros (exceeds typical padding)
@@ -695,7 +695,7 @@ private:
         }
         
         // Calculate expected EOM size
-        // EOM = 4 frames × unknown_len × 3 bits / 2 (FEC) / 8 (bits/byte)
+        // EOM = 4 frames Ã— unknown_len Ã— 3 bits / 2 (FEC) / 8 (bits/byte)
         int expected_eom_bytes = (4 * unknown_len * 3) / 16;
         
         // Require trailing zeros >= expected EOM + 50% margin
@@ -1180,7 +1180,7 @@ private:
      *   - Gray code conversion (MGD3/INV_MGD3)
      *   - Mode-specific helical interleaver
      *   - SISO decoder (BCJR, K=7, rate 1/2)
-     *   - Iterative MLSE ↔ SISO exchange
+     *   - Iterative MLSE â†” SISO exchange
      * 
      * Returns improved symbols for passing to normal codec path.
      * 
@@ -1354,7 +1354,7 @@ private:
         // Configure phase tracker
         PhaseTrackerConfig pt_cfg;
         pt_cfg.symbol_rate = 2400.0f;
-        pt_cfg.max_freq_hz = 15.0f;  // Support up to ±15 Hz offset
+        pt_cfg.max_freq_hz = 15.0f;  // Support up to Â±15 Hz offset
         
         if (conservative) {
             // Conservative mode for use with equalizers

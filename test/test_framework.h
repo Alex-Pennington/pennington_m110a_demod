@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file test_framework.h
  * @brief Unified Exhaustive Test Framework
  * 
@@ -309,7 +309,7 @@ struct ProgressiveResult {
 };
 
 // ============================================================
-// Reference Sample Test (MS-DMT Compatibility Validation)
+// Reference Sample Test (Brain Modem Compatibility Validation)
 // ============================================================
 
 struct ReferenceTestResult {
@@ -580,7 +580,7 @@ inline void print_results_by_channel(const TestResults& results) {
 }
 
 inline void print_mode_channel_matrix(const TestResults& results) {
-    std::cout << "\n--- MODE × CHANNEL MATRIX (Pass Rates) ---\n\n";
+    std::cout << "\n--- MODE Ã— CHANNEL MATRIX (Pass Rates) ---\n\n";
     
     std::vector<std::string> channel_names;
     for (const auto& [ch, _] : results.channel_stats) {
@@ -724,7 +724,7 @@ inline void generate_markdown_report(const std::string& filename,
     }
     
     report << "\n---\n\n";
-    report << "## Mode × Channel Matrix (Pass Rates)\n\n";
+    report << "## Mode Ã— Channel Matrix (Pass Rates)\n\n";
     
     std::vector<std::string> channel_names;
     for (const auto& [ch, _] : results.channel_stats) {

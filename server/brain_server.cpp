@@ -1,12 +1,12 @@
-// Copyright (C) 2025 Phoenix Nest LLC
+﻿// Copyright (C) 2025 Phoenix Nest LLC
 // Phoenix Nest Modem - MIL-STD-188-110A HF Data Modem
 // Licensed under Phoenix Nest EULA - see phoenixnestmodem_eula.md
 /**
  * @file msdmt_server.cpp
- * @brief MS-DMT Compatible Network Interface Server Implementation
+ * @brief Brain Modem Compatible Network Interface Server Implementation
  */
 
-#include "msdmt_server.h"
+#include "brain_server.h"
 #include "api/modem.h"
 #include "api/channel_sim.h"
 
@@ -50,7 +50,7 @@ namespace server {
 // Socket Implementation Structure
 // ============================================================
 
-struct MSDMTServer::SocketImpl {
+struct BrainServer::SocketImpl {
     socket_t data_listen_socket = INVALID_SOCK;
     socket_t control_listen_socket = INVALID_SOCK;
     socket_t discovery_socket = INVALID_SOCK;
@@ -268,22 +268,22 @@ void ClientConnection::close() {
 }
 
 // ============================================================
-// MSDMTServer Implementation
+// BrainServer Implementation
 // ============================================================
 
-MSDMTServer::MSDMTServer() 
+BrainServer::BrainServer() 
     : sockets_(std::make_unique<SocketImpl>()) {
 }
 
-MSDMTServer::~MSDMTServer() {
+BrainServer::~BrainServer() {
     stop();
 }
 
-void MSDMTServer::configure(const ServerConfig& config) {
+void BrainServer::configure(const ServerConfig& config) {
     config_ = config;
 }
 
-bool MSDMTServer::start() {
+bool BrainServer::start() {
     if (running_.load()) {
         return true; // Already running
     }
@@ -364,16 +364,16 @@ bool MSDMTServer::start() {
     running_.store(true);
     
     // Start threads
-    data_accept_thread_ = std::thread(&MSDMTServer::run_data_accept_loop, this);
-    control_accept_thread_ = std::thread(&MSDMTServer::run_control_accept_loop, this);
+    data_accept_thread_ = std::thread(&BrainServer::run_data_accept_loop, this);
+    control_accept_thread_ = std::thread(&BrainServer::run_control_accept_loop, this);
     
     if (config_.enable_discovery) {
-        discovery_thread_ = std::thread(&MSDMTServer::run_discovery_loop, this);
+        discovery_thread_ = std::thread(&BrainServer::run_discovery_loop, this);
     }
     
-    processing_thread_ = std::thread(&MSDMTServer::run_processing_loop, this);
+    processing_thread_ = std::thread(&BrainServer::run_processing_loop, this);
     
-    std::cout << "MS-DMT Server started\n";
+    std::cout << "Brain Modem Server started\n";
     std::cout << "  Data port:     " << config_.data_port << "\n";
     std::cout << "  Control port:  " << config_.control_port << "\n";
     if (config_.enable_discovery) {
@@ -383,7 +383,7 @@ bool MSDMTServer::start() {
     return true;
 }
 
-void MSDMTServer::stop() {
+void BrainServer::stop() {
     if (!running_.load()) {
         return;
     }
@@ -423,20 +423,20 @@ void MSDMTServer::stop() {
         control_clients_.clear();
     }
     
-    std::cout << "MS-DMT Server stopped\n";
+    std::cout << "Brain Modem Server stopped\n";
 }
 
-size_t MSDMTServer::tx_buffer_size() const {
+size_t BrainServer::tx_buffer_size() const {
     std::lock_guard<std::mutex> lock(tx_buffer_mutex_);
     return tx_buffer_.size();
 }
 
-void MSDMTServer::clear_tx_buffer() {
+void BrainServer::clear_tx_buffer() {
     std::lock_guard<std::mutex> lock(tx_buffer_mutex_);
     tx_buffer_.clear();
 }
 
-void MSDMTServer::broadcast_status(StatusCategory category, const std::string& details) {
+void BrainServer::broadcast_status(StatusCategory category, const std::string& details) {
     std::string msg = format_status(category, details);
     
     if (config_.log_status) {
@@ -451,7 +451,7 @@ void MSDMTServer::broadcast_status(StatusCategory category, const std::string& d
     }
 }
 
-void MSDMTServer::broadcast_data(const std::vector<uint8_t>& data) {
+void BrainServer::broadcast_data(const std::vector<uint8_t>& data) {
     std::lock_guard<std::mutex> lock(clients_mutex_);
     for (auto& client : data_clients_) {
         if (client->connected) {
@@ -460,19 +460,19 @@ void MSDMTServer::broadcast_data(const std::vector<uint8_t>& data) {
     }
 }
 
-void MSDMTServer::on_data_received(OnDataReceivedCallback callback) {
+void BrainServer::on_data_received(OnDataReceivedCallback callback) {
     on_data_received_ = callback;
 }
 
-void MSDMTServer::on_command_received(OnCommandReceivedCallback callback) {
+void BrainServer::on_command_received(OnCommandReceivedCallback callback) {
     on_command_received_ = callback;
 }
 
-void MSDMTServer::on_client_connected(OnClientConnectedCallback callback) {
+void BrainServer::on_client_connected(OnClientConnectedCallback callback) {
     on_client_connected_ = callback;
 }
 
-void MSDMTServer::on_client_disconnected(OnClientDisconnectedCallback callback) {
+void BrainServer::on_client_disconnected(OnClientDisconnectedCallback callback) {
     on_client_disconnected_ = callback;
 }
 
@@ -480,7 +480,7 @@ void MSDMTServer::on_client_disconnected(OnClientDisconnectedCallback callback) 
 // Thread Loop Implementations
 // ============================================================
 
-void MSDMTServer::run_data_accept_loop() {
+void BrainServer::run_data_accept_loop() {
     while (running_.load()) {
         sockaddr_in client_addr{};
         socklen_t addr_len = sizeof(client_addr);
@@ -514,11 +514,11 @@ void MSDMTServer::run_data_accept_loop() {
         std::cout << "[DATA] Client connected: " << client->address << ":" << client->port << "\n";
         
         // Handle client in separate thread
-        std::thread(&MSDMTServer::handle_data_client, this, client).detach();
+        std::thread(&BrainServer::handle_data_client, this, client).detach();
     }
 }
 
-void MSDMTServer::run_control_accept_loop() {
+void BrainServer::run_control_accept_loop() {
     while (running_.load()) {
         sockaddr_in client_addr{};
         socklen_t addr_len = sizeof(client_addr);
@@ -555,11 +555,11 @@ void MSDMTServer::run_control_accept_loop() {
         client->send("MODEM READY\n");
         
         // Handle client in separate thread
-        std::thread(&MSDMTServer::handle_control_client, this, client).detach();
+        std::thread(&BrainServer::handle_control_client, this, client).detach();
     }
 }
 
-void MSDMTServer::run_discovery_loop() {
+void BrainServer::run_discovery_loop() {
     sockaddr_in broadcast_addr{};
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_addr.s_addr = INADDR_BROADCAST;
@@ -575,7 +575,7 @@ void MSDMTServer::run_discovery_loop() {
     }
 }
 
-void MSDMTServer::run_processing_loop() {
+void BrainServer::run_processing_loop() {
     while (running_.load()) {
         // Process any pending RX data
         {
@@ -591,7 +591,7 @@ void MSDMTServer::run_processing_loop() {
     }
 }
 
-void MSDMTServer::handle_data_client(std::shared_ptr<ClientConnection> client) {
+void BrainServer::handle_data_client(std::shared_ptr<ClientConnection> client) {
     while (running_.load() && client->connected) {
         auto data = client->receive(4096);
         if (data.empty()) {
@@ -624,7 +624,7 @@ void MSDMTServer::handle_data_client(std::shared_ptr<ClientConnection> client) {
         data_clients_.end());
 }
 
-void MSDMTServer::handle_control_client(std::shared_ptr<ClientConnection> client) {
+void BrainServer::handle_control_client(std::shared_ptr<ClientConnection> client) {
     while (running_.load() && client->connected) {
         std::string line = client->receive_line();
         if (line.empty()) {
@@ -664,7 +664,7 @@ void MSDMTServer::handle_control_client(std::shared_ptr<ClientConnection> client
         control_clients_.end());
 }
 
-void MSDMTServer::process_command(std::shared_ptr<ClientConnection> client, const Command& cmd) {
+void BrainServer::process_command(std::shared_ptr<ClientConnection> client, const Command& cmd) {
     if (cmd.type == "DATA RATE") {
         cmd_data_rate(client, cmd.parameter);
     } else if (cmd.type == "SENDBUFFER") {
@@ -703,7 +703,7 @@ void MSDMTServer::process_command(std::shared_ptr<ClientConnection> client, cons
 // Command Handlers
 // ============================================================
 
-void MSDMTServer::cmd_data_rate(std::shared_ptr<ClientConnection> client, const std::string& param) {
+void BrainServer::cmd_data_rate(std::shared_ptr<ClientConnection> client, const std::string& param) {
     DataRateMode mode = parse_data_rate_mode(param);
     if (mode == DataRateMode::UNKNOWN) {
         client->send(format_error("DATA RATE", "INVALID MODE: " + param));
@@ -714,7 +714,7 @@ void MSDMTServer::cmd_data_rate(std::shared_ptr<ClientConnection> client, const 
     client->send(format_ok("DATA RATE", data_rate_mode_to_string(mode)));
 }
 
-void MSDMTServer::cmd_send_buffer(std::shared_ptr<ClientConnection> client) {
+void BrainServer::cmd_send_buffer(std::shared_ptr<ClientConnection> client) {
     std::vector<uint8_t> data;
     {
         std::lock_guard<std::mutex> lock(tx_buffer_mutex_);
@@ -763,17 +763,17 @@ void MSDMTServer::cmd_send_buffer(std::shared_ptr<ClientConnection> client) {
     }
 }
 
-void MSDMTServer::cmd_record_tx(std::shared_ptr<ClientConnection> client, bool enable) {
+void BrainServer::cmd_record_tx(std::shared_ptr<ClientConnection> client, bool enable) {
     recording_enabled_ = enable;
     client->send(format_ok("RECORD TX", enable ? "ON" : "OFF"));
 }
 
-void MSDMTServer::cmd_record_prefix(std::shared_ptr<ClientConnection> client, const std::string& prefix) {
+void BrainServer::cmd_record_prefix(std::shared_ptr<ClientConnection> client, const std::string& prefix) {
     recording_prefix_ = prefix;
     client->send(format_ok("RECORD PREFIX", prefix));
 }
 
-void MSDMTServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, const std::string& filepath) {
+void BrainServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, const std::string& filepath) {
     // Check if file exists
     std::ifstream test(filepath, std::ios::binary);
     if (!test.good()) {
@@ -844,7 +844,7 @@ void MSDMTServer::cmd_rx_audio_inject(std::shared_ptr<ClientConnection> client, 
     client->send(format_ok("RXAUDIOINJECT", ss.str()));
 }
 
-void MSDMTServer::cmd_kill_tx(std::shared_ptr<ClientConnection> client) {
+void BrainServer::cmd_kill_tx(std::shared_ptr<ClientConnection> client) {
     state_.store(ModemState::IDLE);
     clear_tx_buffer();
     broadcast_status(StatusCategory::TX, "IDLE");
@@ -855,7 +855,7 @@ void MSDMTServer::cmd_kill_tx(std::shared_ptr<ClientConnection> client) {
 // Channel Simulation Command Handlers
 // ============================================================
 
-void MSDMTServer::cmd_channel_config(std::shared_ptr<ClientConnection> client, const std::string& param) {
+void BrainServer::cmd_channel_config(std::shared_ptr<ClientConnection> client, const std::string& param) {
     // Return current channel config
     std::ostringstream ss;
     ss << "CHANNEL CONFIG:\n";
@@ -874,7 +874,7 @@ void MSDMTServer::cmd_channel_config(std::shared_ptr<ClientConnection> client, c
     client->send(format_ok("CHANNEL CONFIG", ss.str()));
 }
 
-void MSDMTServer::cmd_channel_preset(std::shared_ptr<ClientConnection> client, const std::string& preset) {
+void BrainServer::cmd_channel_preset(std::shared_ptr<ClientConnection> client, const std::string& preset) {
     std::string p = preset;
     std::transform(p.begin(), p.end(), p.begin(), ::toupper);
     
@@ -927,7 +927,7 @@ void MSDMTServer::cmd_channel_preset(std::shared_ptr<ClientConnection> client, c
     client->send(format_ok("CHANNEL PRESET", ss.str()));
 }
 
-void MSDMTServer::cmd_channel_awgn(std::shared_ptr<ClientConnection> client, const std::string& snr_db) {
+void BrainServer::cmd_channel_awgn(std::shared_ptr<ClientConnection> client, const std::string& snr_db) {
     try {
         float snr = std::stof(snr_db);
         if (snr < -20.0f || snr > 60.0f) {
@@ -946,7 +946,7 @@ void MSDMTServer::cmd_channel_awgn(std::shared_ptr<ClientConnection> client, con
     }
 }
 
-void MSDMTServer::cmd_channel_multipath(std::shared_ptr<ClientConnection> client, const std::string& params) {
+void BrainServer::cmd_channel_multipath(std::shared_ptr<ClientConnection> client, const std::string& params) {
     // Parse: "delay_samples,gain" or just "delay_samples" (default gain 0.5)
     int delay = 48;
     float gain = 0.5f;
@@ -983,7 +983,7 @@ void MSDMTServer::cmd_channel_multipath(std::shared_ptr<ClientConnection> client
     }
 }
 
-void MSDMTServer::cmd_channel_freq_offset(std::shared_ptr<ClientConnection> client, const std::string& offset_hz) {
+void BrainServer::cmd_channel_freq_offset(std::shared_ptr<ClientConnection> client, const std::string& offset_hz) {
     try {
         float offset = std::stof(offset_hz);
         if (offset < -50.0f || offset > 50.0f) {
@@ -1003,7 +1003,7 @@ void MSDMTServer::cmd_channel_freq_offset(std::shared_ptr<ClientConnection> clie
     }
 }
 
-void MSDMTServer::cmd_channel_off(std::shared_ptr<ClientConnection> client) {
+void BrainServer::cmd_channel_off(std::shared_ptr<ClientConnection> client) {
     channel_sim_enabled_ = false;
     channel_awgn_enabled_ = false;
     channel_multipath_enabled_ = false;
@@ -1012,7 +1012,7 @@ void MSDMTServer::cmd_channel_off(std::shared_ptr<ClientConnection> client) {
     client->send(format_ok("CHANNEL OFF", "All channel impairments disabled"));
 }
 
-void MSDMTServer::cmd_run_ber_test(std::shared_ptr<ClientConnection> client, const std::string& params) {
+void BrainServer::cmd_run_ber_test(std::shared_ptr<ClientConnection> client, const std::string& params) {
     // Apply channel impairments to a PCM file and save to a new file
     // Parameters: "input_file,output_file" or just "input_file" (overwrites)
     
@@ -1084,7 +1084,7 @@ void MSDMTServer::cmd_run_ber_test(std::shared_ptr<ClientConnection> client, con
     client->send(format_ok("RUN BERTEST", ss.str()));
 }
 
-void MSDMTServer::cmd_set_equalizer(std::shared_ptr<ClientConnection> client, const std::string& param) {
+void BrainServer::cmd_set_equalizer(std::shared_ptr<ClientConnection> client, const std::string& param) {
     // Convert parameter to uppercase for comparison
     std::string upper_param = param;
     for (char& c : upper_param) c = std::toupper(c);

@@ -1,6 +1,6 @@
-/**
+﻿/**
  * @file test_client.cpp
- * @brief Simple test client for MS-DMT compatible server
+ * @brief Simple test client for Brain Modem compatible server
  * 
  * Tests the basic protocol flow:
  *   1. Connect to control and data ports

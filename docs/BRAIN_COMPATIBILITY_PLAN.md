@@ -1,44 +1,44 @@
-# MS-DMT Compatibility Plan
+﻿# Brain Modem Compatibility Plan
 
 ## Project Status: Phase 4 Complete
 
 **Date**: December 6, 2025  
-**Goal**: Achieve full compatibility with MS-DMT (m188110a) reference implementation
+**Goal**: Achieve full compatibility with Brain Modem (m188110a) reference implementation
 
 ---
 
 ## Summary of Progress
 
 ### Completed
-- ✅ Scrambler seed corrected (0xB5D → 0xBAD)
-- ✅ LFSR clocking verified against MS-DMT source
-- ✅ Loopback tests passing 100%
-- ✅ Reference WAV file analysis complete
-- ✅ RRC matched filtering implemented
-- ✅ Fine-grained timing recovery working
-- ✅ Mode detection (D1/D2) verified: **13/13 modes pass**
-- ✅ MSDMTDecoder module created and tested
-- ✅ Data symbol extraction working for all modes
-- ✅ Descrambling verified (uniform entropy confirms correctness)
-- ✅ MS-DMT source code extracted and analyzed
+- âœ… Scrambler seed corrected (0xB5D â†’ 0xBAD)
+- âœ… LFSR clocking verified against Brain Modem source
+- âœ… Loopback tests passing 100%
+- âœ… Reference WAV file analysis complete
+- âœ… RRC matched filtering implemented
+- âœ… Fine-grained timing recovery working
+- âœ… Mode detection (D1/D2) verified: **13/13 modes pass**
+- âœ… BrainDecoder module created and tested
+- âœ… Data symbol extraction working for all modes
+- âœ… Descrambling verified (uniform entropy confirms correctness)
+- âœ… Brain Modem source code extracted and analyzed
 
 ### Test Results (Reference WAV Files - ALL PASSING)
 
 | File | Correlation | D1 | D2 | Mode | Expected | Result |
 |------|-------------|----|----|------|----------|--------|
-| 75bps_Short | 0.962 | 7 | 5 | UNKNOWN | M75N | ✅ |
-| 75bps_Long | 0.962 | 7 | 5 | UNKNOWN | M75N | ✅ |
-| 150bps_Short | 0.962 | 7 | 4 | M150S | M150S | ✅ |
-| 150bps_Long | 0.962 | 5 | 4 | M150L | M150L | ✅ |
-| 300bps_Short | 0.962 | 6 | 7 | M300S | M300S | ✅ |
-| 300bps_Long | 0.962 | 4 | 7 | M300L | M300L | ✅ |
-| 600bps_Short | 0.962 | 6 | 6 | M600S | M600S | ✅ |
-| 600bps_Long | 0.962 | 4 | 6 | M600L | M600L | ✅ |
-| 1200bps_Short | 0.962 | 6 | 5 | M1200S | M1200S | ✅ |
-| 1200bps_Long | 0.962 | 4 | 5 | M1200L | M1200L | ✅ |
-| 2400bps_Short | 0.962 | 6 | 4 | M2400S | M2400S | ✅ |
-| 2400bps_Long | 0.962 | 4 | 4 | M2400L | M2400L | ✅ |
-| 4800bps_Short | 0.962 | 7 | 6 | M4800S | M4800S | ✅ |
+| 75bps_Short | 0.962 | 7 | 5 | UNKNOWN | M75N | âœ… |
+| 75bps_Long | 0.962 | 7 | 5 | UNKNOWN | M75N | âœ… |
+| 150bps_Short | 0.962 | 7 | 4 | M150S | M150S | âœ… |
+| 150bps_Long | 0.962 | 5 | 4 | M150L | M150L | âœ… |
+| 300bps_Short | 0.962 | 6 | 7 | M300S | M300S | âœ… |
+| 300bps_Long | 0.962 | 4 | 7 | M300L | M300L | âœ… |
+| 600bps_Short | 0.962 | 6 | 6 | M600S | M600S | âœ… |
+| 600bps_Long | 0.962 | 4 | 6 | M600L | M600L | âœ… |
+| 1200bps_Short | 0.962 | 6 | 5 | M1200S | M1200S | âœ… |
+| 1200bps_Long | 0.962 | 4 | 5 | M1200L | M1200L | âœ… |
+| 2400bps_Short | 0.962 | 6 | 4 | M2400S | M2400S | âœ… |
+| 2400bps_Long | 0.962 | 4 | 4 | M2400L | M2400L | âœ… |
+| 4800bps_Short | 0.962 | 7 | 6 | M4800S | M4800S | âœ… |
 
 **Note**: 75bps modes have no D1/D2 encoding in preamble; detection returns "UNKNOWN" which is correct behavior.
 
@@ -46,48 +46,48 @@
 
 ## Phase Plan
 
-### Phase 1: Scrambler Correction ✅ COMPLETE
+### Phase 1: Scrambler Correction âœ… COMPLETE
 - [x] Identify seed error (0xB5D vs 0xBAD)
-- [x] Correct LFSR clocking to match MS-DMT
+- [x] Correct LFSR clocking to match Brain Modem
 - [x] Verify scrambler sequence matches expected
 - [x] Pass loopback tests
 
-### Phase 2: Reference File Analysis ✅ COMPLETE  
+### Phase 2: Reference File Analysis âœ… COMPLETE  
 - [x] Load and analyze all 13 reference WAV files
 - [x] Implement RRC matched filtering
 - [x] Implement fine-grained timing search
 - [x] Verify mode detection (D1/D2 correlation)
 - [x] Document results
 
-### Phase 3: RX Chain Integration ✅ COMPLETE
-- [x] Create MSDMTDecoder module (`src/m110a/msdmt_decoder.h`)
+### Phase 3: RX Chain Integration âœ… COMPLETE
+- [x] Create BrainDecoder module (`src/m110a/Brain_decoder.h`)
 - [x] Integrate RRC matched filter into demodulator
 - [x] Add fine-grained sample-level timing recovery
 - [x] Verify all 13 modes pass (100% mode detection)
 - [x] Handle 75bps modes (no D1/D2, returns UNKNOWN correctly)
-- [x] Create test (`test/test_msdmt_decoder.cpp`)
+- [x] Create test (`test/test_Brain_decoder.cpp`)
 
-### Phase 4: Data Symbol Extraction ✅ COMPLETE
+### Phase 4: Data Symbol Extraction âœ… COMPLETE
 - [x] Extract data symbols after preamble
 - [x] Handle probe symbol interleaving (skip known symbols)
 - [x] Implement descrambling via complex rotation
 - [x] Verify symbol extraction for all modes (uniform entropy confirms correct descrambling)
 
-**Test Results (test_msdmt_data_decode.cpp)**:
+**Test Results (test_Brain_data_decode.cpp)**:
 | Mode | Data Symbols | Tribits | Entropy | Status |
 |------|--------------|---------|---------|--------|
-| M150S | 10020 | 5020 | 3.00 bits | ✅ |
-| M300S | 5668 | 2840 | 2.99 bits | ✅ |
-| M600S | 3236 | 1620 | 2.98 bits | ✅ |
-| M1200S | 2244 | 1120 | 3.00 bits | ✅ |
-| M2400S | 1732 | 1152 | 2.99 bits | ✅ |
-| M4800S | 1220 | 800 | 3.00 bits | ✅ |
+| M150S | 10020 | 5020 | 3.00 bits | âœ… |
+| M300S | 5668 | 2840 | 2.99 bits | âœ… |
+| M600S | 3236 | 1620 | 2.98 bits | âœ… |
+| M1200S | 2244 | 1120 | 3.00 bits | âœ… |
+| M2400S | 1732 | 1152 | 2.99 bits | âœ… |
+| M4800S | 1220 | 800 | 3.00 bits | âœ… |
 
 Entropy near 3.0 bits (maximum for 8 symbols) confirms correct descrambling.
 
-**Reference: MS-DMT Source Analysis**
+**Reference: Brain Modem Source Analysis**
 
-From analysis of the original MS-DMT source code (`ms-dmt.project/m188110a/`):
+From analysis of the original Brain Modem source code (`Brain Modem.project/m188110a/`):
 
 **Frame Structure (per mode)**:
 | Mode | Unknown (data) | Known (probes) | Block Count Mod |
@@ -117,14 +117,14 @@ int mgd3[8] = {0, 1, 3, 2, 7, 6, 4, 5};  // Tribit to constellation position
 - Read bits [2:1:0] as scrambler value
 - Apply: `sym = (sym + scrambler) % 8`
 
-### Phase 5: Full Decode Pipeline ✅ COMPLETE
+### Phase 5: Full Decode Pipeline âœ… COMPLETE
 - [x] Implement deinterleaver (row/col matrix with increments)
 - [x] Viterbi decode (K=7, rate 1/2)
 - [x] Verify encode/decode loopback (100% success)
 - [x] Pack bits to bytes
 
 **Test Results**:
-- Loopback test: "THE QUICK BROWN FOX..." decoded perfectly ✓
+- Loopback test: "THE QUICK BROWN FOX..." decoded perfectly âœ“
 - Reference files: Decode produces ~180 bytes per file
 - Bit statistics: ~48% ones (random data, not text)
 - Conclusion: Reference files contain random test data, not human-readable text
@@ -132,14 +132,14 @@ int mgd3[8] = {0, 1, 3, 2, 7, 6, 4, 5};  // Tribit to constellation position
 **Verified Components**:
 - Interleaver/deinterleaver roundtrip: 0 mismatches
 - Viterbi encode/decode: 0 bit errors
-- Full chain: Encode → Interleave → Deinterleave → Decode → Pack
+- Full chain: Encode â†’ Interleave â†’ Deinterleave â†’ Decode â†’ Pack
 
 **Interleaver Details (from in110a.cpp)**:
-- Matrix: row_nr × col_nr
+- Matrix: row_nr Ã— col_nr
 - Load: row += row_inc, col changes on row wrap
 - Fetch: row += 1, col += col_inc (inverse of load)
-- Short modes: 40 × 18-72 matrix
-- Long modes: 40 × 144-576 matrix
+- Short modes: 40 Ã— 18-72 matrix
+- Long modes: 40 Ã— 144-576 matrix
 
 **Viterbi Decoder (from de110a.cpp)**:
 - 64 states (K=7)
@@ -211,16 +211,16 @@ uint8_t next_tribit() {
 - `/home/claude/m110a_demod/src/modem/scrambler.h` - RefScrambler with correct seed 0xBAD
 
 ### Phase 3 (RX Integration)
-- `/home/claude/m110a_demod/src/m110a/msdmt_decoder.h` - MS-DMT compatible decoder
-- `/home/claude/m110a_demod/test/test_msdmt_decoder.cpp` - Decoder test (13/13 pass)
+- `/home/claude/m110a_demod/src/m110a/Brain_decoder.h` - Brain Modem compatible decoder
+- `/home/claude/m110a_demod/test/test_Brain_decoder.cpp` - Decoder test (13/13 pass)
 - `/home/claude/m110a_demod/CMakeLists.txt` - Added test target
 
 ### Phase 4 (Data Extraction)
-- `/home/claude/m110a_demod/test/test_msdmt_data_decode.cpp` - **NEW** Data descrambling test
-- `/home/claude/ms-dmt/` - **NEW** Extracted MS-DMT source for reference
+- `/home/claude/m110a_demod/test/test_Brain_data_decode.cpp` - **NEW** Data descrambling test
+- `/home/claude/Brain Modem/` - **NEW** Extracted Brain Modem source for reference
 
 ### Existing (to be updated in Phase 5+)
-- `/home/claude/m110a_demod/src/m110a/multimode_rx.h` - Integrate MSDMTDecoder
+- `/home/claude/m110a_demod/src/m110a/multimode_rx.h` - Integrate BrainDecoder
 - `/home/claude/m110a_demod/src/modem/multimode_interleaver.h` - Update deinterleaver
 
 ### Test Programs (in /tmp/)
@@ -235,7 +235,7 @@ uint8_t next_tribit() {
 
 ## Next Steps (Immediate)
 
-1. **Implement Deinterleaver**: Port MS-DMT deinterleaver logic (load/fetch with row_inc, col_inc)
+1. **Implement Deinterleaver**: Port Brain Modem deinterleaver logic (load/fetch with row_inc, col_inc)
 2. **Viterbi Decoder Integration**: Connect soft bits to existing Viterbi decoder
 3. **Bit-level Descrambling**: Apply XOR with LFSR after Viterbi decode
 4. **Payload Verification**: Compare decoded bytes with expected test data
@@ -256,7 +256,7 @@ The 13 WAV files are **concatenated segments from a single recording**, with eac
 The reference files show D1=7, D2=5 which doesn't match any defined mode - this is correct and expected.
 
 ### Phase Offset
-The decoder may find preamble at various phase offsets (0°, 45°, 90°, etc.). This is normal due to:
+The decoder may find preamble at various phase offsets (0Â°, 45Â°, 90Â°, etc.). This is normal due to:
 1. Unknown initial carrier phase
 2. Propagation delay effects
 The correlation metric is phase-invariant, so high correlation indicates correct synchronization regardless of phase.
@@ -265,4 +265,4 @@ The correlation metric is phase-invariant, so high correlation indicates correct
 1. **Fine-grained timing**: Sample-level search (not symbol-level) critical for 90%+ accuracy
 2. **RRC matched filtering**: Essential for ISI rejection and noise performance  
 3. **Walsh correlation**: D1/D2 patterns use Walsh-like orthogonal sequences for robust detection
-4. **Modulo-8 scrambling**: MS-DMT uses addition (not XOR) for scrambling
+4. **Modulo-8 scrambling**: Brain Modem uses addition (not XOR) for scrambling

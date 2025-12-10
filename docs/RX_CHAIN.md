@@ -1,10 +1,10 @@
-# MIL-STD-188-110A Modem RX Chain Documentation
+﻿# MIL-STD-188-110A Modem RX Chain Documentation
 
 ## Overview
 
 The receiver chain consists of:
 1. **Preamble Detection** - Correlates against known preamble pattern
-2. **Symbol Extraction** - MS-DMT compatible demodulation
+2. **Symbol Extraction** - Brain Modem compatible demodulation
 3. **Phase Tracking** - Corrects frequency offsets (when equalizer=NONE)
 4. **Equalization** - DFE or MLSE for multipath compensation
 5. **Viterbi Decoding** - FEC decoding with deinterleaving
@@ -18,7 +18,7 @@ No equalization. Suitable for AWGN channels with no multipath.
 Decision Feedback Equalizer with preamble pretraining and probe-aided adaptation.
 
 **Algorithm Options:**
-- **Standard LMS** (default): Fixed step size, conservative tuning (μ=0.005)
+- **Standard LMS** (default): Fixed step size, conservative tuning (Î¼=0.005)
 - **NLMS** (`use_nlms=true`): Normalized LMS, step size adapts to signal power
 
 **When to use NLMS:**
@@ -41,7 +41,7 @@ Decision Feedback Equalizer with preamble pretraining and probe-aided adaptation
 **Probe Adaptation:**
 - Feedforward filter: 11 taps (~4.5ms at 2400 baud)
 - Feedback filter: 5 taps
-- LMS adaptation: μ=0.005 (conservative for fading)
+- LMS adaptation: Î¼=0.005 (conservative for fading)
 
 **Best for:** General HF channels with mild to moderate fading.
 

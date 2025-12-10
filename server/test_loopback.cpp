@@ -1,8 +1,8 @@
-/**
+﻿/**
  * @file test_loopback.cpp
- * @brief External loopback test via MS-DMT server interface
+ * @brief External loopback test via Brain Modem server interface
  * 
- * Tests the full TX → PCM file → RX path through the server:
+ * Tests the full TX â†’ PCM file â†’ RX path through the server:
  *   1. Connect to server
  *   2. Send test data, trigger TX, record to PCM
  *   3. Inject PCM file for RX decode

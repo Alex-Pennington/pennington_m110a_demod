@@ -1,6 +1,6 @@
-/**
+﻿/**
  * @file test_all_commands.cpp
- * @brief Verify all MS-DMT TCP/IP protocol commands per specification
+ * @brief Verify all Brain Modem TCP/IP protocol commands per specification
  * 
  * Tests all commands defined in docs/TCPIP Guide.md
  */
@@ -98,7 +98,7 @@ void test_result(const std::string& name, bool passed, const std::string& detail
 }
 
 int main() {
-    std::cout << "=== MS-DMT TCP/IP Protocol Command Test ===\n";
+    std::cout << "=== Brain Modem TCP/IP Protocol Command Test ===\n";
     std::cout << "Testing all commands per TCPIP Guide.md specification\n\n";
     
     if (!init_sockets()) {
@@ -468,7 +468,7 @@ int main() {
     
     if (tests_failed == 0) {
         std::cout << "\n*** ALL TESTS PASSED ***\n";
-        std::cout << "Server is fully compliant with MS-DMT TCP/IP protocol.\n";
+        std::cout << "Server is fully compliant with Brain Modem TCP/IP protocol.\n";
     } else {
         std::cout << "\n*** SOME TESTS FAILED ***\n";
     }

@@ -1,14 +1,14 @@
-#ifndef M110A_MSDMT_DECODER_H
-#define M110A_MSDMT_DECODER_H
+﻿#ifndef M110A_BRAIN_DECODER_H
+#define M110A_BRAIN_DECODER_H
 
 /**
- * MS-DMT Compatible Decoder
+ * Brain Modem Compatible Decoder
  * 
  * Implements verified decode algorithm for MIL-STD-188-110A signals:
  * - RRC matched filtering with fine-grained timing
  * - Preamble correlation-based synchronization
  * - D1/D2 mode detection via Walsh correlation
- * - Compatible with MS-DMT reference implementation
+ * - Compatible with Brain Modem reference implementation
  * 
  * Based on verified analysis of reference WAV files:
  * - 2400 baud rate for all modes
@@ -21,7 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include "common/constants.h"
-#include "m110a/msdmt_preamble.h"
+#include "m110a/brain_preamble.h"
 #include "modem/scrambler.h"
 #include "dsp/fir_filter.h"
 #include "dsp/nco.h"
@@ -34,16 +34,16 @@
 namespace m110a {
 
 /**
- * MS-DMT Decoder Configuration
+ * Brain Modem Decoder Configuration
  */
-struct MSDMTDecoderConfig {
+struct BrainDecoderConfig {
     float sample_rate = 48000.0f;
     float carrier_freq = 1800.0f;
     float baud_rate = 2400.0f;
     float rrc_alpha = 0.35f;
     int rrc_span = 6;  // symbols
     int max_search_symbols = 500;  // preamble search range
-    float freq_search_range = 10.0f;  // Hz, search ± this range for carrier
+    float freq_search_range = 10.0f;  // Hz, search Â± this range for carrier
     float freq_search_step = 1.0f;    // Hz, step size for frequency search
     bool use_fft_coarse_afc = true;   // Enable two-stage AFC (FFT coarse + preamble fine)
     float coarse_search_range = 12.0f; // Hz, FFT coarse AFC search range
@@ -53,13 +53,13 @@ struct MSDMTDecoderConfig {
     // Mode-specific frame structure (default M2400S)
     int unknown_data_len = 32;  // Data symbols per mini-frame
     int known_data_len = 16;    // Probe symbols per mini-frame
-    int preamble_symbols = 1440; // Preamble length in symbols (3 frames × 480)
+    int preamble_symbols = 1440; // Preamble length in symbols (3 frames Ã— 480)
 };
 
 /**
- * MS-DMT Decode Result
+ * Brain Modem Decode Result
  */
-struct MSDMTDecodeResult {
+struct BrainDecodeResult {
     bool preamble_found = false;
     float correlation = 0.0f;
     float accuracy = 0.0f;  // Hard decision accuracy on preamble
@@ -83,11 +83,11 @@ struct MSDMTDecodeResult {
 };
 
 /**
- * MS-DMT Compatible Decoder
+ * Brain Modem Compatible Decoder
  */
-class MSDMTDecoder {
+class BrainDecoder {
 public:
-    explicit MSDMTDecoder(const MSDMTDecoderConfig& cfg = MSDMTDecoderConfig())
+    explicit BrainDecoder(const BrainDecoderConfig& cfg = BrainDecoderConfig())
         : config_(cfg) {
         
         // Pre-compute samples per symbol
@@ -103,8 +103,8 @@ public:
     /**
      * Decode RF samples
      */
-    MSDMTDecodeResult decode(const std::vector<float>& rf_samples) {
-        MSDMTDecodeResult result;
+    BrainDecodeResult decode(const std::vector<float>& rf_samples) {
+        BrainDecodeResult result;
         
         // Step 1: Two-stage AFC (if enabled)
         float coarse_freq_offset = 0.0f;
@@ -137,7 +137,7 @@ public:
             }
             
             // STAGE 2: Fine preamble-based search around coarse estimate
-            // Search ±fine_search_range around the coarse estimate
+            // Search Â±fine_search_range around the coarse estimate
             float search_start = coarse_freq_offset - config_.fine_search_range;
             float search_end = coarse_freq_offset + config_.fine_search_range;
             
@@ -242,7 +242,7 @@ public:
     }
 
 private:
-    MSDMTDecoderConfig config_;
+    BrainDecoderConfig config_;
     int sps_;  // Samples per symbol
     std::vector<float> rrc_taps_;
     std::vector<uint8_t> common_pattern_;  // 288-symbol expected pattern
@@ -255,10 +255,10 @@ private:
         int scram_idx = 0;
         
         for (int i = 0; i < 9; i++) {
-            uint8_t d_val = msdmt::p_c_seq[i];
+            uint8_t d_val = brain::p_c_seq[i];
             for (int j = 0; j < 32; j++) {
-                uint8_t base = msdmt::psymbol[d_val][j % 8];
-                uint8_t scrambled = (base + msdmt::pscramble[scram_idx % 32]) % 8;
+                uint8_t base = brain::psymbol[d_val][j % 8];
+                uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
                 common_pattern_.push_back(scrambled);
                 scram_idx++;
             }
@@ -413,7 +413,7 @@ private:
     /**
      * Find preamble with sample-level timing optimization
      */
-    void find_preamble(const std::vector<complex_t>& filtered, MSDMTDecodeResult& result) {
+    void find_preamble(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
         float best_corr = 0.0f;
         int best_start = 0;
         float best_phase = 0.0f;
@@ -441,8 +441,8 @@ private:
                 int idx = start + i * sps_;
                 if (idx >= static_cast<int>(filtered.size())) break;
                 
-                complex_t ref(msdmt::psk8_i[common_pattern_[i]], 
-                              msdmt::psk8_q[common_pattern_[i]]);
+                complex_t ref(brain::psk8_i[common_pattern_[i]], 
+                              brain::psk8_q[common_pattern_[i]]);
                 corr += filtered[idx] * std::conj(ref);
                 power += std::norm(filtered[idx]);
             }
@@ -467,8 +467,8 @@ private:
                         for (int i = 0; i < 288; i++) {
                             int idx = s2 + i * sps_;
                             if (idx >= static_cast<int>(filtered.size())) break;
-                            complex_t ref(msdmt::psk8_i[common_pattern_[i]], 
-                                          msdmt::psk8_q[common_pattern_[i]]);
+                            complex_t ref(brain::psk8_i[common_pattern_[i]], 
+                                          brain::psk8_q[common_pattern_[i]]);
                             c2 += filtered[idx] * std::conj(ref);
                             p2 += std::norm(filtered[idx]);
                         }
@@ -512,7 +512,7 @@ private:
      * Extract preamble symbols for further processing
      */
     void extract_preamble_symbols(const std::vector<complex_t>& filtered, 
-                                   MSDMTDecodeResult& result) {
+                                   BrainDecodeResult& result) {
         complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
         
         // Extract all 480 symbols of first preamble frame
@@ -526,7 +526,7 @@ private:
     /**
      * Detect mode from D1/D2 patterns
      */
-    void detect_mode(const std::vector<complex_t>& filtered, MSDMTDecodeResult& result) {
+    void detect_mode(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
         complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
         
         // D1 starts at symbol 320, D2 at 352 (per MIL-STD-188-110A section 5.2.2)
@@ -542,11 +542,11 @@ private:
             complex_t corr1(0, 0);
             float pow1 = 0;
             for (int i = 0; i < 32; i++) {
-                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[i % 32]) % 8;
+                uint8_t pattern = (brain::psymbol[d][i % 8] + brain::pscramble[i % 32]) % 8;
                 int idx = d1_start + i * sps_;
                 if (idx >= static_cast<int>(filtered.size())) break;
                 complex_t sym = filtered[idx] * rot;
-                complex_t ref(msdmt::psk8_i[pattern], msdmt::psk8_q[pattern]);
+                complex_t ref(brain::psk8_i[pattern], brain::psk8_q[pattern]);
                 corr1 += sym * std::conj(ref);
                 pow1 += std::norm(filtered[idx]);
             }
@@ -557,11 +557,11 @@ private:
             complex_t corr2(0, 0);
             float pow2 = 0;
             for (int i = 0; i < 32; i++) {
-                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[i % 32]) % 8;
+                uint8_t pattern = (brain::psymbol[d][i % 8] + brain::pscramble[i % 32]) % 8;
                 int idx = d2_start + i * sps_;
                 if (idx >= static_cast<int>(filtered.size())) break;
                 complex_t sym = filtered[idx] * rot;
-                complex_t ref(msdmt::psk8_i[pattern], msdmt::psk8_q[pattern]);
+                complex_t ref(brain::psk8_i[pattern], brain::psk8_q[pattern]);
                 corr2 += sym * std::conj(ref);
                 pow2 += std::norm(filtered[idx]);
             }
@@ -582,7 +582,7 @@ private:
      * Look up mode name from D1/D2 values
      */
     std::string lookup_mode_name(int d1, int d2) {
-        // Mode table from MS-DMT
+        // Mode table from Brain Modem
         struct ModeEntry { int d1; int d2; const char* name; };
         static const ModeEntry modes[] = {
             {0, 0, "M75N"},    // 75bps no interleave (special case)
@@ -611,7 +611,7 @@ private:
      * Extract data symbols (after preamble)
      */
     void extract_data_symbols(const std::vector<complex_t>& filtered,
-                               MSDMTDecodeResult& result) {
+                               BrainDecodeResult& result) {
         complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
         
         // Use configured preamble length (set by caller based on known mode)
@@ -662,7 +662,7 @@ private:
                 complex_t sym = symbols[sym_idx + i];
                 uint8_t scr_val = scr.next_tribit();
                 
-                // Descramble: rotate by -scr_val * 45°
+                // Descramble: rotate by -scr_val * 45Â°
                 float scr_phase = -scr_val * (PI / 4.0f);
                 sym *= std::polar(1.0f, scr_phase);
                 
@@ -684,7 +684,7 @@ private:
     
     /**
      * Soft demap 8-PSK symbol to 3 soft bits
-     * Uses inverse Gray code: position → tribit
+     * Uses inverse Gray code: position â†’ tribit
      */
     std::vector<float> soft_demap_8psk(complex_t sym) {
         // Inverse Gray code mapping (position to tribit)
@@ -713,4 +713,4 @@ private:
 
 } // namespace m110a
 
-#endif // M110A_MSDMT_DECODER_H
+#endif // M110A_BRAIN_DECODER_H

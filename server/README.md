@@ -1,25 +1,25 @@
-# M110A Server - MS-DMT Compatible Network Interface
+﻿# M110A Server - Brain Modem Compatible Network Interface
 
 ## Overview
 
-This server provides an MS-DMT compatible network interface for the M110A modem.
+This server provides an Brain Modem compatible network interface for the M110A modem.
 It allows external applications to interface with the modem via TCP sockets,
-using the same protocol as the MS-DMT reference implementation.
+using the same protocol as the Brain Modem reference implementation.
 
 ## Network Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      M110A Server                           │
-│                                                             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │ Data Port   │  │ Control Port│  │ Discovery (UDP)     │ │
-│  │ TCP 4998    │  │ TCP 4999    │  │ UDP 5000            │ │
-│  │             │  │             │  │                     │ │
-│  │ Binary data │  │ Commands &  │  │ Broadcasts "helo"   │ │
-│  │ in/out      │  │ Status msgs │  │ for auto-discovery  │ │
-│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                      M110A Server                           â”‚
+â”‚                                                             â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â” â”‚
+â”‚  â”‚ Data Port   â”‚  â”‚ Control Portâ”‚  â”‚ Discovery (UDP)     â”‚ â”‚
+â”‚  â”‚ TCP 4998    â”‚  â”‚ TCP 4999    â”‚  â”‚ UDP 5000            â”‚ â”‚
+â”‚  â”‚             â”‚  â”‚             â”‚  â”‚                     â”‚ â”‚
+â”‚  â”‚ Binary data â”‚  â”‚ Commands &  â”‚  â”‚ Broadcasts "helo"   â”‚ â”‚
+â”‚  â”‚ in/out      â”‚  â”‚ Status msgs â”‚  â”‚ for auto-discovery  â”‚ â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜ â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 | Port | Protocol | Purpose |
@@ -34,7 +34,7 @@ using the same protocol as the MS-DMT reference implementation.
 
 ```bash
 cd server
-g++ -std=c++17 -O2 -I.. -o m110a_server.exe main.cpp msdmt_server.cpp ../api/modem_tx.cpp ../api/modem_rx.cpp -lws2_32
+g++ -std=c++17 -O2 -I.. -o m110a_server.exe main.cpp brain_server.cpp ../api/modem_tx.cpp ../api/modem_rx.cpp -lws2_32
 g++ -std=c++17 -O2 -I.. -o test_client.exe test_client.cpp -lws2_32
 ```
 
@@ -42,7 +42,7 @@ g++ -std=c++17 -O2 -I.. -o test_client.exe test_client.cpp -lws2_32
 
 ```bash
 cd server
-g++ -std=c++17 -O2 -I.. -o m110a_server main.cpp msdmt_server.cpp ../api/modem_tx.cpp ../api/modem_rx.cpp -lpthread
+g++ -std=c++17 -O2 -I.. -o m110a_server main.cpp brain_server.cpp ../api/modem_tx.cpp ../api/modem_rx.cpp -lpthread
 g++ -std=c++17 -O2 -I.. -o test_client test_client.cpp
 ```
 
@@ -187,8 +187,8 @@ Run the test client against the server:
 
 | File | Description |
 |------|-------------|
-| `msdmt_server.h` | Server header with API |
-| `msdmt_server.cpp` | Server implementation |
+| `brain_server.h` | Server header with API |
+| `brain_server.cpp` | Server implementation |
 | `main.cpp` | Server executable entry point |
 | `test_client.cpp` | Test client for protocol verification |
 
@@ -197,17 +197,17 @@ Run the test client against the server:
 The server uses the `m110a::api` modem library internally:
 
 ```cpp
-// TX: Data → PCM samples
+// TX: Data â†’ PCM samples
 m110a::api::TxConfig cfg;
 cfg.mode = m110a::api::Mode::M600_SHORT;
 auto samples = m110a::api::encode(data, cfg);
 
-// RX: PCM samples → Data
+// RX: PCM samples â†’ Data
 m110a::api::RxConfig rx_cfg;
 auto result = m110a::api::decode(samples, rx_cfg);
 ```
 
 ## Compatibility
 
-This server implements the MS-DMT v3.00 Beta 2.22 protocol and should be
-compatible with any client designed for the MS-DMT reference implementation.
+This server implements the Brain Modem v3.00 Beta 2.22 protocol and should be
+compatible with any client designed for the Brain Modem reference implementation.

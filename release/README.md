@@ -1,8 +1,8 @@
-# Phoenix Nest Modem
+﻿# Phoenix Nest Modem
 
 **MIL-STD-188-110A HF Data Modem**
 
-Copyright © 2025 Phoenix Nest LLC
+Copyright Â© 2025 Phoenix Nest LLC
 
 See [EULA](phoenixnestmodem_eula.md) for license terms and conditions.
 
@@ -29,7 +29,7 @@ A complete software implementation of the MIL-STD-188-110A serial-tone HF data m
 - **Carrier**: 1800 Hz center frequency
 - **Symbol Rate**: 2400 baud
 - **Sample Rates**: 8000, 9600, 44100, 48000 Hz supported
-- **Filtering**: Root-raised-cosine with β=0.35
+- **Filtering**: Root-raised-cosine with Î²=0.35
 
 ### Equalizers
 Seven equalizer implementations for different channel conditions:
@@ -49,62 +49,62 @@ Seven equalizer implementations for different channel conditions:
 - **Soft Demapping**: SNR-weighted LLR computation
 - **Adaptive MLSE**: Channel length estimation and tracking
 - **Automatic Mode Detection**: Preamble correlation with D1/D2 decoding
-- **Frequency Offset Compensation**: ±10 Hz acquisition range
+- **Frequency Offset Compensation**: Â±10 Hz acquisition range
 - **Parallel Test Execution**: Multi-threaded test harness with up to 16 threads
 - **Web-Based GUI**: Interactive test interface at `http://localhost:8080`
-- **MS-DMT Compatible Server**: Network interface on TCP ports 4998/4999/5000
+- **Brain Modem Compatible Server**: Network interface on TCP ports 4998/4999/5000
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        API Layer                             │
-│  modem.h  modem_rx.h  modem_tx.h  modem_config.h            │
-├─────────────────────────────────────────────────────────────┤
-│                     Modem Components                         │
-│  ┌─────────┐ ┌──────────┐ ┌──────────┐ ┌─────────────────┐  │
-│  │ m110a/  │ │ modem/   │ │equalizer/│ │     sync/       │  │
-│  │ m110a_tx│ │ viterbi  │ │ dfe      │ │ preamble_detect │  │
-│  │ m110a_rx│ │ siso     │ │ mlse     │ │ timing_recovery │  │
-│  │ mode_*  │ │ mapper   │ │ turbo    │ │ freq_estimator  │  │
-│  └─────────┘ └──────────┘ └──────────┘ └─────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                      DSP Primitives                          │
-│  nco.h  rrc_filter.h  resampler.h  agc.h  fft.h            │
-├─────────────────────────────────────────────────────────────┤
-│                        I/O Layer                             │
-│  pcm_file.h  wav_file.h                                     │
-└─────────────────────────────────────────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                        API Layer                             â”‚
+â”‚  modem.h  modem_rx.h  modem_tx.h  modem_config.h            â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚                     Modem Components                         â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â” â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â” â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â” â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
+â”‚  â”‚ m110a/  â”‚ â”‚ modem/   â”‚ â”‚equalizer/â”‚ â”‚     sync/       â”‚  â”‚
+â”‚  â”‚ m110a_txâ”‚ â”‚ viterbi  â”‚ â”‚ dfe      â”‚ â”‚ preamble_detect â”‚  â”‚
+â”‚  â”‚ m110a_rxâ”‚ â”‚ siso     â”‚ â”‚ mlse     â”‚ â”‚ timing_recovery â”‚  â”‚
+â”‚  â”‚ mode_*  â”‚ â”‚ mapper   â”‚ â”‚ turbo    â”‚ â”‚ freq_estimator  â”‚  â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜ â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜ â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜ â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚                      DSP Primitives                          â”‚
+â”‚  nco.h  rrc_filter.h  resampler.h  agc.h  fft.h            â”‚
+â”œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¤
+â”‚                        I/O Layer                             â”‚
+â”‚  pcm_file.h  wav_file.h                                     â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ## Project Structure
 
 ```
 pennington_m110a_demod/
-├── api/                    # Public API headers
-│   ├── modem.h            # Main include
-│   ├── modem_rx.cpp/h     # Receiver implementation
-│   ├── modem_tx.cpp/h     # Transmitter implementation
-│   ├── modem_config.h     # Configuration structures
-│   └── channel_sim.h      # Channel simulation
-├── src/                    # Core modem implementation
-│   ├── common/            # Shared types and constants
-│   ├── dsp/               # DSP primitives (NCO, filters, AGC)
-│   ├── equalizer/         # DFE, MLSE, Turbo equalizers
-│   ├── io/                # File I/O (PCM, WAV)
-│   ├── m110a/             # Protocol-specific (preamble, modes)
-│   ├── modem/             # Codec chain (Viterbi, interleaver)
-│   └── sync/              # Synchronization (timing, frequency)
-├── test/                  # Test suite and GUI
-│   ├── exhaustive_test_unified.cpp  # Main test executable
-│   ├── test_gui_server.cpp          # Web GUI server
-│   └── test_framework.h             # Test infrastructure
-├── server/                # TCP/IP server interface
-│   ├── msdmt_server.cpp   # MS-DMT compatible server
-│   └── main.cpp           # Server entry point
-├── docs/                  # Documentation
-├── refrence_pcm/          # MS-DMT reference test vectors
-└── build.ps1              # PowerShell build script
+â”œâ”€â”€ api/                    # Public API headers
+â”‚   â”œâ”€â”€ modem.h            # Main include
+â”‚   â”œâ”€â”€ modem_rx.cpp/h     # Receiver implementation
+â”‚   â”œâ”€â”€ modem_tx.cpp/h     # Transmitter implementation
+â”‚   â”œâ”€â”€ modem_config.h     # Configuration structures
+â”‚   â””â”€â”€ channel_sim.h      # Channel simulation
+â”œâ”€â”€ src/                    # Core modem implementation
+â”‚   â”œâ”€â”€ common/            # Shared types and constants
+â”‚   â”œâ”€â”€ dsp/               # DSP primitives (NCO, filters, AGC)
+â”‚   â”œâ”€â”€ equalizer/         # DFE, MLSE, Turbo equalizers
+â”‚   â”œâ”€â”€ io/                # File I/O (PCM, WAV)
+â”‚   â”œâ”€â”€ m110a/             # Protocol-specific (preamble, modes)
+â”‚   â”œâ”€â”€ modem/             # Codec chain (Viterbi, interleaver)
+â”‚   â””â”€â”€ sync/              # Synchronization (timing, frequency)
+â”œâ”€â”€ test/                  # Test suite and GUI
+â”‚   â”œâ”€â”€ exhaustive_test_unified.cpp  # Main test executable
+â”‚   â”œâ”€â”€ test_gui_server.cpp          # Web GUI server
+â”‚   â””â”€â”€ test_framework.h             # Test infrastructure
+â”œâ”€â”€ server/                # TCP/IP server interface
+â”‚   â”œâ”€â”€ brain_server.cpp   # Brain Modem compatible server
+â”‚   â””â”€â”€ main.cpp           # Server entry point
+â”œâ”€â”€ docs/                  # Documentation
+â”œâ”€â”€ refrence_pcm/          # Brain Modem reference test vectors
+â””â”€â”€ build.ps1              # PowerShell build script
 ```
 
 ## Building
@@ -232,7 +232,7 @@ assert(result.data == original);
 ## Performance
 
 ### Test Results (11/11 modes passing)
-All modes verified with loopback testing and MS-DMT reference sample compatibility.
+All modes verified with loopback testing and Brain Modem reference sample compatibility.
 
 ### Turbo Equalization Gains
 | Condition | Without Turbo | With Turbo | Improvement |
@@ -256,7 +256,7 @@ Parallel test execution performance (Windows, 8-core CPU):
 
 Test backends:
 - **Direct API Backend**: In-process modem testing (supports parallel execution)
-- **Server Backend**: TCP/IP testing via MS-DMT compatible interface (sequential only)
+- **Server Backend**: TCP/IP testing via Brain Modem compatible interface (sequential only)
 
 ## Protocol Details
 
@@ -277,23 +277,23 @@ Probe: 16 symbols (channel estimation)
 ### Channel Coding
 - Convolutional encoder: Rate 1/2, K=7, polynomials G1=0133, G2=0171
 - Interleaver: Block interleaver, size depends on mode and short/long setting
-- Scrambler: 9-stage LFSR, polynomial x⁹ + x⁴ + 1
+- Scrambler: 9-stage LFSR, polynomial xâ¹ + xâ´ + 1
 
 ### Modulation
 - 8PSK with Gray coding
 - Differential encoding (optional)
 - Symbol rate: 2400 baud fixed
 
-## MS-DMT Compatibility
+## Brain Modem Compatibility
 
-Tested for interoperability with MS-DMT v3.00.2.22 reference implementation:
+Tested for interoperability with Brain Modem v3.00.2.22 reference implementation:
 - All 10 standard modes verified (M150-M2400, short and long interleave)
 - Reference test samples included in `refrence_pcm/` directory for validation
 - Known test message: "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890"
 - Compatible TCP/IP server interface on ports 4998 (data), 4999 (control), 5000 (UDP discovery)
 
 Note: This implementation was developed independently from the MIL-STD-188-110A specification.
-MS-DMT compatibility is for interoperability testing only.
+Brain Modem compatibility is for interoperability testing only.
 
 ## Documentation
 
@@ -344,7 +344,7 @@ Browser opens to `http://localhost:8080` with:
 - Full control over test parameters
 
 **Server Backend**:
-- Tests via TCP/IP (MS-DMT compatible)
+- Tests via TCP/IP (Brain Modem compatible)
 - Validates server interface
 - Sequential execution only
 - Requires `m110a_server.exe` running
@@ -359,7 +359,7 @@ This implementation was developed over 22+ sessions, progressing through:
 3. MLSE equalizer (L=2, L=3, adaptive)
 4. RLS adaptive filtering
 5. Turbo equalization with SISO Viterbi decoder
-6. MS-DMT compatibility fixes
+6. Brain Modem compatibility fixes
 7. Parallel test execution framework
 8. Web-based test GUI
 
@@ -397,7 +397,7 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 - MIL-STD-188-110A: Interoperability and Performance Standards for Data Modems (primary specification)
 - MIL-STD-188-110B/C: Updated versions (partial compatibility)
 - STANAG 4539: NATO equivalent standard
-- MS-DMT v3.00.2.22: Used for interoperability validation
+- Brain Modem v3.00.2.22: Used for interoperability validation
 
 ## Acknowledgments
 

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * AFC Investigation Test
  * 
  * Tests to understand WHY the AFC fails at >2 Hz offset
@@ -6,7 +6,7 @@
  */
 
 #include "../api/modem.h"
-#include "../src/m110a/msdmt_decoder.h"
+#include "../src/m110a/brain_decoder.h"
 #include <iostream>
 #include <iomanip>
 #include <vector>
@@ -39,7 +39,7 @@ void test_afc_performance() {
     std::vector<float> offsets = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f, 5.0f, 7.0f, 10.0f};
     
     std::cout << "Testing 600S mode with clean signal (no noise, no multipath)\n";
-    std::cout << "AFC Search Range: ±10 Hz, Step: 1 Hz (default)\n\n";
+    std::cout << "AFC Search Range: Â±10 Hz, Step: 1 Hz (default)\n\n";
     std::cout << std::left << std::setw(12) << "Freq Offset"
               << std::setw(15) << "Detected?"
               << std::setw(15) << "Detected Freq"
@@ -79,9 +79,9 @@ void test_afc_performance() {
         float ber = (bits > 0) ? static_cast<float>(errors) / bits : 1.0f;
         
         std::string status;
-        if (ber < 0.01f) status = "✓ PASS";
-        else if (ber < 0.1f) status = "⚠ MARGINAL";
-        else status = "✗ FAIL";
+        if (ber < 0.01f) status = "âœ“ PASS";
+        else if (ber < 0.1f) status = "âš  MARGINAL";
+        else status = "âœ— FAIL";
         
         std::cout << std::left << std::setw(12) << (std::to_string(offset) + " Hz")
                   << std::setw(15) << (decode_result.success ? "YES" : "NO")
@@ -91,7 +91,7 @@ void test_afc_performance() {
                   << status << "\n";
     }
     
-    std::cout << "\n=== Direct MSDMTDecoder Test ===\n";
+    std::cout << "\n=== Direct BrainDecoder Test ===\n";
     std::cout << "Testing decoder's frequency search directly\n\n";
     
     std::cout << std::left << std::setw(12) << "Freq Offset"
@@ -112,26 +112,26 @@ void test_afc_performance() {
             apply_freq_offset(pcm, offset);
         }
         
-        // Test with MSDMTDecoder directly
-        MSDMTDecoderConfig decoder_cfg;
+        // Test with BrainDecoder directly
+        BrainDecoderConfig decoder_cfg;
         decoder_cfg.sample_rate = 48000.0f;
         decoder_cfg.carrier_freq = 1800.0f;
         decoder_cfg.baud_rate = 2400.0f;
-        decoder_cfg.freq_search_range = 10.0f;  // ±10 Hz
+        decoder_cfg.freq_search_range = 10.0f;  // Â±10 Hz
         decoder_cfg.freq_search_step = 1.0f;    // 1 Hz steps
         decoder_cfg.unknown_data_len = 32;  // 600S frame structure
         decoder_cfg.known_data_len = 16;
         
-        MSDMTDecoder decoder(decoder_cfg);
+        BrainDecoder decoder(decoder_cfg);
         auto result = decoder.decode(pcm);
         
         std::string status;
         if (result.preamble_found && result.mode_name != "UNKNOWN") {
             float freq_error = std::abs(result.freq_offset_hz - offset);
-            if (freq_error < 0.5f) status = "✓ CORRECT";
-            else status = "⚠ WRONG FREQ";
+            if (freq_error < 0.5f) status = "âœ“ CORRECT";
+            else status = "âš  WRONG FREQ";
         } else {
-            status = "✗ NO LOCK";
+            status = "âœ— NO LOCK";
         }
         
         std::cout << std::left << std::setw(12) << (std::to_string(offset) + " Hz")
@@ -151,11 +151,11 @@ void test_afc_performance() {
     };
     
     std::vector<TestConfig> configs = {
-        {10.0f, 1.0f, "Default (±10 Hz, 1 Hz step)"},
-        {10.0f, 0.5f, "Finer step (±10 Hz, 0.5 Hz step)"},
-        {20.0f, 1.0f, "Wider range (±20 Hz, 1 Hz step)"},
-        {10.0f, 0.25f, "Very fine (±10 Hz, 0.25 Hz step)"},
-        {5.0f, 0.5f, "Narrow/fine (±5 Hz, 0.5 Hz step)"}
+        {10.0f, 1.0f, "Default (Â±10 Hz, 1 Hz step)"},
+        {10.0f, 0.5f, "Finer step (Â±10 Hz, 0.5 Hz step)"},
+        {20.0f, 1.0f, "Wider range (Â±20 Hz, 1 Hz step)"},
+        {10.0f, 0.25f, "Very fine (Â±10 Hz, 0.25 Hz step)"},
+        {5.0f, 0.5f, "Narrow/fine (Â±5 Hz, 0.5 Hz step)"}
     };
     
     // Encode once with 5 Hz offset
@@ -171,7 +171,7 @@ void test_afc_performance() {
         std::cout << std::string(80, '-') << "\n";
         
         for (const auto& config : configs) {
-            MSDMTDecoderConfig decoder_cfg;
+            BrainDecoderConfig decoder_cfg;
             decoder_cfg.sample_rate = 48000.0f;
             decoder_cfg.carrier_freq = 1800.0f;
             decoder_cfg.baud_rate = 2400.0f;
@@ -180,14 +180,14 @@ void test_afc_performance() {
             decoder_cfg.unknown_data_len = 32;
             decoder_cfg.known_data_len = 16;
             
-            MSDMTDecoder decoder(decoder_cfg);
+            BrainDecoder decoder(decoder_cfg);
             auto result = decoder.decode(pcm);
             
             float freq_error = std::abs(result.freq_offset_hz - 5.0f);
             std::string status;
-            if (!result.preamble_found) status = "✗ NO PREAMBLE";
-            else if (freq_error < 0.5f) status = "✓ CORRECT FREQ";
-            else status = "⚠ WRONG FREQ (err=" + std::to_string(freq_error) + "Hz)";
+            if (!result.preamble_found) status = "âœ— NO PREAMBLE";
+            else if (freq_error < 0.5f) status = "âœ“ CORRECT FREQ";
+            else status = "âš  WRONG FREQ (err=" + std::to_string(freq_error) + "Hz)";
             
             std::cout << std::left << std::setw(40) << config.description
                       << std::setw(18) << (std::to_string(result.freq_offset_hz) + " Hz")
@@ -199,12 +199,12 @@ void test_afc_performance() {
 
 int main() {
     std::cout << "\n";
-    std::cout << "╔════════════════════════════════════════════════════════════════╗\n";
-    std::cout << "║           AFC (Automatic Frequency Control) Investigation      ║\n";
-    std::cout << "║                                                                ║\n";
-    std::cout << "║  Testing why AFC fails at >2-3 Hz frequency offset            ║\n";
-    std::cout << "║  when developer claimed it works                               ║\n";
-    std::cout << "╚════════════════════════════════════════════════════════════════╝\n";
+    std::cout << "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—\n";
+    std::cout << "â•‘           AFC (Automatic Frequency Control) Investigation      â•‘\n";
+    std::cout << "â•‘                                                                â•‘\n";
+    std::cout << "â•‘  Testing why AFC fails at >2-3 Hz frequency offset            â•‘\n";
+    std::cout << "â•‘  when developer claimed it works                               â•‘\n";
+    std::cout << "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n";
     std::cout << "\n";
     
     test_afc_performance();

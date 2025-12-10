@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Phoenix Nest LLC
+﻿// Copyright (C) 2025 Phoenix Nest LLC
 // Phoenix Nest Modem - MIL-STD-188-110A HF Data Modem
 // Licensed under Phoenix Nest EULA - see phoenixnestmodem_eula.md
 /**
@@ -11,7 +11,7 @@
 #include "api/modem_tx.h"
 #include "modem/m110a_codec.h"
 #include "m110a/mode_config.h"
-#include "m110a/msdmt_preamble.h"
+#include "m110a/brain_preamble.h"
 #include "dsp/nco.h"
 #include "dsp/fir_filter.h"
 #include <mutex>
@@ -211,9 +211,9 @@ private:
     }
     
     std::vector<complex_t> generate_preamble(ModeId mode_id) {
-        ::m110a::MSDMTPreambleEncoder encoder;
+        ::m110a::BrainPreambleEncoder encoder;
         
-        // Map ModeId to mode_index for MSDMTPreambleEncoder
+        // Map ModeId to mode_index for BrainPreambleEncoder
         int mode_index;
         bool is_long;
         
@@ -241,7 +241,7 @@ private:
      * Generate EOM (End of Message) marker
      * 
      * EOM consists of 4 flush frames with:
-     * - Data portion: all zeros (tribit 0 → gray → scramble)
+     * - Data portion: all zeros (tribit 0 â†’ gray â†’ scramble)
      * - Probe portion: normal scrambled probes
      * 
      * The scrambler continues from where data encoding left off,
@@ -292,7 +292,7 @@ private:
         
         // Generate 4 flush frames
         for (int frame = 0; frame < EOM_FRAMES; frame++) {
-            // Data portion: all zeros (tribit 0 → gray 0 → scrambled)
+            // Data portion: all zeros (tribit 0 â†’ gray 0 â†’ scrambled)
             for (int i = 0; i < unknown_len; i++) {
                 int scr = scrambler.next();
                 int sym_idx = (ZERO_GRAY + scr) & 7;

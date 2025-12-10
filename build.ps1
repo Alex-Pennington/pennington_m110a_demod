@@ -171,7 +171,7 @@ function Build-Server {
     
     $sources = @(
         "server/main.cpp",
-        "server/msdmt_server.cpp",
+        "server/brain_server.cpp",
         "api/modem_tx.cpp",
         "api/modem_rx.cpp"
     )

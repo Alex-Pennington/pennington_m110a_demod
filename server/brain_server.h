@@ -1,23 +1,23 @@
-// Copyright (C) 2025 Phoenix Nest LLC
+﻿// Copyright (C) 2025 Phoenix Nest LLC
 // Phoenix Nest Modem - MIL-STD-188-110A HF Data Modem
 // Licensed under Phoenix Nest EULA - see phoenixnestmodem_eula.md
 /**
- * @file msdmt_server.h
- * @brief MS-DMT Compatible Network Interface Server
+ * @file brain_server.h
+ * @brief Brain Modem Compatible Network Interface Server
  * 
- * Implements the MS-DMT network protocol for MIL-STD-188-110A modem.
+ * Implements the Brain Modem network protocol for MIL-STD-188-110A modem.
  * 
  * Network Architecture:
  *   - Data Port (TCP 4998):    Raw binary data in/out
  *   - Control Port (TCP 4999): ASCII commands and status messages
  *   - Discovery Port (UDP 5000): "helo" broadcasts for auto-discovery
  * 
- * This provides a drop-in replacement interface compatible with MS-DMT
+ * This provides a drop-in replacement interface compatible with Brain Modem
  * clients, allowing seamless integration with existing applications.
  */
 
-#ifndef MSDMT_SERVER_H
-#define MSDMT_SERVER_H
+#ifndef BRAIN_SERVER_H
+#define BRAIN_SERVER_H
 
 #include "api/modem_types.h"
 #include <string>
@@ -37,7 +37,7 @@ namespace server {
 // Configuration
 // ============================================================
 
-/// Default port numbers (MS-DMT compatible)
+/// Default port numbers (Brain Modem compatible)
 constexpr uint16_t DEFAULT_DATA_PORT = 4998;
 constexpr uint16_t DEFAULT_CONTROL_PORT = 4999;
 constexpr uint16_t DEFAULT_DISCOVERY_PORT = 5000;
@@ -171,19 +171,19 @@ using OnClientConnectedCallback = std::function<void(const std::string& address,
 using OnClientDisconnectedCallback = std::function<void(const std::string& address, uint16_t port)>;
 
 // ============================================================
-// MS-DMT Server Interface
+// Brain Modem Server Interface
 // ============================================================
 
 /**
- * @class MSDMTServer
- * @brief Main server class implementing MS-DMT compatible network interface
+ * @class BrainServer
+ * @brief Main server class implementing Brain Modem compatible network interface
  * 
- * This server provides a network interface compatible with MS-DMT clients.
+ * This server provides a network interface compatible with Brain Modem clients.
  * It wraps the m110a::api modem implementation and exposes it via TCP.
  * 
  * Usage:
  * @code
- *   MSDMTServer server;
+ *   BrainServer server;
  *   server.configure(config);
  *   server.start();
  *   // Server runs in background threads
@@ -191,14 +191,14 @@ using OnClientDisconnectedCallback = std::function<void(const std::string& addre
  *   server.stop();
  * @endcode
  */
-class MSDMTServer {
+class BrainServer {
 public:
-    MSDMTServer();
-    ~MSDMTServer();
+    BrainServer();
+    ~BrainServer();
     
     // Non-copyable
-    MSDMTServer(const MSDMTServer&) = delete;
-    MSDMTServer& operator=(const MSDMTServer&) = delete;
+    BrainServer(const BrainServer&) = delete;
+    BrainServer& operator=(const BrainServer&) = delete;
     
     // --------------------------------------------------------
     // Configuration
@@ -382,4 +382,4 @@ std::string generate_pcm_filename(const std::string& prefix, const std::string& 
 } // namespace server
 } // namespace m110a
 
-#endif // MSDMT_SERVER_H
+#endif // BRAIN_SERVER_H

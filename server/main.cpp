@@ -1,9 +1,9 @@
-// Copyright (C) 2025 Phoenix Nest LLC
+﻿// Copyright (C) 2025 Phoenix Nest LLC
 // Phoenix Nest Modem - MIL-STD-188-110A HF Data Modem
 // Licensed under Phoenix Nest EULA - see phoenixnestmodem_eula.md
 /**
  * @file main.cpp
- * @brief MS-DMT Compatible Server - Main Entry Point
+ * @brief Brain Modem Compatible Server - Main Entry Point
  * 
  * Usage:
  *   m110a_server [options]
@@ -16,7 +16,7 @@
  *   --help            Show this help
  */
 
-#include "msdmt_server.h"
+#include "brain_server.h"
 #include "api/modem.h"
 #include "api/version.h"
 #include "common/license.h"
@@ -31,7 +31,7 @@ using namespace m110a::server;
 
 // Global server instance for signal handling
 static std::atomic<bool> g_running{true};
-static MSDMTServer* g_server = nullptr;
+static BrainServer* g_server = nullptr;
 
 void signal_handler(int signal) {
     std::cout << "\nReceived signal " << signal << ", shutting down...\n";
@@ -111,7 +111,7 @@ int main(int argc, char* argv[]) {
     if (!quiet) {
         std::cout << "================================================\n";
         std::cout << m110a::version_header() << "\n";
-        std::cout << "MS-DMT Compatible Network Interface\n";
+        std::cout << "Brain Modem Compatible Network Interface\n";
         std::cout << "================================================\n";
         std::cout << m110a::copyright_notice() << "\n";
         std::cout << m110a::build_info() << "\n";
@@ -163,7 +163,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGTERM, signal_handler);
     
     // Create and configure server
-    MSDMTServer server;
+    BrainServer server;
     g_server = &server;
     
     server.configure(config);

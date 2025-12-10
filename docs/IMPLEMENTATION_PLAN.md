@@ -1,4 +1,4 @@
-# MIL-STD-188-110A Complete Encode/Decode Implementation Plan
+﻿# MIL-STD-188-110A Complete Encode/Decode Implementation Plan
 
 ## Executive Summary
 
@@ -6,18 +6,18 @@ After successfully decoding M2400S (54/54 characters), this document outlines th
 
 ## Current Status
 
-### Working Components ✅
+### Working Components âœ…
 - **Viterbi Encoder/Decoder**: G1=0x5B, G2=0x79, K=7 - VERIFIED CORRECT
 - **MultiModeInterleaver**: Uses row_inc/col_inc properly - VERIFIED CORRECT  
 - **MultiModeMapper**: Absolute PSK constellation mapping - VERIFIED CORRECT
 - **Mode Configuration**: All 16 modes defined with correct parameters
 - **M2400S Decoder**: 54/54 perfect decode achieved
 
-### Components Needing Fixes 🔧
+### Components Needing Fixes ðŸ”§
 1. **Scrambler**: Must wrap at 160 symbols (critical fix identified)
 2. **Bit Ordering**: LSB-first for message data in RX byte assembly
 3. **Gray Code**: Must use modified Gray code tables for symbol mapping
-4. **Soft Decision**: Viterbi soft bit polarity (bit 0 → +127, bit 1 → -127)
+4. **Soft Decision**: Viterbi soft bit polarity (bit 0 â†’ +127, bit 1 â†’ -127)
 5. **Frame Structure**: Different unknown/known ratios per mode
 
 ### Reference PCM Files Available for Testing
@@ -43,8 +43,8 @@ After successfully decoding M2400S (54/54 characters), this document outlines th
 ### Modulation Types
 | Mode Range | Modulation | Bits/Symbol | Symbol Indices Used |
 |------------|------------|-------------|---------------------|
-| 75-600 bps | BPSK | 1 | 0, 4 (0°, 180°) |
-| 1200 bps | QPSK | 2 | 0, 2, 4, 6 (0°, 90°, 180°, 270°) |
+| 75-600 bps | BPSK | 1 | 0, 4 (0Â°, 180Â°) |
+| 1200 bps | QPSK | 2 | 0, 2, 4, 6 (0Â°, 90Â°, 180Â°, 270Â°) |
 | 2400-4800 bps | 8PSK | 3 | 0-7 (all 8 phases) |
 
 ### Gray Code Tables (from reference modem)
@@ -191,14 +191,14 @@ std::vector<int> bytes_to_bits_lsb(const std::vector<uint8_t>& bytes) {
 #### 2.2 Complete TX Chain
 ```
 Input Bytes 
-  → bytes_to_bits_lsb() 
-  → ConvEncoder.encode() 
-  → MultiModeInterleaver.interleave()
-  → Gray encode (MGD2/MGD3)
-  → Scrambler add (mod 8)
-  → Insert probe symbols
-  → PSK modulation
-  → Output symbols
+  â†’ bytes_to_bits_lsb() 
+  â†’ ConvEncoder.encode() 
+  â†’ MultiModeInterleaver.interleave()
+  â†’ Gray encode (MGD2/MGD3)
+  â†’ Scrambler add (mod 8)
+  â†’ Insert probe symbols
+  â†’ PSK modulation
+  â†’ Output symbols
 ```
 
 ### Phase 3: RX Pipeline Implementation
@@ -215,17 +215,17 @@ int decode_8psk_position(complex_t sym) {
 #### 3.2 Complete RX Chain
 ```
 Input symbols
-  → Extract data symbols (skip probes)
-  → Descramble (mod 8 subtraction)
-  → Inverse Gray decode
-  → Deinterleave
-  → Viterbi decode (soft decisions)
-  → bits_to_bytes_lsb()
-  → Output bytes
+  â†’ Extract data symbols (skip probes)
+  â†’ Descramble (mod 8 subtraction)
+  â†’ Inverse Gray decode
+  â†’ Deinterleave
+  â†’ Viterbi decode (soft decisions)
+  â†’ bits_to_bytes_lsb()
+  â†’ Output bytes
 ```
 
 #### 3.3 Soft Decision Generation
-For Viterbi: bit 0 → +127, bit 1 → -127
+For Viterbi: bit 0 â†’ +127, bit 1 â†’ -127
 
 ```cpp
 void tribit_to_soft_bits(int tribit, int8_t& b2, int8_t& b1, int8_t& b0) {
@@ -256,7 +256,7 @@ void tribit_to_soft_bits(int tribit, int8_t& b2, int8_t& b1, int8_t& b0) {
 ### Phase 5: Testing Strategy
 
 #### 5.1 Loopback Tests (No Channel)
-For each mode, verify encode→decode = identity:
+For each mode, verify encodeâ†’decode = identity:
 ```cpp
 TEST(Loopback, M2400S) {
     M110ACodec codec(ModeId::M2400S);
@@ -290,21 +290,21 @@ For each reference PCM file:
 ### New Files to Create
 ```
 src/modem/
-├── m110a_codec.h           # Unified encode/decode class
-├── scrambler_fixed.h       # Fixed scrambler (exists)
-├── gray_code.h             # Gray code tables & functions
-└── symbol_repetition.h     # Symbol repetition handling
+â”œâ”€â”€ m110a_codec.h           # Unified encode/decode class
+â”œâ”€â”€ scrambler_fixed.h       # Fixed scrambler (exists)
+â”œâ”€â”€ gray_code.h             # Gray code tables & functions
+â””â”€â”€ symbol_repetition.h     # Symbol repetition handling
 
 test/
-├── test_codec_loopback.cpp # Loopback tests all modes
-├── test_reference_files.cpp # Test against reference PCMs
-└── test_mode_specific.cpp  # Individual mode tests
+â”œâ”€â”€ test_codec_loopback.cpp # Loopback tests all modes
+â”œâ”€â”€ test_reference_files.cpp # Test against reference PCMs
+â””â”€â”€ test_mode_specific.cpp  # Individual mode tests
 ```
 
 ### Files to Modify
 ```
 src/modem/scrambler.h       # Add wrapping to RefScrambler
-src/m110a/msdmt_decoder.h   # Integrate fixed scrambler
+src/m110a/brain_decoder.h   # Integrate fixed scrambler
 ```
 
 ---
@@ -353,7 +353,7 @@ src/m110a/msdmt_decoder.h   # Integrate fixed scrambler
 
 | Mode | Test File | Expected Result |
 |------|-----------|-----------------|
-| M2400S | tx_2400S_*.pcm | 54/54 chars ✅ |
+| M2400S | tx_2400S_*.pcm | 54/54 chars âœ… |
 | M1200S | tx_1200S_*.pcm | 54/54 chars |
 | M600S | tx_600S_*.pcm | 54/54 chars |
 | M300S | tx_300S_*.pcm | 54/54 chars |

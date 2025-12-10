@@ -1,8 +1,8 @@
-import socket
+﻿import socket
 import time
 import threading
 
-# Test MS-DMT RX with PhoenixNest TX file (cross-modem interop test)
+# Test Brain Modem RX with PhoenixNest TX file (cross-modem interop test)
 # Key: After RXAUDIOINJECT, the modem needs ~1 second of silence to flush interleaver buffers
 pcm = 'D:/pennington_m110a_demod/server/tx_pcm_out/20251209_173017_722.pcm'
 

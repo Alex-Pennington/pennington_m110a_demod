@@ -1,11 +1,11 @@
-#ifndef M110A_MSDMT_PREAMBLE_H
-#define M110A_MSDMT_PREAMBLE_H
+﻿#ifndef M110A_BRAIN_PREAMBLE_H
+#define M110A_BRAIN_PREAMBLE_H
 
 /**
- * MS-DMT Compatible Preamble Generator/Detector
+ * Brain Modem Compatible Preamble Generator/Detector
  * 
  * Implements exact preamble structure from MIL-STD-188-110A as implemented
- * in the MS-DMT (m188110a) library.
+ * in the Brain Modem (m188110a) library.
  * 
  * Preamble structure (480 symbols per frame):
  *   - Common: 288 symbols (synchronization & AGC)
@@ -24,9 +24,9 @@
 namespace m110a {
 
 /**
- * MS-DMT Preamble Constants
+ * Brain Modem Preamble Constants
  */
-namespace msdmt {
+namespace brain {
 
 // Preamble segment lengths
 constexpr int P_COMMON_LENGTH = 288;
@@ -45,7 +45,7 @@ constexpr std::array<uint8_t, 32> pscramble = {
 constexpr std::array<uint8_t, 9> p_c_seq = {0, 1, 3, 0, 1, 3, 1, 2, 0};
 
 // PSK symbol patterns (Walsh-like, 8x8)
-// Each row D0-D7, values 0 or 4 (0° or 180° BPSK)
+// Each row D0-D7, values 0 or 4 (0Â° or 180Â° BPSK)
 constexpr std::array<std::array<uint8_t, 8>, 8> psymbol = {{
     {0, 0, 0, 0, 0, 0, 0, 0},  // D0
     {0, 4, 0, 4, 0, 4, 0, 4},  // D1
@@ -57,7 +57,7 @@ constexpr std::array<std::array<uint8_t, 8>, 8> psymbol = {{
     {0, 4, 4, 0, 4, 0, 0, 4}   // D7
 }};
 
-// 8-PSK constellation (0° at symbol 0)
+// 8-PSK constellation (0Â° at symbol 0)
 constexpr std::array<float, 8> psk8_i = {
     1.0f, 0.707107f, 0.0f, -0.707107f, -1.0f, -0.707107f, 0.0f, 0.707107f
 };
@@ -97,12 +97,12 @@ constexpr std::array<ModeD1D2, 18> mode_d1d2 = {{
     {7, 6},  // 17: M4800S
 }};
 
-} // namespace msdmt
+} // namespace brain
 
 /**
- * MS-DMT Preamble Generator
+ * Brain Modem Preamble Generator
  */
-class MSDMTPreambleEncoder {
+class BrainPreambleEncoder {
 public:
     /**
      * Generate complete preamble for given mode and interleave type
@@ -113,7 +113,7 @@ public:
     std::vector<complex_t> encode(int mode_index, bool is_long_interleave) {
         int num_frames = is_long_interleave ? 24 : 3;
         std::vector<complex_t> symbols;
-        symbols.reserve(num_frames * msdmt::P_FRAME_LENGTH);
+        symbols.reserve(num_frames * brain::P_FRAME_LENGTH);
         
         for (int frame = 0; frame < num_frames; frame++) {
             int countdown = num_frames - 1 - frame;
@@ -129,34 +129,34 @@ public:
      */
     std::vector<complex_t> encode_frame(int mode_index, int countdown) {
         std::vector<complex_t> symbols;
-        symbols.reserve(msdmt::P_FRAME_LENGTH);
+        symbols.reserve(brain::P_FRAME_LENGTH);
         
         int scram_idx = 0;
         
         // 1. Common segment (288 symbols)
         for (int i = 0; i < 9; i++) {
-            uint8_t d_val = msdmt::p_c_seq[i];
+            uint8_t d_val = brain::p_c_seq[i];
             for (int j = 0; j < 32; j++) {
-                uint8_t base = msdmt::psymbol[d_val][j % 8];
-                uint8_t scrambled = (base + msdmt::pscramble[scram_idx % 32]) % 8;
+                uint8_t base = brain::psymbol[d_val][j % 8];
+                uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
                 symbols.push_back(symbol_to_complex(scrambled));
                 scram_idx++;
             }
         }
         
         // 2. Mode segment (64 symbols) - D1 and D2
-        int d1 = msdmt::mode_d1d2[mode_index].d1;
-        int d2 = msdmt::mode_d1d2[mode_index].d2;
+        int d1 = brain::mode_d1d2[mode_index].d1;
+        int d2 = brain::mode_d1d2[mode_index].d2;
         
         for (int i = 0; i < 32; i++) {
-            uint8_t base = msdmt::psymbol[d1][i % 8];
-            uint8_t scrambled = (base + msdmt::pscramble[scram_idx % 32]) % 8;
+            uint8_t base = brain::psymbol[d1][i % 8];
+            uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
             symbols.push_back(symbol_to_complex(scrambled));
             scram_idx++;
         }
         for (int i = 0; i < 32; i++) {
-            uint8_t base = msdmt::psymbol[d2][i % 8];
-            uint8_t scrambled = (base + msdmt::pscramble[scram_idx % 32]) % 8;
+            uint8_t base = brain::psymbol[d2][i % 8];
+            uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
             symbols.push_back(symbol_to_complex(scrambled));
             scram_idx++;
         }
@@ -166,7 +166,7 @@ public:
         for (int rep = 0; rep < 3; rep++) {
             for (int i = 0; i < 32; i++) {
                 uint8_t base = (countdown % 8);  // Simple countdown encoding
-                uint8_t scrambled = (base + msdmt::pscramble[scram_idx % 32]) % 8;
+                uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
                 symbols.push_back(symbol_to_complex(scrambled));
                 scram_idx++;
             }
@@ -174,7 +174,7 @@ public:
         
         // 4. Zero segment (32 symbols)
         for (int i = 0; i < 32; i++) {
-            uint8_t scrambled = msdmt::pscramble[scram_idx % 32];
+            uint8_t scrambled = brain::pscramble[scram_idx % 32];
             symbols.push_back(symbol_to_complex(scrambled));
             scram_idx++;
         }
@@ -184,14 +184,14 @@ public:
     
 private:
     complex_t symbol_to_complex(uint8_t sym) {
-        return complex_t(msdmt::psk8_i[sym & 7], msdmt::psk8_q[sym & 7]);
+        return complex_t(brain::psk8_i[sym & 7], brain::psk8_q[sym & 7]);
     }
 };
 
 /**
- * MS-DMT Preamble Detector
+ * Brain Modem Preamble Detector
  */
-class MSDMTPreambleDecoder {
+class BrainPreambleDecoder {
 public:
     struct DetectResult {
         bool detected = false;
@@ -209,7 +209,7 @@ public:
     DetectResult detect(const std::vector<complex_t>& symbols, int start_offset = 0) {
         DetectResult result;
         
-        if (symbols.size() < static_cast<size_t>(start_offset + msdmt::P_FRAME_LENGTH)) {
+        if (symbols.size() < static_cast<size_t>(start_offset + brain::P_FRAME_LENGTH)) {
             return result;
         }
         
@@ -221,28 +221,28 @@ public:
         std::vector<complex_t> ref_common;
         int scram_idx = 0;
         for (int i = 0; i < 9; i++) {
-            uint8_t d_val = msdmt::p_c_seq[i];
+            uint8_t d_val = brain::p_c_seq[i];
             for (int j = 0; j < 32; j++) {
-                uint8_t base = msdmt::psymbol[d_val][j % 8];
-                uint8_t scrambled = (base + msdmt::pscramble[scram_idx % 32]) % 8;
-                ref_common.push_back(complex_t(msdmt::psk8_i[scrambled], msdmt::psk8_q[scrambled]));
+                uint8_t base = brain::psymbol[d_val][j % 8];
+                uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
+                ref_common.push_back(complex_t(brain::psk8_i[scrambled], brain::psk8_q[scrambled]));
                 scram_idx++;
             }
         }
         
         // Search for correlation peak
         for (int offset = start_offset; offset < start_offset + 100 && 
-             offset + msdmt::P_COMMON_LENGTH < static_cast<int>(symbols.size()); offset++) {
+             offset + brain::P_COMMON_LENGTH < static_cast<int>(symbols.size()); offset++) {
             
             complex_t corr(0, 0);
             float power = 0;
             
-            for (int i = 0; i < msdmt::P_COMMON_LENGTH; i++) {
+            for (int i = 0; i < brain::P_COMMON_LENGTH; i++) {
                 corr += symbols[offset + i] * std::conj(ref_common[i]);
                 power += std::norm(symbols[offset + i]);
             }
             
-            float norm_corr = std::abs(corr) / std::sqrt(power * msdmt::P_COMMON_LENGTH);
+            float norm_corr = std::abs(corr) / std::sqrt(power * brain::P_COMMON_LENGTH);
             
             if (norm_corr > best_corr) {
                 best_corr = norm_corr;
@@ -260,14 +260,14 @@ public:
         result.detected = true;
         
         // Decode D1 and D2 from mode segment
-        int mode_start = best_offset + msdmt::P_COMMON_LENGTH;
+        int mode_start = best_offset + brain::P_COMMON_LENGTH;
         result.d1 = decode_d_value(symbols, mode_start, 0);
         result.d2 = decode_d_value(symbols, mode_start + 32, 32);
         
         // Look up mode from D1/D2
         for (int i = 0; i < 18; i++) {
-            if (msdmt::mode_d1d2[i].d1 == result.d1 && 
-                msdmt::mode_d1d2[i].d2 == result.d2) {
+            if (brain::mode_d1d2[i].d1 == result.d1 && 
+                brain::mode_d1d2[i].d2 == result.d2) {
                 result.mode_index = i;
                 break;
             }
@@ -289,9 +289,9 @@ private:
             
             for (int i = 0; i < 32 && start + i < static_cast<int>(symbols.size()); i++) {
                 // Generate expected symbol
-                uint8_t base = msdmt::psymbol[d][i % 8];
-                uint8_t scrambled = (base + msdmt::pscramble[(scram_offset + i) % 32]) % 8;
-                complex_t expected(msdmt::psk8_i[scrambled], msdmt::psk8_q[scrambled]);
+                uint8_t base = brain::psymbol[d][i % 8];
+                uint8_t scrambled = (base + brain::pscramble[(scram_offset + i) % 32]) % 8;
+                complex_t expected(brain::psk8_i[scrambled], brain::psk8_q[scrambled]);
                 
                 corr += symbols[start + i] * std::conj(expected);
             }
@@ -308,7 +308,7 @@ private:
 };
 
 /**
- * MS-DMT Data Scrambler
+ * Brain Modem Data Scrambler
  * 
  * Wraps RefScrambler with pre-generated sequence for efficiency.
  * Scrambling is via modulo-8 ADDITION (not XOR).
@@ -320,9 +320,9 @@ private:
  *   4. Apply scrambler: (sym + scrambler_seq[offset]) % 8
  *   5. Map to 8-PSK phase
  */
-class MSDMTScrambler {
+class BrainScrambler {
 public:
-    MSDMTScrambler() {
+    BrainScrambler() {
         RefScrambler scr;
         seq_ = scr.generate_sequence();
         offset_ = 0;
@@ -391,4 +391,4 @@ namespace gray {
 
 } // namespace m110a
 
-#endif // M110A_MSDMT_PREAMBLE_H
+#endif // M110A_BRAIN_PREAMBLE_H

@@ -1,11 +1,11 @@
-# MIL-STD-188-110A Transmitter Chain
+﻿# MIL-STD-188-110A Transmitter Chain
 
 ## Overview
 
 The transmitter converts data bytes to audio samples suitable for HF transmission.
 
 ```
-Data → FEC → Interleave → Scramble → Map → Insert Probes → Preamble → Modulate
+Data â†’ FEC â†’ Interleave â†’ Scramble â†’ Map â†’ Insert Probes â†’ Preamble â†’ Modulate
 ```
 
 ## Signal Flow
@@ -14,7 +14,7 @@ Data → FEC → Interleave → Scramble → Map → Insert Probes → Preamble 
 
 Rate 1/2 convolutional code (except M4800 uncoded):
 - Constraint length: K=7
-- Generator polynomials: G1=0x6D, G2=0x4F (MS-DMT compatible)
+- Generator polynomials: G1=0x6D, G2=0x4F (Brain Modem compatible)
 - 2 output bits per input bit
 
 ```
@@ -28,10 +28,10 @@ For 150/300/600 bps, coded bits are repeated:
 
 | Mode | Repetition |
 |------|------------|
-| 150 bps | 16× |
-| 300 bps | 8× |
-| 600 bps | 4× |
-| 1200+ bps | 1× (none) |
+| 150 bps | 16Ã— |
+| 300 bps | 8Ã— |
+| 600 bps | 4Ã— |
+| 1200+ bps | 1Ã— (none) |
 
 ### 3. Interleaving
 
@@ -64,15 +64,15 @@ Scrambler output (0-7) is added mod 8 to Gray-coded tribits.
 Tribits mapped to 8-PSK constellation via Gray code:
 
 ```
-Tribit → Gray → Phase
-  0   →   0  →   0°
-  1   →   1  →  45°
-  2   →   3  → 135°
-  3   →   2  →  90°
-  4   →   7  → 315°
-  5   →   6  → 270°
-  6   →   4  → 180°
-  7   →   5  → 225°
+Tribit â†’ Gray â†’ Phase
+  0   â†’   0  â†’   0Â°
+  1   â†’   1  â†’  45Â°
+  2   â†’   3  â†’ 135Â°
+  3   â†’   2  â†’  90Â°
+  4   â†’   7  â†’ 315Â°
+  5   â†’   6  â†’ 270Â°
+  6   â†’   4  â†’ 180Â°
+  7   â†’   5  â†’ 225Â°
 ```
 
 ### 6. Probe Insertion
@@ -92,7 +92,7 @@ Probes are scrambler output only (data = 0).
 Three segments, each 0.2 seconds (480 symbols):
 
 **Segment 1-2:** Common sync pattern
-- 9 blocks × 32 symbols
+- 9 blocks Ã— 32 symbols
 - Pattern determined by D-sequence
 - Same for all modes (enables sync before mode known)
 
@@ -123,7 +123,7 @@ for (symbol : symbols) {
 ```
 
 **With RRC Pulse Shaping:**
-- SRRC filter (α=0.35, 6 symbol span)
+- SRRC filter (Î±=0.35, 6 symbol span)
 - Better spectral efficiency
 - Requires matched filter in receiver
 
@@ -153,9 +153,9 @@ Duration = Preamble + Data + EOM
          = 0.6s + (symbols / 2400) + 0.08s
 
 // M2400S, 100 bytes:
-// FEC: 200 bytes → 1600 bits
-// Symbols: 1600/3 ≈ 534
-// Frames: 534/32 = 17 → 17×48 = 816 symbols
+// FEC: 200 bytes â†’ 1600 bits
+// Symbols: 1600/3 â‰ˆ 534
+// Frames: 534/32 = 17 â†’ 17Ã—48 = 816 symbols
 // Duration: 0.6 + 0.34 + 0.08 = 1.02 seconds
 ```
 
@@ -177,7 +177,7 @@ auto result = tx.encode(message);
 
 if (result.ok()) {
     auto& samples = result.value();
-    // samples.size() ≈ 48000 * 0.8 seconds
+    // samples.size() â‰ˆ 48000 * 0.8 seconds
     // Write to audio device or file
 }
 ```
@@ -186,5 +186,5 @@ if (result.ok()) {
 
 - `api/modem_tx.cpp` - TX implementation
 - `src/modem/m110a_codec.h` - FEC, interleaver, mapping
-- `src/m110a/msdmt_preamble.h` - Preamble generation
+- `src/m110a/brain_preamble.h` - Preamble generation
 - `src/modem/scrambler.h` - Scrambler implementation

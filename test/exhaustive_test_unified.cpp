@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file exhaustive_test.cpp
  * @brief Unified Exhaustive Modem Test Suite
  * 
@@ -236,14 +236,14 @@ ProgressiveResult run_progressive_tests(ITestBackend& backend, const ModeInfo& m
 }
 
 // ============================================================
-// Reference Sample Tests (MS-DMT Compatibility Validation)
+// Reference Sample Tests (Brain Modem Compatibility Validation)
 // ============================================================
 
 std::vector<ReferenceTestResult> run_reference_tests(ITestBackend& backend, 
                                                       const std::string& ref_dir) {
     std::vector<ReferenceTestResult> results;
     
-    // Expected test message from all MS-DMT reference samples
+    // Expected test message from all Brain Modem reference samples
     const std::string expected_message = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890";
     
     // Find all PCM files in reference directory
@@ -274,7 +274,7 @@ std::vector<ReferenceTestResult> run_reference_tests(ITestBackend& backend,
         return results;
     }
     
-    std::cout << "\nRunning MS-DMT Reference Sample Tests...\n";
+    std::cout << "\nRunning Brain Modem Reference Sample Tests...\n";
     std::cout << "Testing " << pcm_files.size() << " reference samples\n";
     std::cout << "Expected message: \"" << expected_message << "\"\n\n";
     
@@ -349,7 +349,7 @@ void print_reference_test_summary(const std::vector<ReferenceTestResult>& result
     
     if (passed == total) {
         std::cout << "\n*** ALL REFERENCE TESTS PASSED ***\n";
-        std::cout << "MS-DMT interoperability VERIFIED\n";
+        std::cout << "Brain Modem interoperability VERIFIED\n";
     } else {
         std::cout << "\n*** SOME REFERENCE TESTS FAILED ***\n";
         std::cout << "Failed samples:\n";
@@ -406,7 +406,7 @@ int main(int argc, char* argv[]) {
     int control_port = 4999;
     bool progressive_mode = false;
     bool prog_snr = false, prog_freq = false, prog_multipath = false;
-    bool reference_mode = false;  // Test MS-DMT reference samples
+    bool reference_mode = false;  // Test Brain Modem reference samples
     std::string reference_dir = "../refrence_pcm";
     std::string equalizer = "DFE";  // Default equalizer
     int parallel_threads = 1;  // Number of parallel threads (1 = sequential)
@@ -511,7 +511,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  --parallel N    Run N tests in parallel (Direct API only)\n";
             std::cout << "  -j N            Short form of --parallel\n\n";
             std::cout << "Reference Sample Test Options:\n";
-            std::cout << "  --reference     Test MS-DMT reference samples for interoperability\n";
+            std::cout << "  --reference     Test Brain Modem reference samples for interoperability\n";
             std::cout << "  --ref           Short form of --reference\n";
             std::cout << "  --ref-dir DIR   Reference sample directory (default: ../refrence_pcm)\n\n";
             std::cout << "Mode Detection Options:\n";
@@ -626,7 +626,7 @@ int main(int argc, char* argv[]) {
     if (reference_mode) {
         auto start_time = steady_clock::now();
         
-        std::cout << "Mode: REFERENCE SAMPLE TEST (MS-DMT Compatibility)\n";
+        std::cout << "Mode: REFERENCE SAMPLE TEST (Brain Modem Compatibility)\n";
         std::cout << "Directory: " << reference_dir << "\n\n";
         
         // Test with each equalizer

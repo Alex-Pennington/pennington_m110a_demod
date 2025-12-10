@@ -1,4 +1,4 @@
-# Detailed Implementation Specs
+﻿# Detailed Implementation Specs
 
 **Created:** Session 18 (2025-12-07)
 
@@ -21,13 +21,13 @@ Add clean transmission termination per MIL-STD-188-110A spec. EOM allows receive
   ```cpp
   std::vector<complex_t> generate_eom(int mode_index);
   ```
-- [ ] EOM structure: 4 frames × (unknown_len + known_len) symbols
-- [ ] Data portion: scrambled zeros (tribit 0 → gray → scramble)
+- [ ] EOM structure: 4 frames Ã— (unknown_len + known_len) symbols
+- [ ] Data portion: scrambled zeros (tribit 0 â†’ gray â†’ scramble)
 - [ ] Probe portion: normal probe pattern (already known)
 - [ ] `TxConfig.include_eom` flag already exists - wire it up
 
 #### RX Side
-- [ ] Add `detect_eom()` to `MSDMTDecoder`
+- [ ] Add `detect_eom()` to `BrainDecoder`
   ```cpp
   bool detect_eom(const std::vector<complex_t>& symbols, int frame_start);
   ```
@@ -44,7 +44,7 @@ Add clean transmission termination per MIL-STD-188-110A spec. EOM allows receive
 
 ### Files to Modify
 - `src/m110a/msdmt_encoder.h` - Add generate_eom()
-- `src/m110a/msdmt_decoder.h` - Add detect_eom()
+- `src/m110a/brain_decoder.h` - Add detect_eom()
 - `api/modem_tx.cpp` - Call generate_eom() when include_eom=true
 - `api/modem_rx.cpp` - Call detect_eom() during decode
 - `api/modem_types.h` - Add eom_detected to RxResult
@@ -164,18 +164,18 @@ Enable sample-by-sample processing for real-time applications. Current implement
 ### Files to Create
 ```
 src/streaming/
-├── ring_buffer.h
-├── streaming_preamble.h
-├── streaming_demod.h
-├── streaming_decoder.h
-└── streaming_state.h
+â”œâ”€â”€ ring_buffer.h
+â”œâ”€â”€ streaming_preamble.h
+â”œâ”€â”€ streaming_demod.h
+â”œâ”€â”€ streaming_decoder.h
+â””â”€â”€ streaming_state.h
 
 api/
-├── streaming_rx.h
-└── streaming_rx.cpp
+â”œâ”€â”€ streaming_rx.h
+â””â”€â”€ streaming_rx.cpp
 
 test/
-└── test_streaming.cpp
+â””â”€â”€ test_streaming.cpp
 ```
 
 ### Effort Estimate
@@ -191,13 +191,13 @@ test/
 ## 3. Adaptive LMS Step Size
 
 ### Overview
-Auto-tune DFE step size (μ) based on estimated channel conditions. Fixed μ is suboptimal: too large diverges on fading, too small tracks poorly.
+Auto-tune DFE step size (Î¼) based on estimated channel conditions. Fixed Î¼ is suboptimal: too large diverges on fading, too small tracks poorly.
 
 ### Algorithm Options
 
 #### Option A: Normalized LMS (NLMS) - RECOMMENDED
 ```cpp
-μ_eff = μ / (δ + ||x||²)
+Î¼_eff = Î¼ / (Î´ + ||x||Â²)
 ```
 - Normalizes by input power
 - Simple, robust
@@ -206,9 +206,9 @@ Auto-tune DFE step size (μ) based on estimated channel conditions. Fixed μ is 
 #### Option B: Variable Step-Size LMS (VS-LMS)
 ```cpp
 if (|e[n]| > |e[n-1]|)
-    μ[n] = α * μ[n-1]      // Error growing, reduce step
+    Î¼[n] = Î± * Î¼[n-1]      // Error growing, reduce step
 else
-    μ[n] = min(μ_max, μ[n-1] / α)  // Error shrinking, increase step
+    Î¼[n] = min(Î¼_max, Î¼[n-1] / Î±)  // Error shrinking, increase step
 ```
 - Adapts based on error trend
 - Good for time-varying channels
@@ -216,10 +216,10 @@ else
 #### Option C: SNR-Based Adaptation
 ```cpp
 snr_est = signal_power / noise_power;
-μ = μ_base * sigmoid(snr_est - snr_threshold);
+Î¼ = Î¼_base * sigmoid(snr_est - snr_threshold);
 ```
-- Higher SNR → larger step (faster tracking)
-- Lower SNR → smaller step (more averaging)
+- Higher SNR â†’ larger step (faster tracking)
+- Lower SNR â†’ smaller step (more averaging)
 
 ### Implementation Tasks
 
@@ -349,22 +349,22 @@ Consolidate and update documentation to reflect current implementation.
 
 ```
 docs/
-├── README.md           # Project overview & quick start
-├── API.md              # API reference with examples
-├── TX_CHAIN.md         # Transmitter documentation (NEW)
-├── RX_CHAIN.md         # Receiver documentation (rename current)
-├── EQUALIZERS.md       # Equalizer theory & usage
-├── PROTOCOL.md         # MIL-STD-188-110A protocol details
-├── TESTING.md          # Test documentation
-├── TODO.md             # Active TODO tracker
-├── TODO_DETAILED.md    # This file - implementation specs
-└── M75_DEVELOPMENT.md  # M75 Walsh mode notes (existing)
+â”œâ”€â”€ README.md           # Project overview & quick start
+â”œâ”€â”€ API.md              # API reference with examples
+â”œâ”€â”€ TX_CHAIN.md         # Transmitter documentation (NEW)
+â”œâ”€â”€ RX_CHAIN.md         # Receiver documentation (rename current)
+â”œâ”€â”€ EQUALIZERS.md       # Equalizer theory & usage
+â”œâ”€â”€ PROTOCOL.md         # MIL-STD-188-110A protocol details
+â”œâ”€â”€ TESTING.md          # Test documentation
+â”œâ”€â”€ TODO.md             # Active TODO tracker
+â”œâ”€â”€ TODO_DETAILED.md    # This file - implementation specs
+â””â”€â”€ M75_DEVELOPMENT.md  # M75 Walsh mode notes (existing)
 
 examples/
-├── simple_tx.cpp       # Basic transmit example
-├── simple_rx.cpp       # Basic receive example
-├── loopback.cpp        # TX → RX loopback test
-└── file_decode.cpp     # Decode from WAV/PCM file
+â”œâ”€â”€ simple_tx.cpp       # Basic transmit example
+â”œâ”€â”€ simple_rx.cpp       # Basic receive example
+â”œâ”€â”€ loopback.cpp        # TX â†’ RX loopback test
+â””â”€â”€ file_decode.cpp     # Decode from WAV/PCM file
 ```
 
 ### Tasks
@@ -460,7 +460,7 @@ examples/
   ```
 - [ ] `examples/loopback.cpp`
   ```cpp
-  // TX → channel → RX test with BER
+  // TX â†’ channel â†’ RX test with BER
   ```
 - [ ] `examples/file_decode.cpp`
   ```cpp
@@ -514,6 +514,6 @@ examples/
 - All 41 tests passing
 
 **Test Results:**
-- MS-DMT compatibility: 11/11 ✓
-- PCM loopback: 11/11 ✓
-- Watterson HF: 19/19 ✓
+- Brain Modem compatibility: 11/11 âœ“
+- PCM loopback: 11/11 âœ“
+- Watterson HF: 19/19 âœ“

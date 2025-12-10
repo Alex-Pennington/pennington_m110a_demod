@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Analyze and compare PCM files for interoperability debugging"""
 import struct
 import math
@@ -131,12 +131,12 @@ def compare(a, b):
     if issues:
         print("\nPOTENTIAL ISSUES:")
         for issue in issues:
-            print(f"  ⚠ {issue}")
+            print(f"  âš  {issue}")
     else:
-        print("\n  ✓ No obvious issues detected")
+        print("\n  âœ“ No obvious issues detected")
 
 if __name__ == "__main__":
-    # Reference PCM (MS-DMT generated, 300L mode)
+    # Reference PCM (Brain Modem generated, 300L mode)
     ref_path = r"D:\pennington_m110a_demod\refrence_pcm\tx_300L_20251206_202506_058.pcm"
     
     # Find most recent PhoenixNest TX output

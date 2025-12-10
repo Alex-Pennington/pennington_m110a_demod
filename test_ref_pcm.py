@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Test PhoenixNest RX with reference PCM files."""
 
 import socket
@@ -75,7 +75,7 @@ def test_mode(mode):
     print(f"Testing {mode} with {pcm_file}")
     print(f"{'='*60}")
     
-    # Connect to control port (MS-DMT compatible port 4999)
+    # Connect to control port (Brain Modem compatible port 4999)
     ctrl = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     ctrl.connect(('127.0.0.1', 4999))
     ctrl.settimeout(5)

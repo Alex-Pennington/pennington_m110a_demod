@@ -1,4 +1,4 @@
-# Poor HF Channel Investigation
+﻿# Poor HF Channel Investigation
 
 ## Issue Summary
 The `poor_hf` channel preset fails 100% of tests in DirectBackend mode (BER=1.00), while occasionally passing in server mode. Investigation reveals a critical AFC (Automatic Frequency Control) deficiency.
@@ -14,10 +14,10 @@ The `poor_hf` channel preset fails 100% of tests in DirectBackend mode (BER=1.00
 Debug testing revealed frequency offset alone causes catastrophic failure:
 
 ```
-Clean:                BER=0.0000 ✓
-SNR 15dB only:        BER=0.0000 ✓
-MP 48samp only:       BER=0.0000 ✓
-Freq 3Hz only:        BER=0.4609 ✗ (46% error!)
+Clean:                BER=0.0000 âœ“
+SNR 15dB only:        BER=0.0000 âœ“
+MP 48samp only:       BER=0.0000 âœ“
+Freq 3Hz only:        BER=0.4609 âœ— (46% error!)
 MP 48 + Freq 3Hz:     FAILED (no decode)
 Poor HF (all 3):      FAILED (no decode)
 ```
@@ -26,11 +26,11 @@ Poor HF (all 3):      FAILED (no decode)
 
 ### 3. AFC Configuration
 Current AFC settings:
-- Search range: ±10 Hz (configurable via `freq_search_range`)
+- Search range: Â±10 Hz (configurable via `freq_search_range`)
 - Search step: 1 Hz
-- Location: `MSDMTDecoderConfig` in `src/m110a/msdmt_decoder.h`
+- Location: `BrainDecoderConfig` in `src/m110a/brain_decoder.h`
 
-Despite 3 Hz being well within ±10 Hz range, AFC fails to acquire lock.
+Despite 3 Hz being well within Â±10 Hz range, AFC fails to acquire lock.
 
 ### 4. Channel Configurations Tested
 
@@ -100,7 +100,7 @@ Freq offset: 3 Hz
 ## Technical Analysis
 
 ### AFC Implementation
-The modem uses frequency-domain search in `MSDMTDecoder`:
+The modem uses frequency-domain search in `BrainDecoder`:
 1. Searches from -freq_search_range to +freq_search_range
 2. Steps by freq_search_step (1 Hz)
 3. Evaluates correlation at each frequency
@@ -142,7 +142,7 @@ inline ChannelConfig channel_poor_hf() {
 
 ### Option 3: Fix AFC Implementation
 Requires investigation and modification of:
-- `src/m110a/msdmt_decoder.h` frequency search algorithm
+- `src/m110a/brain_decoder.h` frequency search algorithm
 - Preamble correlation under frequency offset
 - Symbol timing recovery with residual frequency error
 - Potential implementation of coarse/fine frequency acquisition
@@ -175,15 +175,15 @@ float freq_search_range = 20.0f;  // Increase from 10 Hz
 ## Test Recommendations
 
 Until AFC is fixed:
-- ✓ Test frequency offset separately (foff_1hz only)
-- ✓ Test poor_hf without frequency offset
-- ✓ Document that 3+ Hz offset is known limitation
-- ✗ Do NOT combine frequency offset with multipath/low SNR
-- ✗ Do NOT expect poor_hf to pass in current state
+- âœ“ Test frequency offset separately (foff_1hz only)
+- âœ“ Test poor_hf without frequency offset
+- âœ“ Document that 3+ Hz offset is known limitation
+- âœ— Do NOT combine frequency offset with multipath/low SNR
+- âœ— Do NOT expect poor_hf to pass in current state
 
 ## References
 - `api/channel_sim.h`: Channel preset definitions
-- `src/m110a/msdmt_decoder.h`: AFC implementation (line 42-43, 108-115)
+- `src/m110a/brain_decoder.h`: AFC implementation (line 42-43, 108-115)
 - `api/modem_config.h`: Default freq_search_range (line 93)
 - Test reports: `docs/test_reports/exhaustive_direct_*.md`
 

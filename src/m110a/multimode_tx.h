@@ -1,4 +1,4 @@
-#ifndef M110A_MULTIMODE_TX_H
+﻿#ifndef M110A_MULTIMODE_TX_H
 #define M110A_MULTIMODE_TX_H
 
 /**
@@ -7,14 +7,14 @@
  * Supports all standard data rates from 75 bps to 4800 bps.
  * 
  * Signal chain:
- *   Data → FEC Encode → Interleave → Scramble → PSK Map
- *        → Insert Probes → Prepend Preamble → Pulse Shape → Upconvert
+ *   Data â†’ FEC Encode â†’ Interleave â†’ Scramble â†’ PSK Map
+ *        â†’ Insert Probes â†’ Prepend Preamble â†’ Pulse Shape â†’ Upconvert
  */
 
 #include "common/types.h"
 #include "common/constants.h"
 #include "m110a/mode_config.h"
-#include "m110a/msdmt_preamble.h"
+#include "m110a/brain_preamble.h"
 #include "modem/multimode_mapper.h"
 #include "modem/multimode_interleaver.h"
 #include "modem/scrambler.h"
@@ -134,8 +134,8 @@ public:
         int d1 = mode_cfg_.d1_sequence;
         int d2 = mode_cfg_.d2_sequence;
         
-        // Use MS-DMT preamble encoder
-        MSDMTPreambleEncoder encoder;
+        // Use Brain Modem preamble encoder
+        BrainPreambleEncoder encoder;
         
         // Generate each frame
         for (int frame = 0; frame < num_frames; frame++) {
@@ -144,29 +144,29 @@ public:
             // 1. Common segment (288 symbols = 9 x 32)
             // Uses p_c_seq pattern: D0,D1,D0,D1,D0,D1,D0,D1,D0 with pscramble
             for (int seg = 0; seg < 9; seg++) {
-                uint8_t d_val = msdmt::p_c_seq[seg];
+                uint8_t d_val = brain::p_c_seq[seg];
                 for (int i = 0; i < 32; i++) {
-                    uint8_t base = msdmt::psymbol[d_val][i % 8];
-                    uint8_t scrambled = (base + msdmt::pscramble[i]) % 8;
-                    symbols.push_back(complex_t(msdmt::psk8_i[scrambled], 
-                                                 msdmt::psk8_q[scrambled]));
+                    uint8_t base = brain::psymbol[d_val][i % 8];
+                    uint8_t scrambled = (base + brain::pscramble[i]) % 8;
+                    symbols.push_back(complex_t(brain::psk8_i[scrambled], 
+                                                 brain::psk8_q[scrambled]));
                 }
             }
             
             // 2. Mode segment (64 symbols = D1 x 32 + D2 x 32)
             // D1 segment
             for (int i = 0; i < 32; i++) {
-                uint8_t base = msdmt::psymbol[d1][i % 8];
-                uint8_t scrambled = (base + msdmt::pscramble[i]) % 8;
-                symbols.push_back(complex_t(msdmt::psk8_i[scrambled], 
-                                             msdmt::psk8_q[scrambled]));
+                uint8_t base = brain::psymbol[d1][i % 8];
+                uint8_t scrambled = (base + brain::pscramble[i]) % 8;
+                symbols.push_back(complex_t(brain::psk8_i[scrambled], 
+                                             brain::psk8_q[scrambled]));
             }
             // D2 segment
             for (int i = 0; i < 32; i++) {
-                uint8_t base = msdmt::psymbol[d2][i % 8];
-                uint8_t scrambled = (base + msdmt::pscramble[i]) % 8;
-                symbols.push_back(complex_t(msdmt::psk8_i[scrambled], 
-                                             msdmt::psk8_q[scrambled]));
+                uint8_t base = brain::psymbol[d2][i % 8];
+                uint8_t scrambled = (base + brain::pscramble[i]) % 8;
+                symbols.push_back(complex_t(brain::psk8_i[scrambled], 
+                                             brain::psk8_q[scrambled]));
             }
             
             // 3. Count segment (96 symbols = 3 x 32)
@@ -175,19 +175,19 @@ public:
             uint8_t count_d = countdown % 8;
             for (int rep = 0; rep < 3; rep++) {
                 for (int i = 0; i < 32; i++) {
-                    uint8_t base = msdmt::psymbol[count_d][i % 8];
-                    uint8_t scrambled = (base + msdmt::pscramble[i]) % 8;
-                    symbols.push_back(complex_t(msdmt::psk8_i[scrambled], 
-                                                 msdmt::psk8_q[scrambled]));
+                    uint8_t base = brain::psymbol[count_d][i % 8];
+                    uint8_t scrambled = (base + brain::pscramble[i]) % 8;
+                    symbols.push_back(complex_t(brain::psk8_i[scrambled], 
+                                                 brain::psk8_q[scrambled]));
                 }
             }
             
             // 4. Zero segment (32 symbols = D0 pattern)
             for (int i = 0; i < 32; i++) {
-                uint8_t base = msdmt::psymbol[0][i % 8];  // D0 = all zeros
-                uint8_t scrambled = (base + msdmt::pscramble[i]) % 8;
-                symbols.push_back(complex_t(msdmt::psk8_i[scrambled], 
-                                             msdmt::psk8_q[scrambled]));
+                uint8_t base = brain::psymbol[0][i % 8];  // D0 = all zeros
+                uint8_t scrambled = (base + brain::pscramble[i]) % 8;
+                symbols.push_back(complex_t(brain::psk8_i[scrambled], 
+                                             brain::psk8_q[scrambled]));
             }
         }
         
@@ -197,7 +197,7 @@ public:
     /**
      * Encode data (FEC, optionally bit repetition, interleave, PSK map with scrambler)
      * 
-     * Per MIL-STD-188-110A / MS-DMT:
+     * Per MIL-STD-188-110A / Brain Modem:
      * - Low rate modes (with repetition): bit-level repetition + BPSK mapping
      * - High rate modes (no repetition): native modulation (QPSK/8PSK)
      * 
@@ -279,7 +279,7 @@ public:
             // Map each bit to BPSK symbol with scrambler
             symbols.reserve(interleaved.size());
             for (const auto& bit : interleaved) {
-                int sym_idx = (bit > 0) ? 4 : 0;  // BPSK: bit 0 → symbol 0, bit 1 → symbol 4
+                int sym_idx = (bit > 0) ? 4 : 0;  // BPSK: bit 0 â†’ symbol 0, bit 1 â†’ symbol 4
                 int scr_val = sym_scr.next_tribit();
                 sym_idx = (sym_idx + scr_val) % 8;
                 symbols.push_back(MultiModeMapper::symbol_to_complex(sym_idx));
@@ -331,7 +331,7 @@ public:
     
     /**
      * Insert probe (known) symbols for channel estimation
-     * Per MS-DMT: unknown_data_len followed by known_data_len, repeating
+     * Per Brain Modem: unknown_data_len followed by known_data_len, repeating
      * 
      * Note: Probes use the same mapper as data to maintain phase continuity.
      * For BPSK/QPSK modes, probes still use 8PSK - this is achieved by
