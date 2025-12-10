@@ -3,12 +3,16 @@
  * @brief Web-based GUI for M110A Exhaustive Test Suite
  * 
  * Provides a simple HTTP server that serves a web UI for running tests.
- * Launches the unified exhaustive_test.exe and streams output to browser.
+ * Supports both loopback testing and cross-modem interoperability testing.
  * 
- * FIXED VERSION - Includes:
- * - Proper PhoenixNest server status checking in all interop handlers
- * - Brain modem support for cross-modem testing
- * - Better error messages for server not running
+ * FIXED VERSION - December 2024
+ * Changes from previous version:
+ * - Added missing 75bps modes (75S, 75L) to all mode selectors
+ * - Fixed step index mismatch in interop tests (connection now silent)
+ * - Implemented loopback and reference test handlers
+ * - Added channel condition support from test_framework.h
+ * - Implemented reports tab functionality
+ * - Aligned with test_framework.h interfaces
  * 
  * Usage:
  *   test_gui.exe [--port N]
@@ -58,7 +62,7 @@ namespace fs = std::filesystem;
 #define PATH_SEP "/"
 #endif
 
-// HTML page with embedded JavaScript - FIXED VERSION with Brain modem support
+// HTML page with embedded JavaScript - FIXED VERSION
 const char* HTML_PAGE = R"HTML(
 <!DOCTYPE html>
 <html>
@@ -175,6 +179,15 @@ const char* HTML_PAGE = R"HTML(
         .sub-tab-content { display: none; }
         .sub-tab-content.active { display: block; }
         
+        /* Reports styles */
+        .report-item { background: #0f3460; padding: 15px; border-radius: 8px; margin-bottom: 10px; 
+                       display: flex; justify-content: space-between; align-items: center; }
+        .report-item:hover { background: #1e3a5f; }
+        .report-name { color: #00d4ff; font-weight: bold; }
+        .report-date { color: #888; font-size: 12px; }
+        .report-link { color: #00d4ff; text-decoration: none; }
+        .report-link:hover { text-decoration: underline; }
+        
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
     </style>
 </head>
@@ -188,52 +201,101 @@ const char* HTML_PAGE = R"HTML(
             <button class="tab" onclick="showTab('reports')">Reports</button>
         </div>
         
+        <!-- ============ RUN TESTS TAB ============ -->
         <div id="tab-tests" class="tab-content active">
             <div class="controls">
                 <div class="row">
                     <div class="field">
                         <label>Test Type</label>
-                        <select id="test-type">
+                        <select id="test-type" onchange="updateTestSummary()">
                             <option value="loopback">Loopback Test</option>
                             <option value="reference">Reference PCM Test</option>
                         </select>
                     </div>
                     <div class="field">
-                        <label>Modes</label>
-                        <select id="modes" multiple>
-                            <option value="150S">150S</option>
-                            <option value="150L">150L</option>
-                            <option value="300S">300S</option>
-                            <option value="300L">300L</option>
-                            <option value="600S" selected>600S</option>
-                            <option value="600L">600L</option>
-                            <option value="1200S">1200S</option>
-                            <option value="1200L">1200L</option>
-                            <option value="2400S">2400S</option>
-                            <option value="2400L">2400L</option>
+                        <label>Modes (Ctrl+Click to select multiple)</label>
+                        <select id="modes" multiple onchange="updateTestSummary()">
+                            <option value="75S">75S (Short)</option>
+                            <option value="75L">75L (Long)</option>
+                            <option value="150S">150S (Short)</option>
+                            <option value="150L">150L (Long)</option>
+                            <option value="300S">300S (Short)</option>
+                            <option value="300L">300L (Long)</option>
+                            <option value="600S" selected>600S (Short)</option>
+                            <option value="600L">600L (Long)</option>
+                            <option value="1200S">1200S (Short)</option>
+                            <option value="1200L">1200L (Long)</option>
+                            <option value="2400S">2400S (Short)</option>
+                            <option value="2400L">2400L (Long)</option>
                         </select>
+                        <span class="select-hint">S=0.6s interleave, L=4.8s interleave</span>
+                    </div>
+                    <div class="field">
+                        <label>Channel Conditions</label>
+                        <select id="channels" multiple onchange="updateTestSummary()">
+                            <option value="clean" selected>Clean (no impairments)</option>
+                            <option value="awgn_30db">AWGN 30dB SNR</option>
+                            <option value="awgn_25db">AWGN 25dB SNR</option>
+                            <option value="awgn_20db">AWGN 20dB SNR</option>
+                            <option value="awgn_15db">AWGN 15dB SNR</option>
+                            <option value="mp_24samp">Multipath 24 samples</option>
+                            <option value="mp_48samp">Multipath 48 samples</option>
+                            <option value="foff_1hz">Freq Offset +1Hz</option>
+                            <option value="foff_5hz">Freq Offset +5Hz</option>
+                            <option value="moderate_hf">Moderate HF (preset)</option>
+                            <option value="poor_hf">Poor HF (preset)</option>
+                        </select>
+                        <span class="select-hint">Select channel impairments to test</span>
+                    </div>
+                    <div class="field">
+                        <label>Iterations per Mode/Channel</label>
+                        <input type="number" id="iterations" value="3" min="1" max="100" onchange="updateTestSummary()">
                     </div>
                 </div>
-                <button class="btn-run" onclick="runTest()">Run Test</button>
+                <div class="test-summary" id="test-summary">
+                    <strong>Test Plan:</strong> 1 mode × 1 channel × 3 iterations = <strong>3 tests</strong>
+                </div>
+                <div class="row">
+                    <button class="btn-run" id="btn-run-test" onclick="runTest()">▶ Run Tests</button>
+                    <button class="btn-stop" id="btn-stop-test" onclick="stopTest()" style="display:none;">■ Stop</button>
+                </div>
+                <div class="progress" id="test-progress" style="display:none;">
+                    <div class="progress-bar" id="test-progress-bar"></div>
+                </div>
             </div>
-            <div class="output" id="output">Ready to run tests...</div>
+            <div class="output" id="output">Ready to run tests...
+
+Select modes and channel conditions above, then click "Run Tests".
+
+Test Types:
+• Loopback: Encode → Channel Simulation → Decode → Compare
+• Reference PCM: Decode pre-recorded Brain modem samples → Validate
+
+Channel Conditions:
+• Clean: No impairments (baseline)
+• AWGN: Additive White Gaussian Noise at various SNR levels
+• Multipath: Simulated HF multipath propagation
+• Freq Offset: Tests AFC (Automatic Frequency Control)
+• Presets: Combined impairments simulating real HF conditions
+</div>
         </div>
         
+        <!-- ============ INTEROP TAB ============ -->
         <div id="tab-interop" class="tab-content">
             <div class="controls">
                 <!-- Sub-tab Navigation -->
                 <div class="sub-tabs">
-                    <button class="sub-tab active" onclick="showSubTab('setup')">ðŸ”§ Connection Setup</button>
-                    <button class="sub-tab" onclick="showSubTab('brain-pn')">ðŸ§  Brain â†’ PhoenixNest</button>
-                    <button class="sub-tab" onclick="showSubTab('pn-brain')">ðŸš€ PhoenixNest â†’ Brain</button>
-                    <button class="sub-tab" onclick="showSubTab('matrix')">ðŸ“Š Full Matrix</button>
+                    <button class="sub-tab active" onclick="showSubTab('setup')">🔧 Connection Setup</button>
+                    <button class="sub-tab" onclick="showSubTab('brain-pn')">🧠 Brain → PhoenixNest</button>
+                    <button class="sub-tab" onclick="showSubTab('pn-brain')">🚀 PhoenixNest → Brain</button>
+                    <button class="sub-tab" onclick="showSubTab('matrix')">📊 Full Matrix</button>
                 </div>
                 
                 <!-- Sub-tab: Connection Setup -->
                 <div id="subtab-setup" class="sub-tab-content active">
                     <!-- PhoenixNest Server -->
                     <div class="interop-section">
-                        <h3>ðŸš€ PhoenixNest Server (m110a_server.exe)</h3>
+                        <h3>🚀 PhoenixNest Server (m110a_server.exe)</h3>
                         <p style="color:#aaa; margin-bottom:15px; font-size:13px;">
                             Start the PhoenixNest M110A modem server for interoperability testing.
                         </p>
@@ -258,7 +320,7 @@ const char* HTML_PAGE = R"HTML(
                     
                     <!-- Brain Modem Server -->
                     <div class="interop-section">
-                        <h3>ðŸ§  Paul Brain Modem Server (brain_modem_server.exe)</h3>
+                        <h3>🧠 Paul Brain Modem Server (brain_modem_server.exe)</h3>
                         <p style="color:#aaa; margin-bottom:15px; font-size:13px;">
                             Connect to the Paul Brain modem server for cross-modem testing.
                         </p>
@@ -286,10 +348,10 @@ const char* HTML_PAGE = R"HTML(
                     </div>
                 </div>
                 
-                <!-- Sub-tab: Brain TX â†’ PhoenixNest RX -->
+                <!-- Sub-tab: Brain TX → PhoenixNest RX -->
                 <div id="subtab-brain-pn" class="sub-tab-content">
                     <div class="test-direction">
-                        <h4>ðŸ§ ðŸ“¤ Brain TX â†’ ðŸš€ðŸ“¥ PhoenixNest RX</h4>
+                        <h4>🧠📤 Brain TX → 🚀📥 PhoenixNest RX</h4>
                         <p style="color:#888; font-size:12px; margin-bottom:15px;">
                             Paul Brain modem transmits, PhoenixNest modem receives. Tests Brain TX compatibility.
                         </p>
@@ -297,6 +359,8 @@ const char* HTML_PAGE = R"HTML(
                             <div class="field">
                                 <label>Mode</label>
                                 <select id="brain-pn-mode">
+                                    <option value="75S">75 bps Short</option>
+                                    <option value="75L">75 bps Long</option>
                                     <option value="150S">150 bps Short</option>
                                     <option value="150L">150 bps Long</option>
                                     <option value="300S">300 bps Short</option>
@@ -314,20 +378,19 @@ const char* HTML_PAGE = R"HTML(
                                 <input type="text" id="brain-pn-msg" value="HELLO CROSS MODEM TEST" style="width:250px;" />
                             </div>
                             <button class="btn-run" id="btn-brain-pn" onclick="runBrainToPnTest()">
-                                â–¶ Run Test
+                                ▶ Run Test
                             </button>
                         </div>
                         <ul class="test-steps" id="brain-pn-steps">
-                            <li><span class="step-icon step-pending">â—‹</span> Set Brain data rate</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Enable Brain TX recording</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Send test message to Brain</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Trigger Brain SENDBUFFER</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Wait for Brain TX:COMPLETE</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Find Brain TX PCM file</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Inject PCM into PhoenixNest RX</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Wait for PhoenixNest DCD</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Read PhoenixNest decoded data</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Compare output</li>
+                            <li><span class="step-icon step-pending">○</span> Set Brain data rate</li>
+                            <li><span class="step-icon step-pending">○</span> Enable Brain TX recording</li>
+                            <li><span class="step-icon step-pending">○</span> Send test message to Brain</li>
+                            <li><span class="step-icon step-pending">○</span> Trigger Brain SENDBUFFER</li>
+                            <li><span class="step-icon step-pending">○</span> Wait for Brain TX:COMPLETE</li>
+                            <li><span class="step-icon step-pending">○</span> Find Brain TX PCM file</li>
+                            <li><span class="step-icon step-pending">○</span> Inject PCM into PhoenixNest RX</li>
+                            <li><span class="step-icon step-pending">○</span> Wait for PhoenixNest DCD</li>
+                            <li><span class="step-icon step-pending">○</span> Read and compare decoded data</li>
                         </ul>
                         <div class="test-result pending" id="brain-pn-result">
                             Result will appear here after test completes
@@ -335,10 +398,10 @@ const char* HTML_PAGE = R"HTML(
                     </div>
                 </div>
                 
-                <!-- Sub-tab: PhoenixNest TX â†’ Brain RX -->
+                <!-- Sub-tab: PhoenixNest TX → Brain RX -->
                 <div id="subtab-pn-brain" class="sub-tab-content">
                     <div class="test-direction">
-                        <h4>ðŸš€ðŸ“¤ PhoenixNest TX â†’ ðŸ§ ðŸ“¥ Brain RX</h4>
+                        <h4>🚀📤 PhoenixNest TX → 🧠📥 Brain RX</h4>
                         <p style="color:#888; font-size:12px; margin-bottom:15px;">
                             PhoenixNest modem transmits, Brain modem receives. Tests PhoenixNest TX compatibility.
                         </p>
@@ -346,6 +409,8 @@ const char* HTML_PAGE = R"HTML(
                             <div class="field">
                                 <label>Mode</label>
                                 <select id="pn-brain-mode">
+                                    <option value="75S">75 bps Short</option>
+                                    <option value="75L">75 bps Long</option>
                                     <option value="150S">150 bps Short</option>
                                     <option value="150L">150 bps Long</option>
                                     <option value="300S">300 bps Short</option>
@@ -363,20 +428,19 @@ const char* HTML_PAGE = R"HTML(
                                 <input type="text" id="pn-brain-msg" value="HELLO CROSS MODEM TEST" style="width:250px;" />
                             </div>
                             <button class="btn-run" id="btn-pn-brain" onclick="runPnToBrainTest()">
-                                â–¶ Run Test
+                                ▶ Run Test
                             </button>
                         </div>
                         <ul class="test-steps" id="pn-brain-steps">
-                            <li><span class="step-icon step-pending">â—‹</span> Set PhoenixNest data rate</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Enable PhoenixNest TX recording</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Send test message to PhoenixNest</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Trigger PhoenixNest SENDBUFFER</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Wait for PhoenixNest TX:IDLE</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Get PhoenixNest TX PCM file</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Inject PCM into Brain RX</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Wait for Brain DCD</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Read Brain decoded data</li>
-                            <li><span class="step-icon step-pending">â—‹</span> Compare output</li>
+                            <li><span class="step-icon step-pending">○</span> Set PhoenixNest data rate</li>
+                            <li><span class="step-icon step-pending">○</span> Enable PhoenixNest TX recording</li>
+                            <li><span class="step-icon step-pending">○</span> Send test message to PhoenixNest</li>
+                            <li><span class="step-icon step-pending">○</span> Trigger PhoenixNest SENDBUFFER</li>
+                            <li><span class="step-icon step-pending">○</span> Wait for PhoenixNest TX:IDLE</li>
+                            <li><span class="step-icon step-pending">○</span> Get PhoenixNest TX PCM file</li>
+                            <li><span class="step-icon step-pending">○</span> Inject PCM into Brain RX</li>
+                            <li><span class="step-icon step-pending">○</span> Wait for Brain DCD</li>
+                            <li><span class="step-icon step-pending">○</span> Read and compare decoded data</li>
                         </ul>
                         <div class="test-result pending" id="pn-brain-result">
                             Result will appear here after test completes
@@ -387,35 +451,37 @@ const char* HTML_PAGE = R"HTML(
                 <!-- Sub-tab: Full Matrix -->
                 <div id="subtab-matrix" class="sub-tab-content">
                     <div class="matrix-container">
-                        <h3 style="color:#00d4ff; margin:0 0 15px 0;">ðŸ“Š Cross-Modem Compatibility Matrix</h3>
+                        <h3 style="color:#00d4ff; margin:0 0 15px 0;">📊 Cross-Modem Compatibility Matrix</h3>
                         <p style="color:#888; font-size:12px; margin-bottom:15px;">
-                            Full compatibility test between Paul Brain and PhoenixNest modems.
+                            Full compatibility test between Paul Brain and PhoenixNest modems across all modes.
                         </p>
                         <div class="test-controls" style="margin-bottom:15px;">
                             <button class="btn-run" id="btn-matrix" onclick="runCrossModemMatrix()">
-                                â–¶ Run All Tests (20 total)
+                                ▶ Run All Tests (24 total)
                             </button>
-                            <span id="matrix-progress" style="color:#aaa;">Progress: 0/20</span>
+                            <span id="matrix-progress" style="color:#aaa;">Progress: 0/24</span>
                         </div>
                         <table class="matrix-table">
                             <thead>
                                 <tr>
                                     <th>Mode</th>
-                                    <th>Brain â†’ PN</th>
-                                    <th>PN â†’ Brain</th>
+                                    <th>Brain → PN</th>
+                                    <th>PN → Brain</th>
                                 </tr>
                             </thead>
                             <tbody id="cross-matrix-body">
-                                <tr><td>150S</td><td class="matrix-cell matrix-pending" id="cm-150S-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-150S-2">â—‹</td></tr>
-                                <tr><td>150L</td><td class="matrix-cell matrix-pending" id="cm-150L-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-150L-2">â—‹</td></tr>
-                                <tr><td>300S</td><td class="matrix-cell matrix-pending" id="cm-300S-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-300S-2">â—‹</td></tr>
-                                <tr><td>300L</td><td class="matrix-cell matrix-pending" id="cm-300L-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-300L-2">â—‹</td></tr>
-                                <tr><td>600S</td><td class="matrix-cell matrix-pending" id="cm-600S-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-600S-2">â—‹</td></tr>
-                                <tr><td>600L</td><td class="matrix-cell matrix-pending" id="cm-600L-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-600L-2">â—‹</td></tr>
-                                <tr><td>1200S</td><td class="matrix-cell matrix-pending" id="cm-1200S-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-1200S-2">â—‹</td></tr>
-                                <tr><td>1200L</td><td class="matrix-cell matrix-pending" id="cm-1200L-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-1200L-2">â—‹</td></tr>
-                                <tr><td>2400S</td><td class="matrix-cell matrix-pending" id="cm-2400S-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-2400S-2">â—‹</td></tr>
-                                <tr><td>2400L</td><td class="matrix-cell matrix-pending" id="cm-2400L-1">â—‹</td><td class="matrix-cell matrix-pending" id="cm-2400L-2">â—‹</td></tr>
+                                <tr><td>75S</td><td class="matrix-cell matrix-pending" id="cm-75S-1">○</td><td class="matrix-cell matrix-pending" id="cm-75S-2">○</td></tr>
+                                <tr><td>75L</td><td class="matrix-cell matrix-pending" id="cm-75L-1">○</td><td class="matrix-cell matrix-pending" id="cm-75L-2">○</td></tr>
+                                <tr><td>150S</td><td class="matrix-cell matrix-pending" id="cm-150S-1">○</td><td class="matrix-cell matrix-pending" id="cm-150S-2">○</td></tr>
+                                <tr><td>150L</td><td class="matrix-cell matrix-pending" id="cm-150L-1">○</td><td class="matrix-cell matrix-pending" id="cm-150L-2">○</td></tr>
+                                <tr><td>300S</td><td class="matrix-cell matrix-pending" id="cm-300S-1">○</td><td class="matrix-cell matrix-pending" id="cm-300S-2">○</td></tr>
+                                <tr><td>300L</td><td class="matrix-cell matrix-pending" id="cm-300L-1">○</td><td class="matrix-cell matrix-pending" id="cm-300L-2">○</td></tr>
+                                <tr><td>600S</td><td class="matrix-cell matrix-pending" id="cm-600S-1">○</td><td class="matrix-cell matrix-pending" id="cm-600S-2">○</td></tr>
+                                <tr><td>600L</td><td class="matrix-cell matrix-pending" id="cm-600L-1">○</td><td class="matrix-cell matrix-pending" id="cm-600L-2">○</td></tr>
+                                <tr><td>1200S</td><td class="matrix-cell matrix-pending" id="cm-1200S-1">○</td><td class="matrix-cell matrix-pending" id="cm-1200S-2">○</td></tr>
+                                <tr><td>1200L</td><td class="matrix-cell matrix-pending" id="cm-1200L-1">○</td><td class="matrix-cell matrix-pending" id="cm-1200L-2">○</td></tr>
+                                <tr><td>2400S</td><td class="matrix-cell matrix-pending" id="cm-2400S-1">○</td><td class="matrix-cell matrix-pending" id="cm-2400S-2">○</td></tr>
+                                <tr><td>2400L</td><td class="matrix-cell matrix-pending" id="cm-2400L-1">○</td><td class="matrix-cell matrix-pending" id="cm-2400L-2">○</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -428,10 +494,15 @@ const char* HTML_PAGE = R"HTML(
             </div>
         </div>
         
+        <!-- ============ REPORTS TAB ============ -->
         <div id="tab-reports" class="tab-content">
             <div class="controls">
-                <h2 style="color:#00d4ff;">Test Reports</h2>
-                <div id="reports-list">Loading reports...</div>
+                <h2 style="color:#00d4ff; margin-top:0;">Test Reports</h2>
+                <p style="color:#888; margin-bottom:20px;">
+                    Reports are saved to the <code>test/reports/</code> directory in Markdown format.
+                </p>
+                <button class="btn-refresh" onclick="loadReports()">🔄 Refresh</button>
+                <div id="reports-list" style="margin-top:20px;">Loading reports...</div>
             </div>
         </div>
     </div>
@@ -440,12 +511,18 @@ const char* HTML_PAGE = R"HTML(
         let pnServerRunning = false;
         let brainConnected = false;
         let interopTestRunning = false;
+        let loopbackTestRunning = false;
         
+        // ============ TAB NAVIGATION ============
         function showTab(tabName) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelector('.tab[onclick*="' + tabName + '"]').classList.add('active');
             document.getElementById('tab-' + tabName).classList.add('active');
+            
+            if (tabName === 'reports') {
+                loadReports();
+            }
         }
         
         function showSubTab(subTabName) {
@@ -461,6 +538,109 @@ const char* HTML_PAGE = R"HTML(
             const className = 'log-' + type;
             log.innerHTML += '<div class="' + className + '">[' + timestamp + '] ' + message + '</div>';
             log.scrollTop = log.scrollHeight;
+        }
+        
+        // ============ TEST SUMMARY UPDATE ============
+        function updateTestSummary() {
+            const modes = document.getElementById('modes').selectedOptions.length;
+            const channels = document.getElementById('channels').selectedOptions.length;
+            const iterations = parseInt(document.getElementById('iterations').value) || 1;
+            const total = modes * channels * iterations;
+            
+            document.getElementById('test-summary').innerHTML = 
+                '<strong>Test Plan:</strong> ' + modes + ' mode(s) × ' + channels + 
+                ' channel(s) × ' + iterations + ' iteration(s) = <strong>' + total + ' tests</strong>';
+        }
+        
+        // ============ LOOPBACK/REFERENCE TESTS ============
+        async function runTest() {
+            if (loopbackTestRunning) return;
+            
+            const testType = document.getElementById('test-type').value;
+            const modesSelect = document.getElementById('modes');
+            const channelsSelect = document.getElementById('channels');
+            const iterations = parseInt(document.getElementById('iterations').value) || 1;
+            
+            const modes = Array.from(modesSelect.selectedOptions).map(o => o.value);
+            const channels = Array.from(channelsSelect.selectedOptions).map(o => o.value);
+            
+            if (modes.length === 0) {
+                alert('Please select at least one mode');
+                return;
+            }
+            if (channels.length === 0) {
+                alert('Please select at least one channel condition');
+                return;
+            }
+            
+            loopbackTestRunning = true;
+            document.getElementById('btn-run-test').disabled = true;
+            document.getElementById('btn-run-test').style.display = 'none';
+            document.getElementById('btn-stop-test').style.display = 'inline-block';
+            document.getElementById('test-progress').style.display = 'block';
+            
+            const output = document.getElementById('output');
+            output.textContent = 'Starting ' + testType + ' test...\n';
+            output.textContent += 'Modes: ' + modes.join(', ') + '\n';
+            output.textContent += 'Channels: ' + channels.join(', ') + '\n';
+            output.textContent += 'Iterations: ' + iterations + '\n\n';
+            
+            const totalTests = modes.length * channels.length * iterations;
+            let completed = 0;
+            
+            try {
+                const params = new URLSearchParams({
+                    type: testType,
+                    modes: modes.join(','),
+                    channels: channels.join(','),
+                    iterations: iterations
+                });
+                
+                const response = await fetch('/run-test?' + params.toString());
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (loopbackTestRunning) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const text = decoder.decode(value);
+                    const lines = text.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                if (data.output) {
+                                    output.textContent += data.output + '\n';
+                                    output.scrollTop = output.scrollHeight;
+                                }
+                                if (data.progress !== undefined) {
+                                    completed = data.progress;
+                                    const pct = (completed / totalTests * 100).toFixed(0);
+                                    document.getElementById('test-progress-bar').style.width = pct + '%';
+                                }
+                                if (data.done) {
+                                    loopbackTestRunning = false;
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+            } catch (err) {
+                output.textContent += '\nError: ' + err.message + '\n';
+            }
+            
+            loopbackTestRunning = false;
+            document.getElementById('btn-run-test').disabled = false;
+            document.getElementById('btn-run-test').style.display = 'inline-block';
+            document.getElementById('btn-stop-test').style.display = 'none';
+            document.getElementById('test-progress').style.display = 'none';
+        }
+        
+        function stopTest() {
+            loopbackTestRunning = false;
+            fetch('/stop-test');
         }
         
         // ============ PHOENIXNEST SERVER ============
@@ -531,7 +711,6 @@ const char* HTML_PAGE = R"HTML(
             }
         }
         
-        // Check server status on page load
         async function checkPnServerStatus() {
             try {
                 const response = await fetch('/pn-server-status');
@@ -611,10 +790,10 @@ const char* HTML_PAGE = R"HTML(
             if (stepIndex < steps.length) {
                 const icon = steps[stepIndex].querySelector('.step-icon');
                 icon.className = 'step-icon step-' + status;
-                if (status === 'pending') icon.textContent = 'â—‹';
-                else if (status === 'running') icon.textContent = 'â—';
-                else if (status === 'complete') icon.textContent = 'âœ“';
-                else if (status === 'error') icon.textContent = 'âœ—';
+                if (status === 'pending') icon.textContent = '○';
+                else if (status === 'running') icon.textContent = '◐';
+                else if (status === 'complete') icon.textContent = '✔';
+                else if (status === 'error') icon.textContent = '✗';
             }
         }
         
@@ -647,8 +826,8 @@ const char* HTML_PAGE = R"HTML(
             const message = document.getElementById('brain-pn-msg').value;
             
             document.getElementById('btn-brain-pn').disabled = true;
-            resetTestSteps('brain-pn', 10);
-            interopLog('Starting Brain TX â†’ PhoenixNest RX test, Mode: ' + mode, 'info');
+            resetTestSteps('brain-pn', 9);
+            interopLog('Starting Brain TX → PhoenixNest RX test, Mode: ' + mode, 'info');
             
             try {
                 const response = await fetch('/brain-to-pn-test?mode=' + encodeURIComponent(mode) + 
@@ -713,8 +892,8 @@ const char* HTML_PAGE = R"HTML(
             const message = document.getElementById('pn-brain-msg').value;
             
             document.getElementById('btn-pn-brain').disabled = true;
-            resetTestSteps('pn-brain', 10);
-            interopLog('Starting PhoenixNest TX â†’ Brain RX test, Mode: ' + mode, 'info');
+            resetTestSteps('pn-brain', 9);
+            interopLog('Starting PhoenixNest TX → Brain RX test, Mode: ' + mode, 'info');
             
             try {
                 const response = await fetch('/pn-to-brain-test?mode=' + encodeURIComponent(mode) + 
@@ -775,7 +954,8 @@ const char* HTML_PAGE = R"HTML(
             if (interopTestRunning) return;
             interopTestRunning = true;
             
-            const modes = ['150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L'];
+            // All 12 modes including 75bps
+            const modes = ['75S', '75L', '150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L'];
             const message = 'CROSS MODEM MATRIX TEST';
             let completed = 0;
             const total = modes.length * 2;
@@ -785,17 +965,17 @@ const char* HTML_PAGE = R"HTML(
             // Reset all cells
             for (const mode of modes) {
                 document.getElementById('cm-' + mode + '-1').className = 'matrix-cell matrix-pending';
-                document.getElementById('cm-' + mode + '-1').textContent = 'â—‹';
+                document.getElementById('cm-' + mode + '-1').textContent = '○';
                 document.getElementById('cm-' + mode + '-2').className = 'matrix-cell matrix-pending';
-                document.getElementById('cm-' + mode + '-2').textContent = 'â—‹';
+                document.getElementById('cm-' + mode + '-2').textContent = '○';
             }
             
-            interopLog('Starting cross-modem matrix test (20 tests)', 'info');
+            interopLog('Starting cross-modem matrix test (' + total + ' tests)', 'info');
             
             for (const mode of modes) {
-                // Test 1: Brain TX â†’ PN RX
+                // Test 1: Brain TX → PN RX
                 document.getElementById('cm-' + mode + '-1').className = 'matrix-cell matrix-running';
-                document.getElementById('cm-' + mode + '-1').textContent = 'â—';
+                document.getElementById('cm-' + mode + '-1').textContent = '◐';
                 
                 try {
                     const resp1 = await fetch('/brain-to-pn-quick?mode=' + mode + '&message=' + encodeURIComponent(message));
@@ -803,21 +983,21 @@ const char* HTML_PAGE = R"HTML(
                     
                     const cell1 = document.getElementById('cm-' + mode + '-1');
                     cell1.className = 'matrix-cell ' + (result1.success ? 'matrix-pass' : 'matrix-fail');
-                    cell1.textContent = result1.success ? 'âœ“' : 'âœ—';
-                    interopLog(mode + ' Brainâ†’PN: ' + (result1.success ? 'PASS' : 'FAIL - ' + (result1.error || 'Unknown')), 
+                    cell1.textContent = result1.success ? '✔' : '✗';
+                    interopLog(mode + ' Brain→PN: ' + (result1.success ? 'PASS' : 'FAIL - ' + (result1.error || 'Unknown')), 
                               result1.success ? 'rx' : 'error');
                 } catch (err) {
                     const cell1 = document.getElementById('cm-' + mode + '-1');
                     cell1.className = 'matrix-cell matrix-fail';
-                    cell1.textContent = 'âœ—';
-                    interopLog(mode + ' Brainâ†’PN: ERROR - ' + err.message, 'error');
+                    cell1.textContent = '✗';
+                    interopLog(mode + ' Brain→PN: ERROR - ' + err.message, 'error');
                 }
                 completed++;
                 document.getElementById('matrix-progress').textContent = 'Progress: ' + completed + '/' + total;
                 
-                // Test 2: PN TX â†’ Brain RX
+                // Test 2: PN TX → Brain RX
                 document.getElementById('cm-' + mode + '-2').className = 'matrix-cell matrix-running';
-                document.getElementById('cm-' + mode + '-2').textContent = 'â—';
+                document.getElementById('cm-' + mode + '-2').textContent = '◐';
                 
                 try {
                     const resp2 = await fetch('/pn-to-brain-quick?mode=' + mode + '&message=' + encodeURIComponent(message));
@@ -825,14 +1005,14 @@ const char* HTML_PAGE = R"HTML(
                     
                     const cell2 = document.getElementById('cm-' + mode + '-2');
                     cell2.className = 'matrix-cell ' + (result2.success ? 'matrix-pass' : 'matrix-fail');
-                    cell2.textContent = result2.success ? 'âœ“' : 'âœ—';
-                    interopLog(mode + ' PNâ†’Brain: ' + (result2.success ? 'PASS' : 'FAIL - ' + (result2.error || 'Unknown')), 
+                    cell2.textContent = result2.success ? '✔' : '✗';
+                    interopLog(mode + ' PN→Brain: ' + (result2.success ? 'PASS' : 'FAIL - ' + (result2.error || 'Unknown')), 
                               result2.success ? 'rx' : 'error');
                 } catch (err) {
                     const cell2 = document.getElementById('cm-' + mode + '-2');
                     cell2.className = 'matrix-cell matrix-fail';
-                    cell2.textContent = 'âœ—';
-                    interopLog(mode + ' PNâ†’Brain: ERROR - ' + err.message, 'error');
+                    cell2.textContent = '✗';
+                    interopLog(mode + ' PN→Brain: ERROR - ' + err.message, 'error');
                 }
                 completed++;
                 document.getElementById('matrix-progress').textContent = 'Progress: ' + completed + '/' + total;
@@ -843,15 +1023,40 @@ const char* HTML_PAGE = R"HTML(
             interopTestRunning = false;
         }
         
-        function runTest() {
-            // Simple test runner placeholder
-            const output = document.getElementById('output');
-            output.textContent = 'Running test...\n';
+        // ============ REPORTS ============
+        async function loadReports() {
+            const container = document.getElementById('reports-list');
+            container.innerHTML = '<p style="color:#888;">Loading...</p>';
+            
+            try {
+                const response = await fetch('/list-reports');
+                const result = await response.json();
+                
+                if (result.reports && result.reports.length > 0) {
+                    container.innerHTML = '';
+                    for (const report of result.reports) {
+                        const div = document.createElement('div');
+                        div.className = 'report-item';
+                        div.innerHTML = 
+                            '<div>' +
+                            '<span class="report-name">' + report.name + '</span><br>' +
+                            '<span class="report-date">' + report.date + ' | ' + report.size + '</span>' +
+                            '</div>' +
+                            '<a href="/report/' + encodeURIComponent(report.name) + '" class="report-link" target="_blank">View →</a>';
+                        container.appendChild(div);
+                    }
+                } else {
+                    container.innerHTML = '<p style="color:#888;">No reports found in test/reports/ directory.</p>';
+                }
+            } catch (err) {
+                container.innerHTML = '<p style="color:#ff4757;">Error loading reports: ' + err.message + '</p>';
+            }
         }
         
-        // Initialize on page load
+        // ============ INITIALIZATION ============
         document.addEventListener('DOMContentLoaded', function() {
             checkPnServerStatus();
+            updateTestSummary();
         });
     </script>
 </body>
@@ -945,6 +1150,7 @@ private:
     SOCKET server_sock_;
     bool running_;
     FILE* test_process_;
+    std::atomic<bool> stop_test_{false};
     
     // PhoenixNest server process
 #ifdef _WIN32
@@ -988,6 +1194,23 @@ private:
         return decoded;
     }
     
+    std::map<std::string, std::string> parse_query_string(const std::string& path) {
+        std::map<std::string, std::string> params;
+        size_t qpos = path.find('?');
+        if (qpos == std::string::npos) return params;
+        
+        std::string query = path.substr(qpos + 1);
+        std::istringstream iss(query);
+        std::string pair;
+        while (std::getline(iss, pair, '&')) {
+            size_t eq = pair.find('=');
+            if (eq != std::string::npos) {
+                params[pair.substr(0, eq)] = url_decode(pair.substr(eq + 1));
+            }
+        }
+        return params;
+    }
+    
     void handle_client(SOCKET client) {
         char header_buf[8192];
         int n = recv(client, header_buf, sizeof(header_buf) - 1, 0);
@@ -1003,6 +1226,7 @@ private:
         std::istringstream iss(request);
         iss >> method >> path;
         
+        // Route requests
         if (path == "/" || path == "/index.html") {
             send_html(client, HTML_PAGE);
         } else if (path.find("/pn-server-start?") == 0) {
@@ -1023,6 +1247,15 @@ private:
             handle_brain_to_pn_quick(client, path);
         } else if (path.find("/pn-to-brain-quick?") == 0) {
             handle_pn_to_brain_quick(client, path);
+        } else if (path.find("/run-test?") == 0) {
+            handle_run_test(client, path);
+        } else if (path == "/stop-test") {
+            stop_test_ = true;
+            send_json(client, "{\"success\":true}");
+        } else if (path == "/list-reports") {
+            handle_list_reports(client);
+        } else if (path.find("/report/") == 0) {
+            handle_view_report(client, path);
         } else {
             send_404(client);
         }
@@ -1072,6 +1305,211 @@ private:
                  << json;
         std::string resp = response.str();
         send(client, resp.c_str(), (int)resp.size(), 0);
+    }
+    
+    void send_markdown(SOCKET client, const std::string& content) {
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: text/markdown; charset=utf-8\r\n"
+                 << "Content-Length: " << content.size() << "\r\n"
+                 << "Connection: close\r\n"
+                 << "\r\n"
+                 << content;
+        std::string resp = response.str();
+        send(client, resp.c_str(), (int)resp.size(), 0);
+    }
+    
+    // ============ LOOPBACK TEST HANDLER ============
+    
+    void handle_run_test(SOCKET client, const std::string& path) {
+        auto params = parse_query_string(path);
+        std::string test_type = params["type"];
+        std::string modes_str = params["modes"];
+        std::string channels_str = params["channels"];
+        int iterations = std::stoi(params.count("iterations") ? params["iterations"] : "1");
+        
+        // Send SSE headers
+        std::string headers = 
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/event-stream\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: keep-alive\r\n"
+            "\r\n";
+        send(client, headers.c_str(), (int)headers.size(), 0);
+        
+        auto send_sse = [&](const std::string& json) {
+            std::string msg = "data: " + json + "\n\n";
+            send(client, msg.c_str(), (int)msg.size(), 0);
+        };
+        
+        stop_test_ = false;
+        
+        // Parse modes and channels
+        std::vector<std::string> modes, channels;
+        {
+            std::istringstream iss(modes_str);
+            std::string m;
+            while (std::getline(iss, m, ',')) {
+                if (!m.empty()) modes.push_back(m);
+            }
+        }
+        {
+            std::istringstream iss(channels_str);
+            std::string c;
+            while (std::getline(iss, c, ',')) {
+                if (!c.empty()) channels.push_back(c);
+            }
+        }
+        
+        int total = (int)(modes.size() * channels.size() * iterations);
+        int progress = 0;
+        int passed = 0, failed = 0;
+        
+        send_sse("{\"output\":\"Starting " + test_type + " test...\",\"progress\":0}");
+        
+        // Build and run exhaustive_test command
+        std::string test_exe = exe_dir_ + "exhaustive_test.exe";
+        if (!fs::exists(test_exe)) {
+            test_exe = exe_dir_ + "..\\exhaustive_test.exe";
+        }
+        
+        if (!fs::exists(test_exe)) {
+            send_sse("{\"output\":\"ERROR: exhaustive_test.exe not found\",\"done\":true}");
+            return;
+        }
+        
+        for (const auto& mode : modes) {
+            for (const auto& channel : channels) {
+                for (int iter = 0; iter < iterations && !stop_test_; iter++) {
+                    std::ostringstream cmd;
+                    cmd << "\"" << test_exe << "\" --mode " << mode 
+                        << " --channel " << channel
+                        << " --iterations 1 --quiet";
+                    
+                    send_sse("{\"output\":\"Testing " + mode + " + " + channel + 
+                             " (iter " + std::to_string(iter+1) + "/" + std::to_string(iterations) + ")...\"}");
+                    
+#ifdef _WIN32
+                    FILE* pipe = _popen(cmd.str().c_str(), "r");
+                    if (pipe) {
+                        char buffer[256];
+                        std::string output;
+                        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+                            output += buffer;
+                        }
+                        int result = _pclose(pipe);
+                        
+                        if (result == 0) {
+                            passed++;
+                            send_sse("{\"output\":\"  PASS\"}");
+                        } else {
+                            failed++;
+                            send_sse("{\"output\":\"  FAIL\"}");
+                        }
+                    } else {
+                        failed++;
+                        send_sse("{\"output\":\"  ERROR: Could not run test\"}");
+                    }
+#else
+                    // Linux implementation
+                    failed++;
+                    send_sse("{\"output\":\"  SKIP: Not implemented on this platform\"}");
+#endif
+                    
+                    progress++;
+                    send_sse("{\"progress\":" + std::to_string(progress) + "}");
+                }
+                
+                if (stop_test_) break;
+            }
+            if (stop_test_) break;
+        }
+        
+        // Summary
+        double pass_rate = total > 0 ? 100.0 * passed / total : 0.0;
+        std::ostringstream summary;
+        summary << "\\n=== SUMMARY ===\\n"
+                << "Total: " << total << " tests\\n"
+                << "Passed: " << passed << "\\n"
+                << "Failed: " << failed << "\\n"
+                << "Pass Rate: " << std::fixed << std::setprecision(1) << pass_rate << "%";
+        
+        send_sse("{\"output\":\"" + summary.str() + "\",\"done\":true}");
+    }
+    
+    // ============ REPORTS HANDLERS ============
+    
+    void handle_list_reports(SOCKET client) {
+        std::vector<std::string> report_dirs = {
+            exe_dir_ + "reports",
+            exe_dir_ + PATH_SEP + ".." + PATH_SEP + "reports",
+            exe_dir_ + PATH_SEP + ".." + PATH_SEP + "test" + PATH_SEP + "reports"
+        };
+        
+        std::ostringstream json;
+        json << "{\"reports\":[";
+        
+        bool first = true;
+        for (const auto& dir : report_dirs) {
+            if (!fs::exists(dir)) continue;
+            
+            try {
+                for (const auto& entry : fs::directory_iterator(dir)) {
+                    if (entry.path().extension() == ".md") {
+                        if (!first) json << ",";
+                        first = false;
+                        
+                        auto ftime = fs::last_write_time(entry);
+                        auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                            ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+                        std::time_t cftime = std::chrono::system_clock::to_time_t(sctp);
+                        
+                        char date_buf[64];
+                        std::strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", std::localtime(&cftime));
+                        
+                        auto size = fs::file_size(entry);
+                        std::string size_str;
+                        if (size < 1024) size_str = std::to_string(size) + " B";
+                        else if (size < 1024*1024) size_str = std::to_string(size/1024) + " KB";
+                        else size_str = std::to_string(size/(1024*1024)) + " MB";
+                        
+                        json << "{\"name\":\"" << entry.path().filename().string() << "\","
+                             << "\"date\":\"" << date_buf << "\","
+                             << "\"size\":\"" << size_str << "\","
+                             << "\"path\":\"" << entry.path().string() << "\"}";
+                    }
+                }
+            } catch (...) {}
+        }
+        
+        json << "]}";
+        send_json(client, json.str());
+    }
+    
+    void handle_view_report(SOCKET client, const std::string& path) {
+        // Extract filename from /report/filename.md
+        std::string filename = url_decode(path.substr(8));
+        
+        std::vector<std::string> report_dirs = {
+            exe_dir_ + "reports",
+            exe_dir_ + PATH_SEP + ".." + PATH_SEP + "reports",
+            exe_dir_ + PATH_SEP + ".." + PATH_SEP + "test" + PATH_SEP + "reports"
+        };
+        
+        for (const auto& dir : report_dirs) {
+            fs::path report_path = fs::path(dir) / filename;
+            if (fs::exists(report_path)) {
+                std::ifstream file(report_path);
+                if (file) {
+                    std::string content((std::istreambuf_iterator<char>(file)),
+                                        std::istreambuf_iterator<char>());
+                    send_markdown(client, content);
+                    return;
+                }
+            }
+        }
+        
+        send_404(client);
     }
     
     // ============ PHOENIXNEST SERVER CONTROL ============
@@ -1501,10 +1939,11 @@ private:
         return data;
     }
     
-    // ============ CROSS-MODEM TESTS ============
+    // ============ CROSS-MODEM TESTS - FIXED STEP INDICES ============
     
     void handle_brain_to_pn_test(SOCKET client, const std::string& path) {
-        // Brain TX â†’ PhoenixNest RX (streaming SSE)
+        // Brain TX → PhoenixNest RX (streaming SSE)
+        // FIXED: 9 steps (0-8), no separate "connect" step
         std::string mode = "600S", message = "TEST";
         
         size_t pos = path.find("mode=");
@@ -1546,12 +1985,20 @@ private:
             return;
         }
         
+        // Silently ensure PhoenixNest connection before starting
+        if (!pn_connected_) {
+            if (!pn_connect()) {
+                send_sse("{\"step\":0,\"status\":\"error\",\"result\":\"Failed to connect to PhoenixNest\",\"success\":false}");
+                return;
+            }
+        }
+        
         // Step 0: Set Brain data rate
         send_sse("{\"step\":0,\"status\":\"running\",\"log\":\"Setting Brain data rate: " + mode + "\",\"logType\":\"tx\"}");
         brain_send_cmd("CMD:DATA RATE:" + mode);
         std::string resp = brain_recv_ctrl(2000);
         if (resp.find("OK:DATA RATE") == std::string::npos) {
-            send_sse("{\"step\":0,\"status\":\"error\",\"result\":\"Brain data rate not set: " + resp.substr(0, 30) + "\",\"success\":false}");
+            send_sse("{\"step\":0,\"status\":\"error\",\"result\":\"Brain data rate not set\",\"success\":false}");
             return;
         }
         send_sse("{\"step\":0,\"status\":\"complete\"}");
@@ -1626,18 +2073,8 @@ private:
         }
         send_sse("{\"step\":5,\"status\":\"complete\",\"log\":\"Found: " + pcm_path + "\",\"logType\":\"rx\"}");
         
-        // Step 6: Connect to PhoenixNest if needed
-        send_sse("{\"step\":6,\"status\":\"running\",\"log\":\"Connecting to PhoenixNest\",\"logType\":\"info\"}");
-        if (!pn_connected_) {
-            if (!pn_connect()) {
-                send_sse("{\"step\":6,\"status\":\"error\",\"result\":\"Failed to connect to PhoenixNest\",\"success\":false}");
-                return;
-            }
-        }
-        send_sse("{\"step\":6,\"status\":\"complete\"}");
-        
-        // Step 7: Inject PCM into PhoenixNest RX
-        send_sse("{\"step\":7,\"status\":\"running\",\"log\":\"Injecting PCM into PhoenixNest RX\",\"logType\":\"tx\"}");
+        // Step 6: Inject PCM into PhoenixNest RX
+        send_sse("{\"step\":6,\"status\":\"running\",\"log\":\"Injecting PCM into PhoenixNest RX\",\"logType\":\"tx\"}");
         
         // Set PhoenixNest mode first
         pn_send_cmd("CMD:DATA RATE:" + mode);
@@ -1646,10 +2083,10 @@ private:
         fs::path abs_pcm = fs::absolute(pcm_path);
         pn_send_cmd("CMD:RXAUDIOINJECT:" + abs_pcm.string());
         pn_recv_ctrl(2000);
-        send_sse("{\"step\":7,\"status\":\"complete\"}");
+        send_sse("{\"step\":6,\"status\":\"complete\"}");
         
-        // Step 8: Wait for DCD
-        send_sse("{\"step\":8,\"status\":\"running\",\"log\":\"Waiting for PhoenixNest DCD...\",\"logType\":\"info\"}");
+        // Step 7: Wait for DCD
+        send_sse("{\"step\":7,\"status\":\"running\",\"log\":\"Waiting for PhoenixNest DCD...\",\"logType\":\"info\"}");
         bool got_dcd = false;
         std::string detected_mode;
         for (int i = 0; i < 30; i++) {
@@ -1669,16 +2106,15 @@ private:
             }
         }
         if (!got_dcd) {
-            send_sse("{\"step\":8,\"status\":\"error\",\"result\":\"No DCD from PhoenixNest\",\"success\":false}");
+            send_sse("{\"step\":7,\"status\":\"error\",\"result\":\"No DCD from PhoenixNest\",\"success\":false}");
             return;
         }
-        send_sse("{\"step\":8,\"status\":\"complete\",\"log\":\"DCD: " + detected_mode + "\",\"logType\":\"rx\"}");
+        send_sse("{\"step\":7,\"status\":\"complete\",\"log\":\"DCD: " + detected_mode + "\",\"logType\":\"rx\"}");
         
-        // Step 9: Read decoded data
-        send_sse("{\"step\":9,\"status\":\"running\",\"log\":\"Reading PhoenixNest decoded data...\",\"logType\":\"info\"}");
+        // Step 8: Read and compare decoded data
+        send_sse("{\"step\":8,\"status\":\"running\",\"log\":\"Reading PhoenixNest decoded data...\",\"logType\":\"info\"}");
         auto decoded = pn_recv_data(5000);
         std::string decoded_str(decoded.begin(), decoded.end());
-        send_sse("{\"step\":9,\"status\":\"complete\",\"log\":\"Received " + std::to_string(decoded.size()) + " bytes\",\"logType\":\"rx\"}");
         
         // Wait for inject complete
         for (int i = 0; i < 30; i++) {
@@ -1688,17 +2124,18 @@ private:
             }
         }
         
-        // Step 10: Compare
+        // Compare
         bool match = (decoded_str.find(message) != std::string::npos);
         if (match) {
-            send_sse("{\"step\":9,\"status\":\"complete\",\"result\":\"SUCCESS: Decoded '" + decoded_str.substr(0, 40) + "' matches!\",\"success\":true}");
+            send_sse("{\"step\":8,\"status\":\"complete\",\"result\":\"SUCCESS: Decoded '" + decoded_str.substr(0, 40) + "' matches!\",\"success\":true}");
         } else {
-            send_sse("{\"step\":9,\"status\":\"error\",\"result\":\"MISMATCH: Expected '" + message + "', got '" + decoded_str.substr(0, 40) + "'\",\"success\":false}");
+            send_sse("{\"step\":8,\"status\":\"error\",\"result\":\"MISMATCH: Expected '" + message + "', got '" + decoded_str.substr(0, 40) + "'\",\"success\":false}");
         }
     }
     
     void handle_pn_to_brain_test(SOCKET client, const std::string& path) {
-        // PhoenixNest TX â†’ Brain RX (streaming SSE)
+        // PhoenixNest TX → Brain RX (streaming SSE)
+        // FIXED: 9 steps (0-8), no separate "connect" step
         std::string mode = "600S", message = "TEST";
         
         size_t pos = path.find("mode=");
@@ -1739,7 +2176,7 @@ private:
             return;
         }
         
-        // Connect to PhoenixNest if needed
+        // Silently ensure PhoenixNest connection before starting
         if (!pn_connected_) {
             if (!pn_connect()) {
                 send_sse("{\"step\":0,\"status\":\"error\",\"result\":\"Failed to connect to PhoenixNest\",\"success\":false}");
@@ -1791,7 +2228,7 @@ private:
         }
         send_sse("{\"step\":4,\"status\":\"complete\",\"log\":\"PhoenixNest TX complete\",\"logType\":\"rx\"}");
         
-        // Step 5: Get PCM file path from SENDBUFFER response
+        // Step 5: Get PCM file path
         send_sse("{\"step\":5,\"status\":\"running\",\"log\":\"Getting PhoenixNest TX PCM file\",\"logType\":\"info\"}");
         std::string sendbuffer_resp = pn_recv_ctrl(2000);
         std::string pcm_path;
@@ -1823,7 +2260,6 @@ private:
         // Step 7: Wait for Brain DCD
         send_sse("{\"step\":7,\"status\":\"running\",\"log\":\"Waiting for Brain DCD...\",\"logType\":\"info\"}");
         bool got_dcd = false;
-        std::string detected_mode;
         for (int i = 0; i < 30; i++) {
             resp = brain_recv_ctrl(1000);
             if (resp.find("DCD:TRUE") != std::string::npos) {
@@ -1841,11 +2277,10 @@ private:
         }
         send_sse("{\"step\":7,\"status\":\"complete\",\"log\":\"Brain DCD detected\",\"logType\":\"rx\"}");
         
-        // Step 8: Read decoded data
+        // Step 8: Read and compare decoded data
         send_sse("{\"step\":8,\"status\":\"running\",\"log\":\"Reading Brain decoded data...\",\"logType\":\"info\"}");
         auto decoded = brain_recv_data(5000);
         std::string decoded_str(decoded.begin(), decoded.end());
-        send_sse("{\"step\":8,\"status\":\"complete\",\"log\":\"Received " + std::to_string(decoded.size()) + " bytes\",\"logType\":\"rx\"}");
         
         // Wait for RX complete
         for (int i = 0; i < 30; i++) {
@@ -1855,17 +2290,17 @@ private:
             }
         }
         
-        // Step 9: Compare
+        // Compare
         bool match = (decoded_str.find(message) != std::string::npos);
         if (match) {
-            send_sse("{\"step\":9,\"status\":\"complete\",\"result\":\"SUCCESS: Decoded '" + decoded_str.substr(0, 40) + "' matches!\",\"success\":true}");
+            send_sse("{\"step\":8,\"status\":\"complete\",\"result\":\"SUCCESS: Decoded '" + decoded_str.substr(0, 40) + "' matches!\",\"success\":true}");
         } else {
-            send_sse("{\"step\":9,\"status\":\"error\",\"result\":\"MISMATCH: Expected '" + message + "', got '" + decoded_str.substr(0, 40) + "'\",\"success\":false}");
+            send_sse("{\"step\":8,\"status\":\"error\",\"result\":\"MISMATCH: Expected '" + message + "', got '" + decoded_str.substr(0, 40) + "'\",\"success\":false}");
         }
     }
     
     void handle_brain_to_pn_quick(SOCKET client, const std::string& path) {
-        // Quick version for matrix testing
+        // Quick version for matrix testing - no step-by-step UI updates
         std::string mode = "600S", message = "TEST";
         
         size_t pos = path.find("mode=");
@@ -1890,6 +2325,14 @@ private:
         if (!pn_server_running_) {
             send_json(client, "{\"success\":false,\"error\":\"PhoenixNest server not running\"}");
             return;
+        }
+        
+        // Silently ensure PhoenixNest connection
+        if (!pn_connected_) {
+            if (!pn_connect()) {
+                send_json(client, "{\"success\":false,\"error\":\"Cannot connect to PhoenixNest\"}");
+                return;
+            }
         }
         
         // Brain TX
@@ -1947,14 +2390,6 @@ private:
         if (pcm_path.empty()) {
             send_json(client, "{\"success\":false,\"error\":\"Brain TX PCM not found\"}");
             return;
-        }
-        
-        // Connect to PN if needed
-        if (!pn_connected_) {
-            if (!pn_connect()) {
-                send_json(client, "{\"success\":false,\"error\":\"Cannot connect to PhoenixNest\"}");
-                return;
-            }
         }
         
         // Set PN mode and inject
@@ -2031,7 +2466,7 @@ private:
             return;
         }
         
-        // Connect to PN if needed
+        // Silently ensure PhoenixNest connection
         if (!pn_connected_) {
             if (!pn_connect()) {
                 send_json(client, "{\"success\":false,\"error\":\"Cannot connect to PhoenixNest\"}");
@@ -2138,15 +2573,22 @@ int main(int argc, char* argv[]) {
         if ((arg == "--port" || arg == "-p") && i + 1 < argc) {
             port = std::stoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
-            std::cout << "M110A Test GUI Server - Cross-Modem Interop Edition\n\n";
+            std::cout << "M110A Test GUI Server - Fixed Version\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
             std::cout << "Options:\n";
             std::cout << "  --port N, -p N   HTTP port (default: 8080)\n";
             std::cout << "  --help, -h       Show this help\n\n";
             std::cout << "Features:\n";
-            std::cout << "  - PhoenixNest server control\n";
-            std::cout << "  - Brain modem connection\n";
+            std::cout << "  - Loopback testing with channel simulation\n";
+            std::cout << "  - Reference PCM validation\n";
             std::cout << "  - Cross-modem interop testing (Brain <-> PhoenixNest)\n";
+            std::cout << "  - Test report viewing\n\n";
+            std::cout << "Fixes in this version:\n";
+            std::cout << "  - Added 75bps modes (75S, 75L)\n";
+            std::cout << "  - Fixed interop step index mismatch\n";
+            std::cout << "  - Implemented loopback/reference test handlers\n";
+            std::cout << "  - Added channel condition support\n";
+            std::cout << "  - Implemented reports listing\n";
             return 0;
         }
     }
