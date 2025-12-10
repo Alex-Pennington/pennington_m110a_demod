@@ -10,6 +10,11 @@ rx_pcm_in/
 *.obj
 *.pdb
 
+# Release packages (these go to GitHub Releases, not the repo)
+M110A_Modem_*.zip
+M110A_Modem_*.zip.asc
+M110A_Modem_*.SHA256.txt
+
 # IDE
 .vscode/
 *.suo
