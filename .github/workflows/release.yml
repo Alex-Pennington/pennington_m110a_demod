@@ -1,18 +1,17 @@
 name: Build and Release with Attestation
 
 on:
-  # Manual trigger
-  workflow_dispatch:
-    inputs:
-      version_tag:
-        description: 'Version tag (e.g., v1.2.0-build148)'
-        required: true
-        default: 'v1.2.0'
-  # Trigger on version tags
-  push:
-    tags:
-      - 'v*'
-
+     workflow_dispatch:
+       inputs:
+         version_tag:
+           description: 'Version tag (e.g., v1.2.0-build148)'
+           required: true
+           default: 'v1.2.0'
+     push:
+       branches:
+         - master
+       tags:
+         - 'v*'
 permissions:
   contents: write
 
