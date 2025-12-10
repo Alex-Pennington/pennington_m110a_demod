@@ -373,7 +373,7 @@ bool BrainServer::start() {
     
     processing_thread_ = std::thread(&BrainServer::run_processing_loop, this);
     
-    std::cout << "Brain Modem Server started\n";
+    std::cout << "Phoenix Nest M110A Server started\n";
     std::cout << "  Data port:     " << config_.data_port << "\n";
     std::cout << "  Control port:  " << config_.control_port << "\n";
     if (config_.enable_discovery) {
@@ -423,7 +423,7 @@ void BrainServer::stop() {
         control_clients_.clear();
     }
     
-    std::cout << "Brain Modem Server stopped\n";
+    std::cout << "Phoenix Nest M110A Server stopped\n";
 }
 
 size_t BrainServer::tx_buffer_size() const {

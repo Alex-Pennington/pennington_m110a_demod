@@ -256,7 +256,7 @@ The 13 WAV files are **concatenated segments from a single recording**, with eac
 The reference files show D1=7, D2=5 which doesn't match any defined mode - this is correct and expected.
 
 ### Phase Offset
-The decoder may find preamble at various phase offsets (0Â°, 45Â°, 90Â°, etc.). This is normal due to:
+The decoder may find preamble at various phase offsets (0°, 45°, 90°, etc.). This is normal due to:
 1. Unknown initial carrier phase
 2. Propagation delay effects
 The correlation metric is phase-invariant, so high correlation indicates correct synchronization regardless of phase.
@@ -266,3 +266,93 @@ The correlation metric is phase-invariant, so high correlation indicates correct
 2. **RRC matched filtering**: Essential for ISI rejection and noise performance  
 3. **Walsh correlation**: D1/D2 patterns use Walsh-like orthogonal sequences for robust detection
 4. **Modulo-8 scrambling**: Brain Modem uses addition (not XOR) for scrambling
+
+---
+
+## TX Compatibility Issue (December 2025)
+
+### Status: IMPLEMENTED - Testing Limited by Brain Server
+
+**Problem**: Brain Modem RX cannot decode PhoenixNest TX signals.
+
+| Direction | Result |
+|-----------|--------|
+| Brain TX → PhoenixNest RX | ✅ Works (10/12 modes) |
+| PhoenixNest TX → PhoenixNest RX | ✅ Works (loopback) |
+| PhoenixNest TX → Brain RX | ⚠️ Cannot test (see below) |
+
+### Root Cause Analysis
+
+For the same 54-byte test message ("THE QUICK BROWN FOX..."):
+
+| Source | Samples | Symbols | Miniframes |
+|--------|---------|---------|------------|
+| Brain TX | 67,200 | 3,360 | 40 (data+EOM) |
+| PhoenixNest TX (before fix) | 61,440 | 3,072 | 34 (data+EOM) |
+| **Difference** | **5,760** | **288** | **6** |
+
+Brain TX includes **288 extra symbols** that provide:
+- AGC settling period
+- Carrier lock acquisition time  
+- Power amplifier ramp-up allowance
+
+### Implemented Fix (Build 208+)
+
+Added 288 leading symbols to PhoenixNest TX that match Brain's pattern:
+
+**Calibration Burst Structure:**
+- Symbols 0-1: Full amplitude burst (AGC calibration)
+- Symbols 2-9: Silence gap (AGC settling)
+- Symbols 10-11: Amplitude ramp (25%, 50%)
+- Symbols 12-287: Scrambled padding (8-PSK)
+
+**Configuration options in `TxConfig`:**
+```cpp
+bool include_leading_symbols = true;  // Add 288 leading symbols (default: true)
+float soft_ramp_ms = 0.0f;           // Additional soft ramp (default: 0, not needed)
+```
+
+**Symbol Count Verification:**
+| Source | Symbols | Match |
+|--------|---------|-------|
+| Brain TX | 3,360 | ✅ |
+| PhoenixNest TX (with fix) | 3,360 | ✅ |
+
+**Start Pattern Comparison (first 15 symbols):**
+| Symbol | Brain TX | PhoenixNest TX | Pattern |
+|--------|----------|----------------|---------|
+| 0-1 | FULL | FULL | Calibration burst |
+| 2-9 | SILENCE | SILENCE | AGC settling gap |
+| 10-11 | RAMP | RAMP | Amplitude ramp-up |
+| 12+ | FULL | FULL | Normal signal |
+
+### Testing Limitation
+
+**Brain server RXAUDIOINJECT does not output decoded data:**
+- Brain's RXAUDIOINJECT command returns `RX:COMPLETE:0` for ALL PCM files
+- Even Brain's own TX files return 0 bytes decoded
+- This appears to be a limitation of the Brain server's test interface
+- The decoded data is not emitted on the data port
+
+**Workarounds for verification:**
+1. Use actual RF hardware to test PhoenixNest TX → Brain RX
+2. Use third-party M110A decoder to verify PhoenixNest TX
+3. Compare signal characteristics (done above - they match)
+
+### Code Changes
+
+**`api/modem_config.h`:**
+- Added `include_leading_symbols` option (default: true)
+- Added `soft_ramp_ms` option (default: 0.0f)
+
+**`api/modem_tx.cpp`:**
+- Added `generate_leading_symbols()` method
+  - Generates 288 symbols with calibration burst pattern
+  - 2 burst + 8 silence + 2 ramp + 276 scrambled
+- Leading symbols inserted before preamble in `encode()`
+
+### Files Modified
+- `api/modem_config.h` - TxConfig options
+- `api/modem_tx.cpp` - Leading symbol generation
+- `docs/BRAIN_COMPATIBILITY_PLAN.md` - This documentation
+

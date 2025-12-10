@@ -41,6 +41,15 @@ struct TxConfig {
     /// Use RRC pulse shaping (improves spectrum, requires RX matched filter)
     bool use_pulse_shaping = false;
     
+    /// Add calibration burst for Brain Modem compatibility
+    /// Brain TX starts with: 2 symbols burst + 8 symbols silence + ramp into preamble
+    /// This allows AGC settling and carrier lock for receivers
+    bool include_leading_symbols = true;
+    
+    /// Soft ramp-up duration in milliseconds (0 = disabled)
+    /// Note: Brain TX uses calibration burst instead of soft ramp, so default is 0
+    float soft_ramp_ms = 0.0f;
+    
     /**
      * Validate configuration
      * @return OK if valid, error code otherwise
@@ -195,6 +204,8 @@ public:
     TxConfigBuilder& amplitude(float a) { cfg_.amplitude = a; return *this; }
     TxConfigBuilder& with_preamble(bool p = true) { cfg_.include_preamble = p; return *this; }
     TxConfigBuilder& with_eom(bool e = true) { cfg_.include_eom = e; return *this; }
+    TxConfigBuilder& with_leading_symbols(bool l = true) { cfg_.include_leading_symbols = l; return *this; }
+    TxConfigBuilder& soft_ramp(float ms) { cfg_.soft_ramp_ms = ms; return *this; }
     
     Result<TxConfig> build() {
         auto result = cfg_.validate();

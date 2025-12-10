@@ -111,7 +111,7 @@ int main(int argc, char* argv[]) {
     if (!quiet) {
         std::cout << "================================================\n";
         std::cout << m110a::version_header() << "\n";
-        std::cout << "Brain Modem Compatible Network Interface\n";
+        std::cout << "Phoenix Nest M110A - Brain Modem Compatible Interface\n";
         std::cout << "================================================\n";
         std::cout << m110a::copyright_notice() << "\n";
         std::cout << m110a::build_info() << "\n";

@@ -1,15 +1,83 @@
 # build.ps1 - M110A Modem Build Script with Version Management
-# Usage: .\build.ps1 [-Target <server|test|all>] [-Increment <major|minor|patch>] [-Clean]
+# 
+# Usage: .\build.ps1 [-Target <server|test|all|release>] [-Increment <major|minor|patch>] [-Clean]
+#        .\build.ps1 -Prerelease "rc.1"    # Create prerelease version 1.2.0-rc.1
+#        .\build.ps1 -Target release       # Create full release package with signing
+#        .\build.ps1 -Target release -Publish  # Build, sign, and publish to GitHub
+#
+# Workflow:
+#   Development:  .\build.ps1                      # Increments BUILD_NUMBER only
+#   Bug fix:      .\build.ps1 -Increment patch     # 1.2.0 -> 1.2.1
+#   Feature:      .\build.ps1 -Increment minor     # 1.2.1 -> 1.3.0  
+#   Breaking:     .\build.ps1 -Increment major     # 1.3.0 -> 2.0.0
+#   Prerelease:   .\build.ps1 -Prerelease "rc.1"   # 1.2.0-rc.1
+#   Publish:      .\build.ps1 -Target release -Publish  # Full release to GitHub
+#
+# See docs/DEVELOPMENT.md for full workflow documentation
 
 param(
     [string]$Target = "all",
     [string]$Increment = "",
-    [switch]$Clean = $false
+    [string]$Prerelease = "",
+    [switch]$Clean = $false,
+    [switch]$NoSign = $false,
+    [switch]$Publish = $false,
+    [switch]$Draft = $false,
+    [switch]$Help = $false
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $VersionFile = Join-Path $ProjectRoot "api\version.h"
+
+# GitHub repository info
+$script:GitHubOwner = "Alex-Pennington"
+$script:GitHubRepo = "pennington_m110a_demod"
+
+# Detect platform for artifact naming
+$script:Platform = if ($env:PROCESSOR_ARCHITECTURE -eq "AMD64") { "x64" } else { "x86" }
+$script:OS = "windows"
+
+# Show help if requested
+if ($Help) {
+    Write-Host @"
+M110A Modem Build Script
+========================
+
+USAGE:
+    .\build.ps1 [options]
+
+OPTIONS:
+    -Target <target>      Build target: server, test, all, release (default: all)
+    -Increment <type>     Version increment: major, minor, patch
+    -Prerelease <tag>     Add prerelease tag (e.g., "alpha.1", "beta.2", "rc.1")
+    -Clean                Clean build directory before building
+    -NoSign               Skip GPG signing for release builds
+    -Publish              Publish release to GitHub (requires gh CLI)
+    -Draft                Create GitHub release as draft (use with -Publish)
+    -Help                 Show this help message
+
+EXAMPLES:
+    .\build.ps1                          # Build all, increment build number
+    .\build.ps1 -Target server           # Build server only
+    .\build.ps1 -Increment patch         # Bug fix release (1.2.0 -> 1.2.1)
+    .\build.ps1 -Increment minor         # Feature release (1.2.0 -> 1.3.0)
+    .\build.ps1 -Prerelease "rc.1"       # Prerelease (1.2.0-rc.1)
+    .\build.ps1 -Target release          # Full release with signing
+    .\build.ps1 -Target release -NoSign  # Release without GPG signing
+    .\build.ps1 -Target release -Publish # Build and publish to GitHub
+    .\build.ps1 -Target release -Publish -Draft  # Publish as draft release
+
+CONVENTIONAL COMMITS (recommended for -Increment):
+    fix:      -> -Increment patch   (bug fixes)
+    feat:     -> -Increment minor   (new features)
+    feat!:    -> -Increment major   (breaking changes)
+    BREAKING CHANGE: in body -> -Increment major
+
+See docs/DEVELOPMENT.md for full workflow documentation.
+"@
+    exit 0
+}
 
 # ============================================================
 # Version Management
@@ -17,7 +85,7 @@ $VersionFile = Join-Path $ProjectRoot "api\version.h"
 
 function Get-CurrentVersion {
     if (-not (Test-Path $VersionFile)) {
-        return @{ Major = 1; Minor = 0; Patch = 0; Build = 0 }
+        return @{ Major = 1; Minor = 0; Patch = 0; Build = 0; Prerelease = "" }
     }
     
     $content = Get-Content $VersionFile -Raw
@@ -25,26 +93,48 @@ function Get-CurrentVersion {
     $minor = if ($content -match 'VERSION_MINOR = (\d+)') { [int]$Matches[1] } else { 0 }
     $patch = if ($content -match 'VERSION_PATCH = (\d+)') { [int]$Matches[1] } else { 0 }
     $build = if ($content -match 'BUILD_NUMBER = (\d+)') { [int]$Matches[1] } else { 0 }
+    $prerelease = if ($content -match 'VERSION_PRERELEASE = "([^"]*)"') { $Matches[1] } else { "" }
     
-    return @{ Major = $major; Minor = $minor; Patch = $patch; Build = $build }
+    return @{ Major = $major; Minor = $minor; Patch = $patch; Build = $build; Prerelease = $prerelease }
+}
+
+function Get-VersionString {
+    param($Version, [switch]$Full)
+    
+    $base = "v$($Version.Major).$($Version.Minor).$($Version.Patch)"
+    if ($Version.Prerelease) {
+        $base += "-$($Version.Prerelease)"
+    }
+    if ($Full) {
+        $base += "+build.$($Version.Build)"
+    }
+    return $base
 }
 
 function Update-Version {
-    param($Version, $IncrementType)
+    param($Version, $IncrementType, $PrereleaseTag = "")
     
     switch ($IncrementType) {
         "major" { 
             $Version.Major++
             $Version.Minor = 0
             $Version.Patch = 0
+            $Version.Prerelease = ""  # Clear prerelease on version bump
         }
         "minor" {
             $Version.Minor++
             $Version.Patch = 0
+            $Version.Prerelease = ""  # Clear prerelease on version bump
         }
         "patch" {
             $Version.Patch++
+            $Version.Prerelease = ""  # Clear prerelease on version bump
         }
+    }
+    
+    # Set prerelease tag if provided
+    if ($PrereleaseTag) {
+        $Version.Prerelease = $PrereleaseTag
     }
     
     # Always increment build number
@@ -90,6 +180,9 @@ constexpr int VERSION_MAJOR = $($Version.Major);
 constexpr int VERSION_MINOR = $($Version.Minor);
 constexpr int VERSION_PATCH = $($Version.Patch);
 
+// Prerelease tag (empty for stable releases)
+constexpr const char* VERSION_PRERELEASE = "$($Version.Prerelease)";
+
 // Build information (auto-generated)
 constexpr int BUILD_NUMBER = $($Version.Build);
 constexpr const char* GIT_COMMIT = "$gitCommit";
@@ -97,15 +190,20 @@ constexpr const char* GIT_BRANCH = "$gitBranch";
 constexpr const char* BUILD_DATE = "$buildDate";
 constexpr const char* BUILD_TIME = "$buildTime";
 
-/// Get version string (e.g., "1.2.0")
+/// Get version string (e.g., "1.2.0" or "1.2.0-rc.1")
 inline std::string version() {
-    return std::to_string(VERSION_MAJOR) + "." +
-           std::to_string(VERSION_MINOR) + "." +
-           std::to_string(VERSION_PATCH);
+    std::string v = std::to_string(VERSION_MAJOR) + "." +
+                    std::to_string(VERSION_MINOR) + "." +
+                    std::to_string(VERSION_PATCH);
+    if (VERSION_PRERELEASE[0] != '\0') {
+        v += "-";
+        v += VERSION_PRERELEASE;
+    }
+    return v;
 }
 
 /// Get full version string with branch and build info
-/// Format: "1.2.0 (turbo) build.42.abc1234"
+/// Format: "1.2.0-rc.1 (turbo) build.42.abc1234"
 inline std::string version_full() {
     return version() + " (" + GIT_BRANCH + ") build." + 
            std::to_string(BUILD_NUMBER) + "." + GIT_COMMIT;
@@ -575,10 +673,15 @@ See ``EULA.md`` for license terms and conditions. Go to https://www.organicengin
     
     # Create release info
     $version = Get-CurrentVersion
+    $versionDisplay = "$($version.Major).$($version.Minor).$($version.Patch)"
+    if ($version.Prerelease) {
+        $versionDisplay += "-$($version.Prerelease)"
+    }
     $releaseInfo = @"
 M110A Modem Release Package
-Version: $($version.Major).$($version.Minor).$($version.Patch)
+Version: $versionDisplay
 Build: $($version.Build)
+Platform: $($script:OS)-$($script:Platform)
 Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
 
 MIL-STD-188-110A Compatible HF Modem
@@ -625,7 +728,10 @@ alex.pennington@organicengineer.com
     # Archive release package and generate checksum manifest
     Write-Host "`nCreating release archive..." -ForegroundColor Yellow
     $versionString = "$($version.Major).$($version.Minor).$($version.Patch)"
-    $zipBaseName = "M110A_Modem_v$versionString`_Build$($version.Build)"
+    if ($version.Prerelease) {
+        $versionString += "-$($version.Prerelease)"
+    }
+    $zipBaseName = "M110A_Modem_v$versionString`_Build$($version.Build)_$($script:OS)-$($script:Platform)"
     $zipFileName = "$zipBaseName.zip"
     $zipPath = Join-Path $ProjectRoot $zipFileName
     if (Test-Path $zipPath) {
@@ -638,30 +744,34 @@ alex.pennington@organicengineer.com
     $ascFileName = "$zipFileName.asc"
     $ascPath = Join-Path $ProjectRoot $ascFileName
     $gpgKeyId = "91F913C25A03B0F4"
+    $gpgSigned = $false
     
-    # Find GPG executable
-    $gpgExe = "gpg"
-    $gpgPaths = @(
-        "C:\Program Files (x86)\gnupg\bin\gpg.exe",
-        "C:\Program Files\Git\usr\bin\gpg.exe",
-        "C:\Program Files\GnuPG\bin\gpg.exe"
-    )
-    foreach ($gp in $gpgPaths) {
-        if (Test-Path $gp) {
-            $gpgExe = $gp
-            break
+    if (-not $NoSign) {
+        # Find GPG executable
+        $gpgExe = "gpg"
+        $gpgPaths = @(
+            "C:\Program Files (x86)\gnupg\bin\gpg.exe",
+            "C:\Program Files\Git\usr\bin\gpg.exe",
+            "C:\Program Files\GnuPG\bin\gpg.exe"
+        )
+        foreach ($gp in $gpgPaths) {
+            if (Test-Path $gp) {
+                $gpgExe = $gp
+                break
+            }
         }
-    }
-    
-    Write-Host "Signing archive with GPG..." -ForegroundColor Yellow
-    $gpgResult = & $gpgExe --armor --detach-sign --local-user $gpgKeyId $zipPath 2>&1
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $ascPath)) {
-        Write-Host "GPG signature created: $ascFileName" -ForegroundColor Green
-        $gpgSigned = $true
+        
+        Write-Host "Signing archive with GPG..." -ForegroundColor Yellow
+        $gpgResult = & $gpgExe --armor --detach-sign --local-user $gpgKeyId $zipPath 2>&1
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $ascPath)) {
+            Write-Host "GPG signature created: $ascFileName" -ForegroundColor Green
+            $gpgSigned = $true
+        } else {
+            Write-Host "GPG signing skipped (key not available or GPG not installed)" -ForegroundColor Yellow
+            Write-Host "  To enable signing: gpg --import gpg/public_key.asc" -ForegroundColor DarkGray
+        }
     } else {
-        Write-Host "GPG signing skipped (key not available or GPG not installed)" -ForegroundColor Yellow
-        Write-Host "  To enable signing: gpg --import gpg/public_key.asc" -ForegroundColor DarkGray
-        $gpgSigned = $false
+        Write-Host "GPG signing skipped (-NoSign flag)" -ForegroundColor Yellow
     }
 
     Write-Host "Computing SHA256 checksum..." -ForegroundColor Yellow
@@ -742,6 +852,191 @@ MIL-STD-188-110A Compatible HF Modem
 "@
     Set-Content -Path $shaPath -Value $shaContent
     Write-Host "Checksum manifest written: $shaFileName" -ForegroundColor Green
+
+    # Return artifact info for publishing
+    return @{
+        ZipPath = $zipPath
+        ZipFileName = $zipFileName
+        AscPath = $ascPath
+        AscFileName = $ascFileName
+        ShaPath = $shaPath
+        ShaFileName = $shaFileName
+        VersionString = $versionString
+        GpgSigned = $gpgSigned
+    }
+}
+
+function Publish-GitHubRelease {
+    param(
+        $ReleaseInfo,
+        [switch]$Draft,
+        [switch]$IsPrerelease
+    )
+    
+    Write-Host "`n=== Publishing to GitHub ===" -ForegroundColor Cyan
+    
+    # Check for GitHub CLI
+    $ghPath = Get-Command gh -ErrorAction SilentlyContinue
+    if (-not $ghPath) {
+        Write-Host "ERROR: GitHub CLI (gh) not found" -ForegroundColor Red
+        Write-Host "Install from: https://cli.github.com/" -ForegroundColor Yellow
+        Write-Host "Then run: gh auth login" -ForegroundColor Yellow
+        return $false
+    }
+    
+    # Check authentication
+    $authStatus = gh auth status 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Not authenticated with GitHub" -ForegroundColor Red
+        Write-Host "Run: gh auth login" -ForegroundColor Yellow
+        return $false
+    }
+    
+    $version = Get-CurrentVersion
+    $tagName = "v$($ReleaseInfo.VersionString)"
+    $releaseName = "M110A Modem $tagName"
+    
+    # Get default branch from remote
+    $defaultBranch = (git remote show origin 2>&1 | Select-String "HEAD branch:" | ForEach-Object { $_.Line -replace ".*HEAD branch:\s*", "" }).Trim()
+    if (-not $defaultBranch) {
+        $defaultBranch = "master"  # Fallback
+    }
+    $currentBranch = git rev-parse --abbrev-ref HEAD
+    
+    # Check for uncommitted changes
+    $gitStatus = git status --porcelain 2>&1
+    if ($gitStatus) {
+        Write-Host "Uncommitted changes detected. Committing version bump..." -ForegroundColor Yellow
+        git add api/version.h
+        git commit -m "chore(release): $tagName"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "WARNING: Could not commit version.h (may already be committed)" -ForegroundColor Yellow
+        }
+    }
+    
+    # Push current branch first
+    Write-Host "Pushing $currentBranch to remote..." -ForegroundColor Yellow
+    $null = git push origin $currentBranch 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to push to remote" -ForegroundColor Red
+        return $false
+    }
+    Write-Host "Pushed to origin/$currentBranch" -ForegroundColor Green
+    
+    # If not on default branch, push to default branch to trigger release workflow
+    if ($currentBranch -ne $defaultBranch) {
+        Write-Host "`nPushing to $defaultBranch to trigger release workflow..." -ForegroundColor Yellow
+        $null = git push origin "${currentBranch}:${defaultBranch}" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to push to $defaultBranch" -ForegroundColor Red
+            Write-Host "You may need to create a PR to merge $currentBranch -> $defaultBranch" -ForegroundColor Yellow
+            Write-Host "  gh pr create --base $defaultBranch --head $currentBranch --title `"Release $tagName`"" -ForegroundColor DarkCyan
+            return $false
+        }
+        Write-Host "Pushed to origin/$defaultBranch" -ForegroundColor Green
+    }
+    
+    # GitHub Actions workflow will auto-generate tag and release on push to default branch
+    Write-Host "`nGitHub Actions will auto-generate tag and release" -ForegroundColor Cyan
+    
+    # Check if tag already exists (from previous release or manual creation)
+    $existingTag = git tag -l $tagName 2>&1
+    if (-not $existingTag) {
+        Write-Host "`nArtifacts built locally:" -ForegroundColor Yellow
+        Write-Host "  $($ReleaseInfo.ZipFileName)" -ForegroundColor Gray
+        Write-Host "  $($ReleaseInfo.ShaFileName)" -ForegroundColor Gray
+        if ($ReleaseInfo.GpgSigned) {
+            Write-Host "  $($ReleaseInfo.AscFileName)" -ForegroundColor Gray
+        }
+        Write-Host "`nCI will create release. To upload artifacts manually after CI completes:" -ForegroundColor Yellow
+        Write-Host "  gh release upload $tagName $($ReleaseInfo.ZipFileName) $($ReleaseInfo.ShaFileName)" -ForegroundColor DarkCyan
+        return $true
+    }
+    
+    # Tag exists - upload to existing release
+    Write-Host "Tag $tagName exists. Uploading artifacts to release..." -ForegroundColor Yellow
+    
+    # Build release notes
+    $releaseNotes = @"
+## M110A Modem $tagName
+
+MIL-STD-188-110A Compatible HF Modem
+
+### Downloads
+- **$($ReleaseInfo.ZipFileName)** - Windows x64 release package
+- **$($ReleaseInfo.ShaFileName)** - SHA256 checksum
+
+### Verification
+``````powershell
+# Verify SHA256 checksum
+(Get-FileHash $($ReleaseInfo.ZipFileName) -Algorithm SHA256).Hash
+``````
+"@
+    
+    if ($ReleaseInfo.GpgSigned) {
+        $releaseNotes += @"
+
+``````bash
+# Verify GPG signature
+gpg --verify $($ReleaseInfo.AscFileName) $($ReleaseInfo.ZipFileName)
+``````
+"@
+    }
+    
+    $releaseNotes += @"
+
+### Installation
+1. Download and extract the ZIP archive
+2. Read INSTALL.md for setup instructions
+3. Obtain license key from https://www.organicengineer.com/projects
+
+---
+*Build $($version.Build) | $(Get-Date -Format "yyyy-MM-dd")*
+"@
+    
+    # Build gh release command arguments
+    $ghArgs = @("release", "create", $tagName)
+    $ghArgs += $ReleaseInfo.ZipPath
+    $ghArgs += $ReleaseInfo.ShaPath
+    if ($ReleaseInfo.GpgSigned -and (Test-Path $ReleaseInfo.AscPath)) {
+        $ghArgs += $ReleaseInfo.AscPath
+    }
+    $ghArgs += "--title"
+    $ghArgs += $releaseName
+    $ghArgs += "--notes"
+    $ghArgs += $releaseNotes
+    
+    if ($Draft) {
+        $ghArgs += "--draft"
+    }
+    if ($IsPrerelease) {
+        $ghArgs += "--prerelease"
+    }
+    
+    # Check if release already exists
+    $existingRelease = gh release view $tagName 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Release $tagName already exists. Updating..." -ForegroundColor Yellow
+        # Delete and recreate
+        gh release delete $tagName -y 2>&1
+    }
+    
+    Write-Host "Creating GitHub release..." -ForegroundColor Yellow
+    $result = & gh $ghArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to create release" -ForegroundColor Red
+        Write-Host $result -ForegroundColor Red
+        return $false
+    }
+    
+    Write-Host "`n=== Release Published Successfully ===" -ForegroundColor Green
+    Write-Host "URL: https://github.com/$($script:GitHubOwner)/$($script:GitHubRepo)/releases/tag/$tagName" -ForegroundColor Cyan
+    
+    # Offer attestation
+    Write-Host "`nTo add attestation (optional):" -ForegroundColor Gray
+    Write-Host "  gh attestation create $($ReleaseInfo.ZipFileName) --owner $($script:GitHubOwner)" -ForegroundColor DarkCyan
+    
+    return $true
 }
 
 function Clean-Build {
@@ -771,10 +1066,17 @@ if ($Clean) {
 
 # Update version
 $version = Get-CurrentVersion
-$version = Update-Version -Version $version -IncrementType $Increment
+$version = Update-Version -Version $version -IncrementType $Increment -PrereleaseTag $Prerelease
 Write-VersionHeader -Version $version
 
+# Display version info
+$versionStr = Get-VersionString -Version $version
+$versionFull = Get-VersionString -Version $version -Full
+Write-Host "`nVersion: $versionStr" -ForegroundColor Cyan
+Write-Host "Full:    $versionFull" -ForegroundColor DarkGray
+
 # Build targets
+$releaseInfo = $null
 switch ($Target.ToLower()) {
     "server" {
         Build-Server
@@ -795,7 +1097,7 @@ switch ($Target.ToLower()) {
         Build-LicenseGen
     }
     "release" {
-        Build-Release
+        $releaseInfo = Build-Release
     }
     "all" {
         Build-Server
@@ -810,6 +1112,18 @@ switch ($Target.ToLower()) {
         Write-Host "Valid targets: server, test, unified, unit, gui, license, release, all" -ForegroundColor Yellow
         exit 1
     }
+}
+
+# Publish to GitHub if requested
+if ($Publish -and $releaseInfo) {
+    $isPrerelease = [bool]$version.Prerelease
+    $publishResult = Publish-GitHubRelease -ReleaseInfo $releaseInfo -Draft:$Draft -IsPrerelease:$isPrerelease
+    if (-not $publishResult) {
+        Write-Host "`nPublish failed, but local artifacts are available." -ForegroundColor Yellow
+    }
+} elseif ($Publish -and -not $releaseInfo) {
+    Write-Host "`nWARNING: -Publish requires -Target release" -ForegroundColor Yellow
+    Write-Host "Run: .\build.ps1 -Target release -Publish" -ForegroundColor Gray
 }
 
 Write-Host "`n============================================" -ForegroundColor Cyan

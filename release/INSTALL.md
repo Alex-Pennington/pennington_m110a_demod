@@ -11,7 +11,7 @@
 
 2. **Activate your license**
      - Open a command prompt in the release directory
-     - Run the server .exe file and copy your hwid.
+     - Run: `license_gen.exe --hwid`
      - Go to https://www.organicengineer.com/projects to obtain a license key using your hardware ID
      - You will receive a `license.key` file
      - Place the `license.key` file in the `bin/` directory
@@ -57,21 +57,12 @@ Options:
 Web-based graphical interface for running tests.
 
 Usage:
-```
+`
 cd bin
 test_gui.exe
-```
+`
 
 Opens http://localhost:8080 in your browser with a full GUI for test configuration.
-
-### bin/melpe_vocoder.exe
-MELPe (Mixed Excitation Linear Prediction enhanced) voice codec for HF voice communications.
-
-Usage:
-```
-cd bin
-melpe_vocoder.exe [options]
-```
 
 ## Quick Start
 

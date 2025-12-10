@@ -4,7 +4,7 @@
 
 1. Get your hardware ID:
    ```
-   - Run the server .exe file and copy your hwid.
+   license_gen.exe --hwid
    ```
 
 2. Go to https://www.organicengineer.com/projects to obtain a license key using your hardware ID

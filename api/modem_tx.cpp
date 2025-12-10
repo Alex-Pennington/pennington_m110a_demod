@@ -77,6 +77,16 @@ public:
         // Reset NCO phase for consistent output
         nco_ = NCO(config_.sample_rate, config_.carrier_freq);
         
+        // Generate leading symbols for Brain Modem compatibility
+        // These 288 symbols (6 miniframes) provide AGC settling and carrier lock time
+        if (config_.include_leading_symbols) {
+            auto leading_symbols = generate_leading_symbols();
+            auto leading_audio = config_.use_pulse_shaping ?
+                                 modulate_with_rrc(leading_symbols) :
+                                 modulate_simple(leading_symbols);
+            output.insert(output.end(), leading_audio.begin(), leading_audio.end());
+        }
+        
         // Generate preamble if requested
         if (config_.include_preamble) {
             auto preamble_symbols = generate_preamble(mode_id);
@@ -102,6 +112,11 @@ public:
                              modulate_with_rrc(eom_symbols) :
                              modulate_simple(eom_symbols);
             output.insert(output.end(), eom_audio.begin(), eom_audio.end());
+        }
+        
+        // Apply soft ramp-up envelope if configured
+        if (config_.soft_ramp_ms > 0.0f && !output.empty()) {
+            apply_soft_ramp(output);
         }
         
         // Update stats
@@ -235,6 +250,96 @@ private:
         }
         
         return encoder.encode(mode_index, is_long);
+    }
+    
+    /**
+     * Generate leading symbols for Brain Modem compatibility
+     * 
+     * Brain TX has 288 more symbols than a pure M110A transmission.
+     * These appear at the start and include:
+     * - 2 symbols: calibration burst (full amplitude)
+     * - 8 symbols: silence gap (for AGC settling)
+     * - 2 symbols: ramp-up transition
+     * - 276 symbols: additional preamble padding (scrambled 8-PSK)
+     * 
+     * This allows receivers to:
+     * - Lock AGC to correct gain level
+     * - Acquire carrier frequency/phase
+     * - Prepare symbol timing
+     * 
+     * @return 288 complex symbols
+     */
+    std::vector<complex_t> generate_leading_symbols() {
+        constexpr int BURST_SYMBOLS = 2;     // Full amplitude calibration burst
+        constexpr int SILENCE_SYMBOLS = 8;   // Silence gap for AGC
+        constexpr int RAMP_SYMBOLS = 2;      // Ramp-up transition
+        constexpr int PADDING_SYMBOLS = 276; // Additional padding (scrambled)
+        constexpr int TOTAL_SYMBOLS = BURST_SYMBOLS + SILENCE_SYMBOLS + RAMP_SYMBOLS + PADDING_SYMBOLS;
+        
+        // 8-PSK constellation
+        static const std::array<complex_t, 8> PSK8 = {{
+            complex_t( 1.000f,  0.000f),  // 0°
+            complex_t( 0.707f,  0.707f),  // 45°
+            complex_t( 0.000f,  1.000f),  // 90°
+            complex_t(-0.707f,  0.707f),  // 135°
+            complex_t(-1.000f,  0.000f),  // 180°
+            complex_t(-0.707f, -0.707f),  // 225°
+            complex_t( 0.000f, -1.000f),  // 270°
+            complex_t( 0.707f, -0.707f)   // 315°
+        }};
+        
+        std::vector<complex_t> symbols;
+        symbols.reserve(TOTAL_SYMBOLS);
+        
+        complex_t burst_symbol(1.0f, 0.0f);  // Full amplitude at 0°
+        complex_t zero_symbol(0.0f, 0.0f);   // Silence
+        
+        // Symbols 0-1: Full amplitude calibration burst
+        for (int i = 0; i < BURST_SYMBOLS; i++) {
+            symbols.push_back(burst_symbol);
+        }
+        
+        // Symbols 2-9: Silence gap
+        for (int i = 0; i < SILENCE_SYMBOLS; i++) {
+            symbols.push_back(zero_symbol);
+        }
+        
+        // Symbols 10-11: Ramp-up (25%, 50% amplitude)
+        symbols.push_back(complex_t(0.25f, 0.0f));
+        symbols.push_back(complex_t(0.50f, 0.0f));
+        
+        // Symbols 12-287: Scrambled padding (like preamble)
+        DataScramblerFixed scrambler;
+        for (int i = 0; i < PADDING_SYMBOLS; i++) {
+            int sym_idx = scrambler.next();
+            symbols.push_back(PSK8[sym_idx]);
+        }
+        
+        return symbols;
+    }
+    
+    /**
+     * Apply soft ramp-up envelope to audio samples
+     * 
+     * Uses raised-cosine envelope for smooth power transition.
+     * This prevents hard transients that can cause receiver issues.
+     * 
+     * @param samples Audio samples (modified in place)
+     */
+    void apply_soft_ramp(Samples& samples) {
+        int ramp_samples = static_cast<int>(config_.sample_rate * config_.soft_ramp_ms / 1000.0f);
+        
+        // Limit ramp to half of total samples
+        ramp_samples = std::min(ramp_samples, static_cast<int>(samples.size() / 2));
+        
+        if (ramp_samples <= 0) return;
+        
+        // Apply raised-cosine envelope: 0.5 * (1 - cos(pi * t / T))
+        for (int i = 0; i < ramp_samples; i++) {
+            float t = static_cast<float>(i) / ramp_samples;
+            float envelope = 0.5f * (1.0f - std::cos(M_PI * t));
+            samples[i] *= envelope;
+        }
     }
     
     /**

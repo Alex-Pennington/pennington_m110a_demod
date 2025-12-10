@@ -29,16 +29,22 @@
 #include <algorithm>
 #include <random>
 
-// Version info
-#include "api/version.h"
-#include "common/license.h"
-
+// Winsock must be included before windows.h (which is in license.h)
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
         #define WIN32_LEAN_AND_MEAN
     #endif
     #include <winsock2.h>
     #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+#endif
+
+// Version info
+#include "api/version.h"
+#include "common/license.h"
+
+#ifdef _WIN32
+    // Socket types already included above
     #pragma comment(lib, "ws2_32.lib")
     using socket_t = SOCKET;
     #define INVALID_SOCK INVALID_SOCKET
