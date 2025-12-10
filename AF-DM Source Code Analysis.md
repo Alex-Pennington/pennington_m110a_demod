@@ -149,11 +149,16 @@ Phoenix Nest TX was updated to add:
 2. Soft ramp-up envelope
 
 ### Remaining Verification
-Cannot verify PN TX → Brain RX via software due to Brain server's RXAUDIOINJECT limitation.
-Options for verification:
-- RF hardware testing
-- Third-party MIL-STD-188-110A decoder
-- MARS net check-in
+What blocked software testing:
+AF-DM's RXAUDIOINJECT command didn't work. You couldn't feed PCM files to the decoder, so the only way to verify interop was over RF.
+What's changed:
+The brain_core repo now has a working headless server with:
+
+CMD:RXAUDIOINJECT:<path> — feed PCM directly to RX
+TX PCM capture to files
+Full modem core source (not just the wrapper)
+
+So now we can do Brain TX → PCM → Phoenix RX and vice versa, all in software. No radio required for the initial verification.
 
 ---
 
