@@ -49,6 +49,8 @@
 #include <filesystem>
 #include <regex>
 #include <random>
+#include <atomic>   // Required for std::atomic<bool>
+#include <map>      // Required for std::map<>
 #include <ctime>
 #include <chrono>
 
