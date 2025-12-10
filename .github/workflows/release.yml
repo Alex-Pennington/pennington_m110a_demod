@@ -120,11 +120,16 @@ jobs:
         id: version
         shell: pwsh
         run: |
+          $buildNum = "${{ steps.buildinfo.outputs.BUILD_NUM }}"
+          
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $tag = "${{ github.event.inputs.version_tag }}"
-          } else {
+          } elseif ("${{ github.ref }}".StartsWith("refs/tags/")) {
             $tag = "${{ github.ref_name }}"
+          } else {
+            $tag = "v1.2.0-build$buildNum"
           }
+          
           echo "TAG=$tag" >> $env:GITHUB_OUTPUT
           Write-Host "Release tag: $tag"
 

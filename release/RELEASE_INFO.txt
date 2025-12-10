@@ -1,8 +1,8 @@
 M110A Modem Release Package
 Version: 1.2.1
-Build: 213
+Build: 215
 Platform: windows-x64
-Date: 2025-12-10 10:15:36
+Date: 2025-12-10 11:36:34
 
 MIL-STD-188-110A Compatible HF Modem
 (c) 2024-2025 Alex Pennington
