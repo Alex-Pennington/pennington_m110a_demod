@@ -1,0 +1,2 @@
+C:\Users\rayve\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin\ar.exe qc libmelpe_api.a CMakeFiles/melpe_api.dir/melpe_api.c.obj
+C:\Users\rayve\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin\ranlib.exe libmelpe_api.a

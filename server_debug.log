@@ -1,0 +1,41 @@
+================================================
+M110A Modem v1.2.0 (turbo branch, build 196, commit 38602b4)
+MS-DMT Compatible Network Interface
+================================================
+Copyright (c) 2024-2025 Alex Pennington
+Email: alex.pennington@organicengineer.com
+MIL-STD-188-110A Compatible HF Modem
+Build 196 (38602b4) turbo 2025-12-10 00:50:06
+
+By using this software, you agree to the End User License Agreement.
+See EULA.md for complete terms and conditions.
+License required - Contact: alex.pennington@organicengineer.com
+================================================
+
+License: TEST01
+Expires: Wed Dec  9 00:00:00 2026
+Days remaining: 363
+
+MS-DMT Server started
+  Data port:     4998
+  Control port:  4999
+  Discovery:     UDP 5000
+
+Server running. Press Ctrl+C to stop.
+
+[CTRL] Client connected: 127.0.0.1:59564
+[DATA] Client connected: 127.0.0.1:59565
+[CMD] CMD:DATA RATE:600S
+[CMD] CMD:RXAUDIOINJECT:D:\pennington_m110a_demod\refrence_pcm\tx_600S_20251206_202518_709.pcm
+[RX] extract_data: preamble_symbols=1440 start_sample=257 data_start=29057 filtered.size()=105600 sps=20
+[RX] extracted 3828 data symbols
+[STATUS] STATUS:RX:600 BPS SHORT
+[STATUS] STATUS:RX:NO DCD
+[CTRL] Client disconnected: 127.0.0.1:59564
+[DATA] Client disconnected: 127.0.0.1:59565
+[CTRL] Client connected: 127.0.0.1:59571
+[DATA] Client connected: 127.0.0.1:59572
+[CMD] CMD:DATA RATE:600L
+[CMD] CMD:RXAUDIOINJECT:D:\pennington_m110a_demod\refrence_pcm\tx_600L_20251206_202521_953.pcm
+[RX] extract_data: preamble_symbols=11520 start_sample=257 data_start=230657 filtered.size()=508800 sps=20
+[RX] extracted 13908 data symbols

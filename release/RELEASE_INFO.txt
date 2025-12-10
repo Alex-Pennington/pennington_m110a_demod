@@ -1,0 +1,30 @@
+M110A Modem Release Package
+Version: 1.2.0
+Build: 167
+Date: 2025-12-09 12:18:25
+
+MIL-STD-188-110A Compatible HF Modem
+(c) 2024-2025 Alex Pennington
+
+CONTENTS:
+- bin/m110a_server.exe       - TCP/IP modem server
+- bin/exhaustive_test.exe    - Comprehensive test suite
+- bin/test_gui.exe           - Web-based test GUI (http://localhost:8080)
+- docs/                      - API and protocol documentation
+- examples/refrence_pcm/     - Reference waveform files
+- INSTALL.md                 - Installation instructions
+- QUICKSTART.md              - Quick start guide
+- EULA.md                    - End User License Agreement
+- README.md                  - Project overview
+
+SYSTEM REQUIREMENTS:
+- Windows 10/11 (64-bit)
+- 4 GB RAM minimum
+- Valid license key required
+
+LICENSING:
+This software requires activation with a hardware-locked license key.
+Go to https://www.organicengineer.com/projects to obtain a license key.
+
+SUPPORT:
+alex.pennington@organicengineer.com

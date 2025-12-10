@@ -19,12 +19,14 @@
 #include "msdmt_server.h"
 #include "api/modem.h"
 #include "api/version.h"
+#include "common/license.h"
 
 #include <iostream>
 #include <string>
 #include <csignal>
 #include <atomic>
 
+using namespace m110a;
 using namespace m110a::server;
 
 // Global server instance for signal handling
@@ -111,10 +113,48 @@ int main(int argc, char* argv[]) {
         std::cout << m110a::version_header() << "\n";
         std::cout << "MS-DMT Compatible Network Interface\n";
         std::cout << "================================================\n";
+        std::cout << m110a::copyright_notice() << "\n";
         std::cout << m110a::build_info() << "\n";
         if (test_mode) {
             std::cout << "Mode: Test (mock audio devices)\n";
         }
+        std::cout << "\n";
+        std::cout << m110a::eula_notice() << "\n";
+        std::cout << "================================================\n\n";
+    }
+    
+    // Check license
+    LicenseInfo license_info;
+    LicenseStatus license_status = LicenseManager::load_license_file("license.key", license_info);
+    
+    if (license_status != LicenseStatus::VALID) {
+        std::cout << "================================================\n";
+        std::cout << "  LICENSE REQUIRED\n";
+        std::cout << "================================================\n\n";
+        
+        if (license_status == LicenseStatus::NOT_FOUND) {
+            std::cout << "No license file found.\n\n";
+            std::cout << "Hardware ID: " << LicenseManager::get_hardware_id() << "\n\n";
+            std::cout << "Go to https://www.organicengineer.com/projects to obtain a license key using this hardware ID.\n";
+            std::cout << "Save the license key to 'license.key' in the same\n";
+            std::cout << "directory as the server executable.\n\n";
+        } else {
+            std::cout << "License Status: " << LicenseManager::get_status_message(license_status) << "\n\n";
+            std::cout << "Hardware ID: " << LicenseManager::get_hardware_id() << "\n\n";
+        }
+        
+        std::cout << "================================================\n";
+        return 1;
+    }
+    
+    // Display license info
+    if (!quiet) {
+        std::time_t now = std::time(nullptr);
+        int days_remaining = (license_info.expiration_date - now) / (24 * 60 * 60);
+        
+        std::cout << "License: " << license_info.customer_id << "\n";
+        std::cout << "Expires: " << std::ctime(&license_info.expiration_date);
+        std::cout << "Days remaining: " << days_remaining << "\n";
         std::cout << "\n";
     }
     

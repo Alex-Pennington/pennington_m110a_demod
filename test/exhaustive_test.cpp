@@ -18,6 +18,7 @@
 
 #include "api/modem.h"
 #include "api/version.h"
+#include "common/license.h"
 
 using namespace m110a::api;
 using namespace std::chrono;
@@ -574,8 +575,14 @@ int main(int argc, char* argv[]) {
         report << "## Test Information\n";
         report << "| Field | Value |\n";
         report << "|-------|-------|\n";
-        report << "| **Date** | " << std::put_time(tm_info, "%B %d, %Y") << " |\n";
         report << "| **Version** | " << version_str << " |\n";
+        report << "| **Branch** | " << m110a::GIT_BRANCH << " |\n";
+        report << "| **Build** | " << m110a::BUILD_NUMBER << " |\n";
+        report << "| **Commit** | " << m110a::GIT_COMMIT << " |\n";
+        report << "| **Build Date** | " << m110a::BUILD_DATE << " " << m110a::BUILD_TIME << " |\n";
+        report << "| **HWID** | " << m110a::LicenseManager::get_hardware_id() << " |\n";
+        report << "| **Backend** | Direct API |\n";
+        report << "| **Test Date** | " << std::put_time(tm_info, "%B %d, %Y %H:%M") << " |\n";
         report << "| **Duration** | " << total_elapsed << " seconds |\n";
         report << "| **Iterations** | " << iteration << " |\n";
         report << "| **Total Tests** | " << total_tests << " |\n";

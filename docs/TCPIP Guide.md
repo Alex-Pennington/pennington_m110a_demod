@@ -2,7 +2,7 @@
 
 **Version:** MS-DMT v3.00 Beta 2.22 (M110A Implementation)  
 **Date:** December 2025  
-**Protocol Compliance:** ✅ All 29 command tests pass
+**Protocol Compliance:** ✅ All 57 command tests pass
 
 ---
 
@@ -147,15 +147,13 @@ Apply a predefined channel configuration.
 
 | Preset | SNR | Multipath | Freq Offset | Description |
 |--------|-----|-----------|-------------|-------------|
-| `GOOD` / `GOOD_HF` | 25 dB | 12 samples, 0.3 | 2 Hz | Good HF conditions |
-| `MODERATE` / `MODERATE_HF` | 18 dB | 24 samples, 0.4 | 5 Hz | Moderate HF |
-| `POOR` / `POOR_HF` | 15 dB | 48 samples, 0.5 | NONE* | Poor HF (1 Hz fading) |
-| `CCIR_GOOD` | 20 dB | 6 samples, 0.2 | 1 Hz | CCIR good channel |
-| `CCIR_MODERATE` | 15 dB | 12 samples, 0.35 | 3 Hz | CCIR moderate |
-| `CCIR_POOR` | 10 dB | 24 samples, 0.5 | 5 Hz | CCIR poor channel |
+| `GOOD` / `GOOD_HF` | 25 dB | 24 samples, 0.3 | 0 Hz | Good HF conditions |
+| `MODERATE` / `MODERATE_HF` | 18 dB | 48 samples, 0.4 | 0 Hz | Moderate HF |
+| `POOR` / `POOR_HF` | 12 dB | 48 samples, 0.5 | 5 Hz | Poor HF (challenging) |
+| `CCIR_GOOD` | 20 dB | 24 samples, 0.2 | 0 Hz | CCIR good channel |
+| `CCIR_MODERATE` | 15 dB | 48 samples, 0.35 | 0 Hz | CCIR moderate |
+| `CCIR_POOR` | 10 dB | 96 samples, 0.5 | 0 Hz | CCIR poor channel |
 | `CLEAN` / `OFF` | - | - | - | No impairments |
-
-\* *Note: POOR_HF has no frequency offset due to AFC limitations. Frequency offsets ≥3 Hz cause decode failure.*
 
 **Example:** `CMD:CHANNEL PRESET:MODERATE`  
 **Response:** `OK:CHANNEL PRESET:MODERATE_HF (SNR=18dB, multipath=24/0.4, freq_offset=5Hz)`
@@ -192,6 +190,45 @@ Enable frequency offset simulation.
 Disable all channel impairments.
 
 **Response:** `OK:CHANNEL OFF:All channel impairments disabled`
+
+---
+
+### CMD:SET EQUALIZER:\<type\>
+Set the equalizer type used during RX demodulation.
+
+| Type | Description |
+|------|-------------|
+| `NONE` | No equalization |
+| `DFE` | Decision Feedback Equalizer (default) |
+| `DFE_RLS` | DFE with Recursive Least Squares adaptation |
+| `MLSE_L2` | Maximum Likelihood Sequence Estimation (L=2) |
+| `MLSE_L3` | MLSE with longer constraint length (L=3) |
+| `MLSE_ADAPTIVE` | Adaptive MLSE |
+| `TURBO` | Turbo equalizer |
+
+**Example:** `CMD:SET EQUALIZER:DFE`  
+**Response:** `OK:SET EQUALIZER:DFE`  
+**Error:** `ERROR:SET EQUALIZER:UNKNOWN: <type> (valid: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO)`
+
+---
+
+### CMD:RUN BERTEST:\<input\>[,\<output\>]
+Apply configured channel impairments to a PCM file.
+
+Used for creating impaired test samples from clean transmissions.
+
+**Parameters:**
+- `input` - Path to input PCM file
+- `output` (optional) - Path to output PCM file. If omitted, overwrites input.
+
+**Example:** `CMD:RUN BERTEST:clean.pcm,impaired.pcm`  
+**Response:** `OK:RUN BERTEST:Applied [AWGN=20dB MP=24samp ] to 60800 samples -> impaired.pcm`
+
+**Errors:**
+- `ERROR:RUN BERTEST:Cannot read file: <path>`
+- `ERROR:RUN BERTEST:No channel impairments configured. Use CMD:CHANNEL commands first.`
+
+**Note:** Channel impairments must be configured before running BERTEST.
 
 ---
 
@@ -331,12 +368,14 @@ Examples: `600 BPS SHORT`, `2400 BPS LONG`, `75 BPS SHORT`
 | `CMD:RECORD TX:ON/OFF` | Enable/disable TX recording |
 | `CMD:RECORD PREFIX:<prefix>` | Set recording filename prefix |
 | `CMD:RXAUDIOINJECT:<path>` | Inject PCM for RX decode |
+| `CMD:SET EQUALIZER:<type>` | Set equalizer (NONE/DFE/DFE_RLS/MLSE_L2/MLSE_L3/MLSE_ADAPTIVE/TURBO) |
 | `CMD:CHANNEL CONFIG` | Show channel simulation config |
 | `CMD:CHANNEL PRESET:<name>` | Apply channel preset |
 | `CMD:CHANNEL AWGN:<snr>` | Enable AWGN noise |
-| `CMD:CHANNEL MULTIPATH:<delay>` | Enable multipath |
+| `CMD:CHANNEL MULTIPATH:<delay>[,<gain>]` | Enable multipath |
 | `CMD:CHANNEL FREQOFFSET:<hz>` | Enable frequency offset |
 | `CMD:CHANNEL OFF` | Disable all impairments |
+| `CMD:RUN BERTEST:<input>[,<output>]` | Apply channel impairments to PCM file |
 
 ---
 
@@ -344,9 +383,9 @@ Examples: `600 BPS SHORT`, `2400 BPS LONG`, `75 BPS SHORT`
 
 | Program | Description |
 |---------|-------------|
-| `test_all_commands.exe` | Protocol compliance test (29 tests) |
+| `test_all_commands.exe` | Protocol compliance test (57 tests) |
 | `test_loopback.exe` | TX→PCM→RX loopback verification |
-| `exhaustive_server_test.exe` | Multi-mode/channel exhaustive test |
+| `exhaustive_test.exe` | Multi-mode/channel exhaustive test |
 | `test_channel_cmds.exe` | Channel simulation command test |
 
 **Run server for testing:** `m110a_server.exe --testdevices`

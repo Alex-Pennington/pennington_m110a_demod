@@ -1,0 +1,10 @@
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/melpe.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/melpe_api.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/melpe_cli.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/melpe_vocoder.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/edit_cache.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/rebuild_cache.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/list_install_components.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/install.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/install/local.dir
+D:/pennington_m110a_demod/src/melpe_core/build/CMakeFiles/install/strip.dir

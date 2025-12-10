@@ -46,6 +46,29 @@ g++ -std=c++17 -O2 -I.. -o m110a_server main.cpp msdmt_server.cpp ../api/modem_t
 g++ -std=c++17 -O2 -I.. -o test_client test_client.cpp
 ```
 
+## License Activation (`license_manager` flow)
+
+The server performs a hardware-locked license check on startup using the shared `license_manager` activation flow (`m110a::LicenseManager` in `src/common/license.h`).
+
+1. Run `license_gen.exe --hwid` (or call `LicenseManager::get_hardware_id()` in your tooling) to capture the hardware ID reported by `license_manager`.
+2. Go to https://www.organicengineer.com/projects to request a license key that matches the hardware ID.
+3. Save the received key as `license.key` beside `m110a_server.exe` (or wherever you launch the binary from).
+4. Launch the server once; `license_manager` automatically validates the key and prints the status if there is a mismatch or expiration.
+
+Embedding applications can perform the same validation explicitly:
+
+```cpp
+#include "src/common/license.h"
+
+LicenseInfo info;
+auto status = LicenseManager::load_license_file("license.key", info);
+if (status != LicenseStatus::VALID) {
+	throw std::runtime_error(LicenseManager::get_status_message(status));
+}
+```
+
+The server refuses to process modem traffic until this flow completes successfully.
+
 ## Usage
 
 ### Starting the Server
@@ -157,6 +180,8 @@ Run the test client against the server:
 # Terminal 2: Run test client
 ./test_client
 ```
+
+> **Note:** The test binaries also invoke the `license_manager` activation path. Ensure the license flow above has produced a valid `license.key` before running the tests or they will exit after printing the hardware ID instructions.
 
 ## Files
 

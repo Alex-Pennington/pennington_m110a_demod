@@ -14,9 +14,7 @@ By downloading, installing, copying, or otherwise using the Software, you acknow
 
 **LICENSE REQUIRED:** Use of this Software requires obtaining a free individual license from Phoenix Nest LLC.
 
-To obtain your free license, contact:
-- **Website:** www.organicengineer.com
-- **Email:** [Insert Contact Email]
+To obtain your free license, go to https://www.organicengineer.com/projects to obtain a license key.
 
 Upon receiving your individual license, Licensor grants you a non-exclusive, non-transferable, royalty-free license to:
 
@@ -54,9 +52,7 @@ g) Distribute modified versions of the Software without prior written consent fr
 
 Each user must obtain their own individual free license before using the Software. Licenses are issued at no cost for personal, educational, emergency communication, and MARS purposes.
 
-To request your free individual license, contact Phoenix Nest LLC at:
-- **Website:** www.organicengineer.com
-- **Email:** [Insert Contact Email]
+To request your free individual license, go to https://www.organicengineer.com/projects to obtain a license key.
 
 Provide your name, callsign (if applicable), and intended use. Licenses are typically issued within 1-2 business days.
 
@@ -80,11 +76,7 @@ You must obtain a separate written license from Phoenix Nest LLC prior to such u
 
 ### 3.3 License Inquiries
 
-To inquire about obtaining a commercial or extended use license, contact:
-
-**Phoenix Nest LLC**  
-Website: www.organicengineer.com  
-Email: [Insert Contact Email]
+To inquire about obtaining a commercial or extended use license, go to https://www.organicengineer.com/projects to obtain a license key and follow the instructions provided there.
 
 Licensor reserves the right to grant or deny license requests at its sole discretion and to establish pricing and terms for any such licenses.
 

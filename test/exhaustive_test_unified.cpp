@@ -2,6 +2,10 @@
  * @file exhaustive_test.cpp
  * @brief Unified Exhaustive Modem Test Suite
  * 
+ * M110A Modem - MIL-STD-188-110A Compatible HF Modem
+ * Copyright (c) 2024-2025 Alex Pennington
+ * Email: alex.pennington@organicengineer.com
+ * 
  * Tests modem across all modes, SNR levels, and channel conditions.
  * Uses the unified test framework with DirectBackend (API) or ServerBackend (TCP).
  * 
@@ -26,17 +30,22 @@
 #include "test_framework.h"
 #include "direct_backend.h"
 #include "server_backend.h"
+#include "common/license.h"
 
 #include <iostream>
 #include <memory>
 #include <algorithm>
+#include <filesystem>
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
+namespace fs = std::filesystem;
+
 using namespace test_framework;
 using namespace std::chrono;
+using namespace m110a;
 
 // ============================================================
 // Progressive Tests
@@ -362,6 +371,29 @@ void print_reference_test_summary(const std::vector<ReferenceTestResult>& result
 // ============================================================
 
 int main(int argc, char* argv[]) {
+    // Check license first
+    LicenseInfo license_info;
+    LicenseStatus license_status = LicenseManager::load_license_file("license.key", license_info);
+    
+    if (license_status != LicenseStatus::VALID) {
+        std::cout << "================================================\n";
+        std::cout << "  LICENSE REQUIRED\n";
+        std::cout << "================================================\n\n";
+        
+        if (license_status == LicenseStatus::NOT_FOUND) {
+            std::cout << "No license file found.\n\n";
+            std::cout << "Hardware ID: " << LicenseManager::get_hardware_id() << "\n\n";
+            std::cout << "Go to https://www.organicengineer.com/projects to obtain a license key using this hardware ID.\n";
+            std::cout << "Save the license key to 'license.key'.\n\n";
+        } else {
+            std::cout << "License Status: " << LicenseManager::get_status_message(license_status) << "\n\n";
+            std::cout << "Hardware ID: " << LicenseManager::get_hardware_id() << "\n\n";
+        }
+        
+        std::cout << "================================================\n";
+        return 1;
+    }
+    
     // Configuration
     int max_iterations = 1;
     std::string mode_filter;
@@ -492,13 +524,25 @@ int main(int argc, char* argv[]) {
     
     // Auto-generate report filename
     if (report_file.empty()) {
+        // Create reports folder next to executable if it doesn't exist
+        std::string reports_dir = "reports";
+        if (!fs::exists(reports_dir)) {
+            fs::create_directories(reports_dir);
+        }
+        
         auto now = std::chrono::system_clock::now();
         std::time_t now_time = std::chrono::system_clock::to_time_t(now);
         std::tm* tm = std::localtime(&now_time);
         std::ostringstream ss;
-        ss << "../docs/test_reports/exhaustive_" 
-           << (use_server ? "server_" : "direct_")
-           << std::put_time(tm, "%Y%m%d_%H%M%S") << ".md";
+        if (progressive_mode) {
+            ss << reports_dir << "/progressive_"
+               << (use_server ? "server_" : "direct_")
+               << std::put_time(tm, "%Y%m%d_%H%M%S") << ".md";
+        } else {
+            ss << reports_dir << "/exhaustive_" 
+               << (use_server ? "server_" : "direct_")
+               << std::put_time(tm, "%Y%m%d_%H%M%S") << ".md";
+        }
         report_file = ss.str();
     }
     
@@ -528,17 +572,6 @@ int main(int argc, char* argv[]) {
         std::cout << eq_list[i];
     }
     std::cout << "\n";
-    
-    // Validate all equalizers
-    for (const auto& eq : eq_list) {
-        if (!backend->set_equalizer(eq)) {
-            std::cerr << "Invalid equalizer type: " << eq << "\n";
-            std::cerr << "Valid types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO\n";
-            return 1;
-        }
-    }
-    // Set back to first equalizer
-    backend->set_equalizer(eq_list[0]);
     
     if (progressive_mode) {
         std::cout << "Mode: PROGRESSIVE (find mode limits)\n";
@@ -572,7 +605,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    std::cout << "Connected.\n\n";
+    std::cout << "Connected.\n";
+    
+    // Validate all equalizers (must be after connect for server backend)
+    for (const auto& eq : eq_list) {
+        if (!backend->set_equalizer(eq)) {
+            std::cerr << "Invalid equalizer type: " << eq << "\n";
+            std::cerr << "Valid types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO\n";
+            return 1;
+        }
+    }
+    // Set back to first equalizer
+    backend->set_equalizer(eq_list[0]);
+    
+    std::cout << "\n";
     
     // ================================================================
     // Reference Sample Test Mode
@@ -683,7 +729,8 @@ int main(int argc, char* argv[]) {
             
             // Write CSV header
             if (!csv_file.empty() && eq == eq_list[0]) {
-                write_progressive_csv_header(csv_file, mode_filter, prog_snr, prog_freq, prog_multipath);
+                write_progressive_csv_header(csv_file, mode_filter, prog_snr, prog_freq, prog_multipath,
+                                             LicenseManager::get_hardware_id());
                 std::cout << "CSV file initialized: " << csv_file << "\n\n";
             }
             
@@ -746,6 +793,12 @@ int main(int argc, char* argv[]) {
         if (!csv_file.empty()) {
             std::cout << "\nCSV saved to: " << csv_file << "\n";
         }
+        
+        // Generate markdown report
+        generate_progressive_markdown_report(report_file, all_eq_results, 
+            (int)total_elapsed, backend->backend_name(), use_auto_detect,
+            prog_snr, prog_freq, prog_multipath,
+            LicenseManager::get_hardware_id());
         
         backend->disconnect();
         return 0;
@@ -886,7 +939,8 @@ int main(int argc, char* argv[]) {
     print_summary(results);
     
     // Generate report
-    generate_markdown_report(report_file, results, backend->backend_name());
+    generate_markdown_report(report_file, results, backend->backend_name(),
+                            LicenseManager::get_hardware_id());
     
     backend->disconnect();
     

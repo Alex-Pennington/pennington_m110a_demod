@@ -30,7 +30,8 @@
 #include <random>
 
 // Version info
-#include "../api/version.h"
+#include "api/version.h"
+#include "common/license.h"
 
 #ifdef _WIN32
     #ifndef WIN32_LEAN_AND_MEAN
@@ -737,7 +738,7 @@ void generate_report(const std::string& filename,
     else if (grand_rate >= 60.0) rating = "FAIR";
     else rating = "NEEDS WORK";
     
-    report << "# M110A Modem Exhaustive Test Report (Server-Based)\n\n";
+    report << "# M110A Modem Exhaustive Test Report\n\n";
     report << "## Test Information\n";
     report << "| Field | Value |\n";
     report << "|-------|-------|\n";
@@ -746,6 +747,8 @@ void generate_report(const std::string& filename,
     report << "| **Build** | " << m110a::BUILD_NUMBER << " |\n";
     report << "| **Commit** | " << m110a::GIT_COMMIT << " |\n";
     report << "| **Build Date** | " << m110a::BUILD_DATE << " " << m110a::BUILD_TIME << " |\n";
+    report << "| **HWID** | " << m110a::LicenseManager::get_hardware_id() << " |\n";
+    report << "| **Backend** | Server API |\n";
     report << "| **Test Date** | " << std::put_time(tm, "%B %d, %Y %H:%M") << " |\n";
     report << "| **Duration** | " << duration_sec << " seconds |\n";
     report << "| **Iterations** | " << iterations << " |\n";

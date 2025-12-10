@@ -88,6 +88,30 @@ enum class Equalizer {
 };
 ```
 
+## LicenseManager (`license_manager` activation flow)
+
+`m110a::LicenseManager` (see `src/common/license.h`) implements the shared `license_manager` activation pipeline that every executable in this repository runs before accessing the modem.
+
+```cpp
+#include "src/common/license.h"
+
+LicenseInfo info;
+LicenseStatus status = LicenseManager::load_license_file("license.key", info);
+if (status != LicenseStatus::VALID) {
+    std::cout << "Hardware ID: " << LicenseManager::get_hardware_id() << "\n";
+    throw std::runtime_error(LicenseManager::get_status_message(status));
+}
+```
+
+Activation steps:
+
+1. Call `LicenseManager::get_hardware_id()` (or run `license_gen.exe --hwid`) to read the fingerprint produced by the `license_manager` flow.
+2. Go to https://www.organicengineer.com/projects and submit the hardware ID to obtain a license key.
+3. Store the returned key as `license.key` next to the binary that will link against the modem API.
+4. During startup, invoke `LicenseManager::load_license_file()` and block modem usage until it returns `LicenseStatus::VALID`.
+
+Any failure mode (missing file, mismatched hardware, expired key) should surface the status string from `LicenseManager::get_status_message()` and stop the operation just as the server and exhaustive test binaries do.
+
 ---
 
 ## ModemTX

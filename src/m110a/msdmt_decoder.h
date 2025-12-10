@@ -25,9 +25,11 @@
 #include "modem/scrambler.h"
 #include "dsp/fir_filter.h"
 #include "dsp/nco.h"
+#include "sync/fft_afc.h"
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 namespace m110a {
 
@@ -43,6 +45,9 @@ struct MSDMTDecoderConfig {
     int max_search_symbols = 500;  // preamble search range
     float freq_search_range = 10.0f;  // Hz, search ± this range for carrier
     float freq_search_step = 1.0f;    // Hz, step size for frequency search
+    bool use_fft_coarse_afc = true;   // Enable two-stage AFC (FFT coarse + preamble fine)
+    float coarse_search_range = 12.0f; // Hz, FFT coarse AFC search range
+    float fine_search_range = 2.5f;    // Hz, preamble fine search range around coarse estimate
     bool verbose = false;
     
     // Mode-specific frame structure (default M2400S)
@@ -101,13 +106,83 @@ public:
     MSDMTDecodeResult decode(const std::vector<float>& rf_samples) {
         MSDMTDecodeResult result;
         
-        // Step 1: Frequency search - try multiple carrier offsets
+        // Step 1: Two-stage AFC (if enabled)
+        float coarse_freq_offset = 0.0f;
         float best_freq_offset = 0.0f;
         float best_preamble_corr = 0.0f;
         std::vector<complex_t> best_filtered;
         
-        if (config_.freq_search_range > 0.0f) {
-            // Search frequencies with configured range and step
+        if (config_.use_fft_coarse_afc && config_.coarse_search_range > 0.0f) {
+            // STAGE 1: Delay-multiply coarse frequency estimation
+            // Do initial downconversion at nominal carrier frequency
+            auto initial_filtered = downconvert_and_filter(rf_samples);
+            if (!initial_filtered.empty() && initial_filtered.size() >= 288 * sps_) {
+                // Setup delay-multiply coarse AFC
+                CoarseAFC::Config afc_config;
+                afc_config.sample_rate = config_.sample_rate;
+                afc_config.baud_rate = config_.baud_rate;
+                afc_config.search_range_hz = config_.coarse_search_range;
+                afc_config.delay_samples = 10;         // 10 symbols delay
+                afc_config.integration_symbols = 200;  // Integrate over 200 symbols
+                afc_config.min_power_db = -20.0f;
+                
+                CoarseAFC coarse_afc(afc_config);
+                
+                // Estimate coarse frequency offset (no preamble needed)
+                coarse_freq_offset = coarse_afc.estimate_frequency_offset(initial_filtered, 0);
+                
+                if (config_.verbose && coarse_freq_offset != 0.0f) {
+                    printf("Delay-Multiply Coarse AFC: %.2f Hz\n", coarse_freq_offset);
+                }
+            }
+            
+            // STAGE 2: Fine preamble-based search around coarse estimate
+            // Search ±fine_search_range around the coarse estimate
+            float search_start = coarse_freq_offset - config_.fine_search_range;
+            float search_end = coarse_freq_offset + config_.fine_search_range;
+            
+            for (float freq_off = search_start; 
+                 freq_off <= search_end; 
+                 freq_off += config_.freq_search_step) {
+                
+                auto filtered = downconvert_and_filter_with_offset(rf_samples, freq_off);
+                if (filtered.size() < 288 * sps_) continue;
+                
+                float corr = quick_preamble_correlation(filtered, freq_off);
+                
+                if (corr > best_preamble_corr) {
+                    best_preamble_corr = corr;
+                    best_freq_offset = freq_off;
+                    best_filtered = std::move(filtered);
+                }
+            }
+            
+            if (best_filtered.empty()) {
+                // Fine search failed, try full range fallback
+                if (config_.verbose) {
+                    printf("Fine AFC failed, trying full range search\n");
+                }
+                for (float freq_off = -config_.freq_search_range; 
+                     freq_off <= config_.freq_search_range; 
+                     freq_off += config_.freq_search_step) {
+                    
+                    auto filtered = downconvert_and_filter_with_offset(rf_samples, freq_off);
+                    if (filtered.size() < 288 * sps_) continue;
+                    
+                    float corr = quick_preamble_correlation(filtered, freq_off);
+                    
+                    if (corr > best_preamble_corr) {
+                        best_preamble_corr = corr;
+                        best_freq_offset = freq_off;
+                        best_filtered = std::move(filtered);
+                    }
+                }
+            }
+            
+            result.freq_offset_hz = best_freq_offset;
+            
+        } else if (config_.freq_search_range > 0.0f) {
+            // Legacy single-stage preamble-only AFC
             for (float freq_off = -config_.freq_search_range; 
                  freq_off <= config_.freq_search_range; 
                  freq_off += config_.freq_search_step) {
@@ -135,6 +210,10 @@ public:
             if (best_filtered.empty() || best_filtered.size() < 288 * sps_) {
                 return result;  // Signal too short
             }
+        }
+
+        if (best_filtered.empty()) {
+            return result;  // AFC failed
         }
 
         auto& filtered = best_filtered;        // Step 2: Find preamble with fine-grained timing
@@ -347,7 +426,9 @@ private:
         
         // Use "first strong peak" detection to avoid false peaks from noise
         // Once we find correlation > threshold, refine locally and stop
-        const float early_stop_threshold = 0.90f;
+        // Lower threshold (0.80) ensures we stop at first frame, not a slightly
+        // higher peak at frame 1 (which would cause 1-frame timing error)
+        const float early_stop_threshold = 0.80f;
         bool found_strong = false;
         
         // Search over sample positions
@@ -448,9 +529,9 @@ private:
     void detect_mode(const std::vector<complex_t>& filtered, MSDMTDecodeResult& result) {
         complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
         
-        // D1 starts at symbol 288, D2 at 320
-        int d1_start = result.start_sample + 288 * sps_;
-        int d2_start = result.start_sample + 320 * sps_;
+        // D1 starts at symbol 320, D2 at 352 (per MIL-STD-188-110A section 5.2.2)
+        int d1_start = result.start_sample + 320 * sps_;
+        int d2_start = result.start_sample + 352 * sps_;
         
         float best_d1_corr = 0.0f;
         float best_d2_corr = 0.0f;
@@ -461,7 +542,7 @@ private:
             complex_t corr1(0, 0);
             float pow1 = 0;
             for (int i = 0; i < 32; i++) {
-                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[(288 + i) % 32]) % 8;
+                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[i % 32]) % 8;
                 int idx = d1_start + i * sps_;
                 if (idx >= static_cast<int>(filtered.size())) break;
                 complex_t sym = filtered[idx] * rot;
@@ -476,7 +557,7 @@ private:
             complex_t corr2(0, 0);
             float pow2 = 0;
             for (int i = 0; i < 32; i++) {
-                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[(320 + i) % 32]) % 8;
+                uint8_t pattern = (msdmt::psymbol[d][i % 8] + msdmt::pscramble[i % 32]) % 8;
                 int idx = d2_start + i * sps_;
                 if (idx >= static_cast<int>(filtered.size())) break;
                 complex_t sym = filtered[idx] * rot;
@@ -533,21 +614,27 @@ private:
                                MSDMTDecodeResult& result) {
         complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
         
-        // Determine preamble length based on mode
-        // Short interleave: 3 frames × 480 = 1440 symbols
-        // Long interleave: 24 frames × 480 = 11520 symbols
-        int preamble_symbols = 1440;  // Default to short
-        if (result.mode_name.back() == 'L') {
-            preamble_symbols = 11520;
-        }
+        // Use configured preamble length (set by caller based on known mode)
+        // This is critical for interoperability - don't rely on D1/D2 detection
+        // which may not match the configured mode exactly
+        int preamble_symbols = config_.preamble_symbols;
         
         // Data starts after preamble
         int data_start = result.start_sample + preamble_symbols * sps_;
+        
+        // Debug output for comparing modes
+        std::cout << "[RX] extract_data: preamble_symbols=" << preamble_symbols
+                  << " start_sample=" << result.start_sample
+                  << " data_start=" << data_start 
+                  << " filtered.size()=" << filtered.size()
+                  << " sps=" << sps_ << std::endl;
         
         // Extract data symbols
         for (int idx = data_start; idx < static_cast<int>(filtered.size()); idx += sps_) {
             result.data_symbols.push_back(filtered[idx] * rot);
         }
+        
+        std::cout << "[RX] extracted " << result.data_symbols.size() << " data symbols" << std::endl;
     }
     
     /**

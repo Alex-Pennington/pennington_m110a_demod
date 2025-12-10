@@ -255,10 +255,11 @@ Adjacent constellation points differ by 1 bit.
 - MNS (Walsh 0) for sync
 - MES pattern for diversity
 
-### Not Fully Implemented
-This implementation has partial 75 bps support:
-- Loopback works
-- Real file decode has sync issues
+### Implementation Status
+This implementation has full 75 bps support:
+- Walsh-Hadamard encoding/decoding
+- Loopback verified
+- Reference sample compatibility confirmed
 
 ---
 

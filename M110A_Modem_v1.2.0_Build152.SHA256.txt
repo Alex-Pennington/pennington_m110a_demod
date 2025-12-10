@@ -1,0 +1,53 @@
+M110A Modem v1.2.0 Build 152 - Release Package
+==============================================
+Author: Alex Pennington
+Email:  alex.pennington@organicengineer.com
+Web:    https://www.organicengineer.com/projects
+
+Filename: M110A_Modem_v1.2.0_Build152.zip
+Size:     8,817,188 bytes (8 MB)
+Date:     December 9, 2025
+
+SHA256 Checksum:
+6670946E6D1FF1D06EA72B96555AA9E2CB72A2ED6BB1AD9A9D75A934F1FC7F86
+
+Verification (Windows PowerShell):
+Get-FileHash M110A_Modem_v1.2.0_Build152.zip -Algorithm SHA256
+GPG Signature Verification:
+---------------------------
+Signature File: M110A_Modem_v1.2.0_Build152.zip.asc
+Signing Key:    91F913C25A03B0F4
+Key Owner:      Alexander Keith Pennington <alex.pennington@organicengineer.com>
+
+To verify the signature:
+1. Import the public key from GitHub or gpg/public_key.asc:
+   gpg --import public_key.asc
+   
+2. Verify the signature:
+   gpg --verify M110A_Modem_v1.2.0_Build152.zip.asc M110A_Modem_v1.2.0_Build152.zip
+
+Expected output: "Good signature from Alexander Keith Pennington"
+
+The signing key is linked to the author's GitHub account:
+https://github.com/akpennington
+Package Contents:
+- bin/m110a_server.exe (TCP/IP modem server)
+- bin/exhaustive_test.exe (comprehensive modem test suite)
+- bin/test_gui.exe (web-based test GUI at http://localhost:8080)
+- bin/melpe_vocoder.exe (MELPe voice codec - 600/1200/2400 bps)
+- docs/ (protocol, channel simulation references)
+- examples/refrence_pcm/ (M110A reference waveforms and metadata)
+- examples/melpe_test_audio/ (MELPe test audio files - 8kHz PCM)
+- INSTALL.md, QUICKSTART.md, README.md, EULA.md
+
+Installation:
+1. Extract ZIP archive
+2. Read INSTALL.md
+3. Go to https://www.organicengineer.com/projects to obtain a license key
+4. Place license.key in bin/ directory
+5. Run m110a_server.exe, exhaustive_test.exe, or test_gui.exe
+
+Support: alex.pennington@organicengineer.com
+
+Copyright (c) 2024-2025 Alex Pennington
+MIL-STD-188-110A Compatible HF Modem

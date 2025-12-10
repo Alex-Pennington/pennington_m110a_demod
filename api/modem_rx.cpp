@@ -87,7 +87,10 @@ public:
             detect_cfg.carrier_freq = config_.carrier_freq;
             detect_cfg.baud_rate = 2400.0f;
             detect_cfg.freq_search_range = config_.freq_search_range;
-            detect_cfg.freq_search_step = 0.5f;  // 2 Hz steps
+            detect_cfg.freq_search_step = 0.5f;
+            detect_cfg.use_fft_coarse_afc = config_.use_fft_coarse_afc;
+            detect_cfg.coarse_search_range = config_.coarse_search_range;
+            detect_cfg.fine_search_range = config_.fine_search_range;  // 2 Hz steps
             
             MSDMTDecoder detector(detect_cfg);
             auto detect_result = detector.decode(samples);
@@ -127,11 +130,27 @@ public:
         decode_cfg.baud_rate = 2400.0f;
         decode_cfg.unknown_data_len = mode_cfg.unknown_data_len;
         decode_cfg.known_data_len = mode_cfg.known_data_len;
+        decode_cfg.preamble_symbols = mode_cfg.preamble_symbols();  // Critical for LONG modes!
         decode_cfg.freq_search_range = config_.freq_search_range;
         decode_cfg.freq_search_step = 0.5f;
+        decode_cfg.use_fft_coarse_afc = config_.use_fft_coarse_afc;
+        decode_cfg.coarse_search_range = config_.coarse_search_range;
+        decode_cfg.fine_search_range = config_.fine_search_range;
         
         MSDMTDecoder decoder(decode_cfg);
         auto msdmt_result = decoder.decode(samples);
+        
+        // DEBUG: Trace mode detection and symbol extraction
+        std::cerr << "[RX DEBUG] Mode: " << mode_cfg.name 
+                  << " preamble_frames: " << mode_cfg.preamble_frames
+                  << " preamble_symbols: " << mode_cfg.preamble_symbols()
+                  << " detected_mode: " << msdmt_result.mode_name
+                  << " preamble_corr: " << msdmt_result.correlation
+                  << " data_symbols: " << msdmt_result.data_symbols.size()
+                  << " interleaver_rows: " << mode_cfg.interleaver.rows
+                  << " interleaver_cols: " << mode_cfg.interleaver.cols
+                  << " block_size: " << (mode_cfg.interleaver.rows * mode_cfg.interleaver.cols)
+                  << std::endl;
         
         // Check we got data symbols
         if (msdmt_result.data_symbols.empty()) {
@@ -499,6 +518,9 @@ private:
         detect_cfg.baud_rate = 2400.0f;
         detect_cfg.freq_search_range = config_.freq_search_range;
         detect_cfg.freq_search_step = 0.5f;
+        detect_cfg.use_fft_coarse_afc = config_.use_fft_coarse_afc;
+        detect_cfg.coarse_search_range = config_.coarse_search_range;
+        detect_cfg.fine_search_range = config_.fine_search_range;
         
         MSDMTDecoder detector(detect_cfg);
         auto detect_result = detector.decode(samples);
@@ -527,8 +549,12 @@ private:
         decode_cfg.baud_rate = 2400.0f;
         decode_cfg.unknown_data_len = mode_cfg.unknown_data_len;
         decode_cfg.known_data_len = mode_cfg.known_data_len;
+        decode_cfg.preamble_symbols = mode_cfg.preamble_symbols();  // Critical for LONG modes!
         decode_cfg.freq_search_range = config_.freq_search_range;
         decode_cfg.freq_search_step = 0.5f;
+        decode_cfg.use_fft_coarse_afc = config_.use_fft_coarse_afc;
+        decode_cfg.coarse_search_range = config_.coarse_search_range;
+        decode_cfg.fine_search_range = config_.fine_search_range;
         
         MSDMTDecoder decoder(decode_cfg);
         auto msdmt_result = decoder.decode(samples);

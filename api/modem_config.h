@@ -29,7 +29,8 @@ struct TxConfig {
     float carrier_freq = CARRIER_FREQ_DEFAULT;
     
     /// Output amplitude (0.0 to 1.0)
-    float amplitude = 0.8f;
+    /// Default 0.32 matches MS-DMT reference output levels (~7000 RMS)
+    float amplitude = 0.32f;
     
     /// Add preamble to transmission
     bool include_preamble = true;
@@ -91,10 +92,26 @@ struct RxConfig {
     
     /// Carrier frequency search range (+/- Hz)
     // AFC search range (Hz) - searches from -range to +range
-    // Default: ±5 Hz (preamble-based AFC practical limit)
-    // Note: MIL-STD-188-110A spec requires ±10 Hz, but achieving this
-    // requires pilot tones or decision-directed tracking (future work)
-    float freq_search_range = 5.0f;
+    // Default: ±10 Hz with two-stage AFC (FFT coarse + preamble fine)
+    // Note: Preamble-only AFC limited to ~±2 Hz (see use_fft_coarse_afc)
+    float freq_search_range = 10.0f;
+    
+    /// Enable two-stage AFC (FFT-based coarse + preamble fine)
+    // When true: Uses FFT to get coarse estimate (±12 Hz, ~2 Hz accuracy)
+    //            then preamble search ±2.5 Hz around coarse estimate
+    // When false: Uses legacy preamble-only AFC (±2 Hz practical limit)
+    // Recommended: true for ±10 Hz MIL-STD-188-110A spec compliance
+    bool use_fft_coarse_afc = true;
+    
+    /// Coarse AFC search range (Hz) - FFT-based estimation
+    // Only used when use_fft_coarse_afc = true
+    // Default: ±12 Hz (provides margin beyond ±10 Hz spec)
+    float coarse_search_range = 12.0f;
+    
+    /// Fine AFC search range (Hz) - preamble correlation around coarse estimate
+    // Only used when use_fft_coarse_afc = true
+    // Default: ±2.5 Hz (preamble correlation works reliably within this range)
+    float fine_search_range = 2.5f;
     
     /// Equalizer algorithm
     Equalizer equalizer = Equalizer::DFE;

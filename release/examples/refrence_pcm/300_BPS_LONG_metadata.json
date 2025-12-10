@@ -1,0 +1,36 @@
+{
+  "testInfo": {
+    "timestamp": "2025-12-06T20:25:06",
+    "modemVersion": "3.00.2.22",
+    "standard": "MIL-STD-188-110A"
+  },
+  "mode": {
+    "name": "300 BPS LONG",
+    "bitsPerSecond": 300,
+    "interleave": "LONG",
+    "interleaveDurationSeconds": 4.8,
+    "modulation": "8-PSK",
+    "symbolRate": 2400
+  },
+  "txPcmFile": {
+    "path": "./tx_pcm_out/tx_300L_20251206_202506_058.pcm",
+    "sizeBytes": 1113600,
+    "sampleCount": 556800,
+    "sampleRate": 48000,
+    "bitsPerSample": 16,
+    "channels": 1,
+    "durationSeconds": 11.600
+  },
+  "testMessage": {
+    "lengthBytes": 54,
+    "textPreview": "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890"
+  },
+  "loopbackResult": {
+    "enabled": false,
+    "decodedBytes": 0,
+    "matchingBytes": 0,
+    "matchPercent": 0.00,
+    "exactMatch": false,
+    "decodedPreview": ""
+  }
+}
