@@ -19,24 +19,32 @@ namespace m110a {
 // Semantic version
 constexpr int VERSION_MAJOR = 1;
 constexpr int VERSION_MINOR = 2;
-constexpr int VERSION_PATCH = 0;
+constexpr int VERSION_PATCH = 1;
+
+// Prerelease tag (empty for stable releases)
+constexpr const char* VERSION_PRERELEASE = "";
 
 // Build information (auto-generated)
-constexpr int BUILD_NUMBER = 203;
-constexpr const char* GIT_COMMIT = "10beed8";
+constexpr int BUILD_NUMBER = 213;
+constexpr const char* GIT_COMMIT = "34ba342";
 constexpr const char* GIT_BRANCH = "turbo";
 constexpr const char* BUILD_DATE = "2025-12-10";
-constexpr const char* BUILD_TIME = "02:19:39";
+constexpr const char* BUILD_TIME = "10:14:32";
 
-/// Get version string (e.g., "1.2.0")
+/// Get version string (e.g., "1.2.0" or "1.2.0-rc.1")
 inline std::string version() {
-    return std::to_string(VERSION_MAJOR) + "." +
-           std::to_string(VERSION_MINOR) + "." +
-           std::to_string(VERSION_PATCH);
+    std::string v = std::to_string(VERSION_MAJOR) + "." +
+                    std::to_string(VERSION_MINOR) + "." +
+                    std::to_string(VERSION_PATCH);
+    if (VERSION_PRERELEASE[0] != '\0') {
+        v += "-";
+        v += VERSION_PRERELEASE;
+    }
+    return v;
 }
 
 /// Get full version string with branch and build info
-/// Format: "1.2.0 (turbo) build.42.abc1234"
+/// Format: "1.2.0-rc.1 (turbo) build.42.abc1234"
 inline std::string version_full() {
     return version() + " (" + GIT_BRANCH + ") build." + 
            std::to_string(BUILD_NUMBER) + "." + GIT_COMMIT;
