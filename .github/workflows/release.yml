@@ -76,19 +76,16 @@ jobs:
         if: steps.check_tag.outputs.exists == 'false'
         shell: msys2 {0}
         run: |
-          # Server
           g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
             -o server/m110a_server.exe \
             server/main.cpp server/brain_server.cpp api/modem_tx.cpp api/modem_rx.cpp \
             -lws2_32
           
-          # Exhaustive test (unified)
           g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
             -o test/exhaustive_test.exe \
             test/exhaustive_test_unified.cpp api/modem_tx.cpp api/modem_rx.cpp src/io/pcm_file.cpp \
             -lws2_32
           
-          # Test GUI
           if [ -f "test/test_gui/main.cpp" ]; then
             g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
               -o test/test_gui.exe \
@@ -117,123 +114,55 @@ jobs:
           $version = "${{ steps.version.outputs.version }}"
           $build = "${{ steps.version.outputs.build }}"
           
-          # Create release structure
           New-Item -ItemType Directory -Force -Path release/bin
           New-Item -ItemType Directory -Force -Path release/docs
           New-Item -ItemType Directory -Force -Path release/examples
           
-          # Copy executables
           Copy-Item server/m110a_server.exe release/bin/
           Copy-Item test/exhaustive_test.exe release/bin/
           Copy-Item test/test_gui.exe release/bin/
           Copy-Item src/melpe_core/build/melpe_vocoder.exe release/bin/
           
-          # Copy documentation
           Copy-Item README.md release/
           if (Test-Path docs/PROTOCOL.md) { Copy-Item docs/PROTOCOL.md release/docs/ }
           if (Test-Path docs/CHANNEL_SIMULATION.md) { Copy-Item docs/CHANNEL_SIMULATION.md release/docs/ }
           if (Test-Path docs/API.md) { Copy-Item docs/API.md release/docs/ }
           
-          # Copy reference PCM files (critical for testing)
           if (Test-Path refrence_pcm) { 
             Copy-Item refrence_pcm release/examples/refrence_pcm -Recurse
-            Write-Host "Copied reference PCM files"
           }
           
-          # Copy MELPe test audio if present
           if (Test-Path src/melpe_core/test_audio) {
             Copy-Item src/melpe_core/test_audio release/examples/melpe_test_audio -Recurse
-            Write-Host "Copied MELPe test audio"
           }
           
           # Create INSTALL.md
-          $installGuide = @"
-# M110A Modem Installation Guide
-
-## System Requirements
-- Windows 10/11 (64-bit)
-- 4 GB RAM minimum
-- Network connection for TCP/IP server mode
-
-## Components
-
-### bin/m110a_server.exe
-TCP/IP server for modem operations.
-- TCP 4998: Data port
-- TCP 4999: Control port
-
-### bin/exhaustive_test.exe
-Comprehensive test suite for all modem modes.
-
-### bin/test_gui.exe
-Web-based test GUI at http://localhost:8080
-
-### bin/melpe_vocoder.exe
-MELPe voice codec (600/1200/2400 bps)
-
-## Quick Start
-
-1. Run the test GUI:
-   ```
-   cd bin
-   test_gui.exe
-   ```
-   Then open http://localhost:8080
-
-2. Or run command-line tests:
-   ```
-   cd bin
-   exhaustive_test.exe --help
-   ```
-
-## Reference Files
-
-The examples/refrence_pcm/ directory contains reference waveforms for all modes.
-
-## Support
-
-- Website: https://www.organicengineer.com/projects
-- Email: alex.pennington@organicengineer.com
-"@
-          Set-Content -Path release/INSTALL.md -Value $installGuide
+          $install = "# M110A Modem Installation Guide`n`n"
+          $install += "## Quick Start`n`n"
+          $install += "1. Run test_gui.exe and open http://localhost:8080`n"
+          $install += "2. Or run: exhaustive_test.exe --help`n`n"
+          $install += "## Components`n`n"
+          $install += "- m110a_server.exe - TCP/IP modem server (ports 4998/4999)`n"
+          $install += "- exhaustive_test.exe - Test suite`n"
+          $install += "- test_gui.exe - Web GUI`n"
+          $install += "- melpe_vocoder.exe - MELPe codec`n`n"
+          $install += "## Support`n`n"
+          $install += "alex.pennington@organicengineer.com`n"
+          Set-Content -Path release/INSTALL.md -Value $install
           
           # Create RELEASE_INFO.txt
-          $releaseInfo = @"
-M110A Modem Release Package
-Version: $version
-Build: $build
-Platform: windows-x64
-Date: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-
-MIL-STD-188-110A Compatible HF Modem
-(c) 2024-2025 Alex Pennington
-
-CONTENTS:
-- bin/m110a_server.exe       - TCP/IP modem server
-- bin/exhaustive_test.exe    - Comprehensive test suite  
-- bin/test_gui.exe           - Web-based test GUI
-- bin/melpe_vocoder.exe      - MELPe voice codec
-- docs/                      - Protocol documentation
-- examples/refrence_pcm/     - Reference waveform files
-
-SUPPORT:
-alex.pennington@organicengineer.com
-https://www.organicengineer.com/projects
-"@
-          Set-Content -Path release/RELEASE_INFO.txt -Value $releaseInfo
+          $info = "M110A Modem v$version Build $build`n"
+          $info += "Platform: windows-x64`n"
+          $info += "Date: $(Get-Date -Format 'yyyy-MM-dd')`n`n"
+          $info += "(c) 2024-2025 Alex Pennington`n"
+          $info += "alex.pennington@organicengineer.com`n"
+          Set-Content -Path release/RELEASE_INFO.txt -Value $info
           
-          # Create archive
           $zipName = "M110A_Modem_v${version}_Build${build}_windows-x64.zip"
           Compress-Archive -Path release/* -DestinationPath $zipName
           
-          # Generate SHA256
           $hash = (Get-FileHash $zipName -Algorithm SHA256).Hash
-          $shaContent = @"
-M110A Modem v$version Build $build
-SHA256: $hash
-File: $zipName
-Date: $(Get-Date -Format "yyyy-MM-dd")
-"@
+          $shaContent = "SHA256: $hash`nFile: $zipName`nDate: $(Get-Date -Format 'yyyy-MM-dd')"
           Set-Content -Path "${zipName}.sha256" -Value $shaContent
           
           Write-Host "Created: $zipName"
@@ -256,28 +185,21 @@ Date: $(Get-Date -Format "yyyy-MM-dd")
             
             MIL-STD-188-110A Compatible HF Modem
             
-            ### What's Included
-            - **m110a_server.exe** - TCP/IP modem server
-            - **exhaustive_test.exe** - Comprehensive test suite
-            - **test_gui.exe** - Web-based test interface (http://localhost:8080)
-            - **melpe_vocoder.exe** - MELPe voice codec
-            - **Reference PCM files** - Waveforms for all 12 modes
-            - **Documentation** - Protocol and API docs
+            ### Downloads
+            - **M110A_Modem_*.zip** - Complete release package
             
             ### Quick Start
-            ```
-            cd bin
-            test_gui.exe
-            ```
-            Then open http://localhost:8080
+            Run `test_gui.exe` then open http://localhost:8080
             
-            ### Verification
-            ```powershell
-            (Get-FileHash M110A_Modem_*.zip -Algorithm SHA256).Hash
-            ```
+            ### Included
+            - m110a_server.exe - TCP/IP modem server
+            - exhaustive_test.exe - Test suite  
+            - test_gui.exe - Web GUI
+            - melpe_vocoder.exe - MELPe codec
+            - Reference PCM files for all 12 modes
             
             ---
-            *Build ${{ steps.version.outputs.build }} | Automated release with attestation*
+            Build ${{ steps.version.outputs.build }} | Auto-release with attestation
           files: |
             M110A_Modem_*.zip
             M110A_Modem_*.sha256
