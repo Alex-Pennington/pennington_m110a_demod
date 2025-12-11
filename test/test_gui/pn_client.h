@@ -46,24 +46,15 @@ public:
         ctrl_port_ = ctrl_port;
         data_port_ = data_port;
         
-        // Find server executable (use / which works on both Windows and Linux)
-        std::vector<std::string> paths = {
-            exe_dir + "/m110a_server.exe",
-            exe_dir + "/../server/m110a_server.exe",
-        };
+        // Find server executable - all executables are in release/bin/ together
+        std::string server_exe = exe_dir + "/m110a_server.exe";
         
-        std::string server_exe;
-        for (const auto& p : paths) {
-            if (fs::exists(p)) {
-                server_exe = fs::absolute(p).string();
-                break;
-            }
-        }
-        
-        if (server_exe.empty()) {
-            last_error_ = "m110a_server.exe not found";
+        if (!fs::exists(server_exe)) {
+            last_error_ = "m110a_server.exe not found in " + exe_dir;
             return false;
         }
+        
+        server_exe = fs::absolute(server_exe).string();
         
 #ifdef _WIN32
         std::string cmd = "\"" + server_exe + "\" --control-port " + std::to_string(ctrl_port) + 

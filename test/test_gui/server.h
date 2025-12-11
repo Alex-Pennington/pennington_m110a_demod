@@ -707,25 +707,12 @@ private:
         std::string backend = params.count("backend") ? params["backend"] : "phoenixnest";
         bool use_brain = (backend == "brain");
         
-        // Find appropriate test executable based on backend
-        std::string test_exe;
+        // Find test executable - all executables are in release/bin/ together
         std::string exe_name = use_brain ? "brain_exhaustive_test.exe" : "exhaustive_test.exe";
-        std::vector<std::string> search_paths = {
-            exe_dir_ + exe_name,
-            exe_dir_ + "..\\" + exe_name,
-            exe_dir_ + "..\\test\\" + exe_name,
-            exe_name
-        };
+        std::string test_exe = exe_dir_ + exe_name;
         
-        for (const auto& p : search_paths) {
-            if (fs::exists(p)) {
-                test_exe = p;
-                break;
-            }
-        }
-        
-        if (test_exe.empty()) {
-            send_sse(client, "{\"output\":\"ERROR: " + exe_name + " not found\",\"done\":true}");
+        if (!fs::exists(test_exe)) {
+            send_sse(client, "{\"output\":\"ERROR: " + exe_name + " not found in " + json_escape(exe_dir_) + "\",\"done\":true}");
             return;
         }
         
@@ -738,7 +725,12 @@ private:
         cmd << "\"" << test_exe << "\" --json --duration " << duration_sec;
         
         if (!modes_str.empty() && modes_str != "all") {
-            cmd << " --mode " << modes_str;
+            // Use --modes for comma-separated list, --mode for single mode
+            if (modes_str.find(',') != std::string::npos) {
+                cmd << " --modes " << modes_str;
+            } else {
+                cmd << " --mode " << modes_str;
+            }
         }
         
         std::string backend_label = use_brain ? "Brain" : "PhoenixNest";
@@ -937,23 +929,10 @@ private:
         send_sse_headers(client);
         stop_test_ = false;
         
-        // Find interop_test.exe
-        std::string test_exe;
-        std::vector<std::string> search_paths = {
-            exe_dir_ + "interop_test.exe",
-            exe_dir_ + "..\\interop_test.exe",
-            exe_dir_ + "..\\test\\interop_test.exe",
-            "interop_test.exe"
-        };
+        // Find interop_test.exe - all executables are in release/bin/ together
+        std::string test_exe = exe_dir_ + "interop_test.exe";
         
-        for (const auto& p : search_paths) {
-            if (fs::exists(p)) {
-                test_exe = p;
-                break;
-            }
-        }
-        
-        if (test_exe.empty()) {
+        if (!fs::exists(test_exe)) {
             send_sse(client, "{\"output\":\"ERROR: interop_test.exe not found\",\"done\":true}");
             return;
         }

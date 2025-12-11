@@ -11,6 +11,7 @@
  * Options:
  *   --duration N    Run for N seconds
  *   --mode MODE     Test only specific mode (e.g., 600S, 1200L)
+ *   --modes LIST    Comma-separated list of modes (e.g., 600S,600L,1200S)
  *   --json          Machine-readable JSON output
  *   --help          Show this help
  */
@@ -234,6 +235,7 @@ int main(int argc, char* argv[]) {
     // Parse arguments
     int duration_sec = 0;
     string mode_filter;
+    vector<string> mode_list;
     bool json_output = false;
     
     for (int i = 1; i < argc; i++) {
@@ -243,6 +245,15 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--mode" && i + 1 < argc) {
             mode_filter = argv[++i];
             for (auto& c : mode_filter) c = toupper(c);
+        } else if (arg == "--modes" && i + 1 < argc) {
+            // Parse comma-separated list
+            string list_str = argv[++i];
+            stringstream ss(list_str);
+            string mode;
+            while (getline(ss, mode, ',')) {
+                for (auto& c : mode) c = toupper(c);
+                if (!mode.empty()) mode_list.push_back(mode);
+            }
         } else if (arg == "--json") {
             json_output = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -251,6 +262,7 @@ int main(int argc, char* argv[]) {
             cout << "Options:\n";
             cout << "  --duration N    Run for N seconds\n";
             cout << "  --mode MODE     Test specific mode (e.g., 600S)\n";
+            cout << "  --modes LIST    Comma-separated list of modes (e.g., 600S,600L,1200S)\n";
             cout << "  --json          JSON output for GUI\n";
             cout << "  --help          Show this help\n";
             return 0;
@@ -259,14 +271,38 @@ int main(int argc, char* argv[]) {
     
     // Build mode list
     vector<ModeInfo> modes;
-    for (int i = 0; i < NUM_MODES; i++) {
-        if (mode_filter.empty() || mode_filter == ALL_MODES[i].name) {
+    
+    if (!mode_list.empty()) {
+        // Use comma-separated list
+        for (int i = 0; i < NUM_MODES; i++) {
+            for (const auto& want : mode_list) {
+                if (want == ALL_MODES[i].name) {
+                    modes.push_back(ALL_MODES[i]);
+                    break;
+                }
+            }
+        }
+    } else if (!mode_filter.empty()) {
+        // Use single mode filter
+        for (int i = 0; i < NUM_MODES; i++) {
+            if (mode_filter == ALL_MODES[i].name) {
+                modes.push_back(ALL_MODES[i]);
+            }
+        }
+    } else {
+        // All modes
+        for (int i = 0; i < NUM_MODES; i++) {
             modes.push_back(ALL_MODES[i]);
         }
     }
     
     if (modes.empty()) {
-        cerr << "No modes match filter: " << mode_filter << "\n";
+        if (json_output) {
+            cout << "{\"type\":\"error\",\"message\":\"No modes match filter: " 
+                 << (mode_list.empty() ? mode_filter : "(list)") << "\"}\n";
+        } else {
+            cerr << "No modes match filter: " << (mode_list.empty() ? mode_filter : "(list)") << "\n";
+        }
         return 1;
     }
     
