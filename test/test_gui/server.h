@@ -733,6 +733,9 @@ private:
             }
         }
         
+        // Redirect stderr to stdout so we see all output
+        cmd << " 2>&1";
+        
         std::string backend_label = use_brain ? "Brain" : "PhoenixNest";
         send_sse(client, "{\"output\":\"=== " + backend_label + " Exhaustive Test ===\",\"type\":\"header\"}");
         send_sse(client, "{\"output\":\"Executing: " + json_escape(cmd.str()) + "\",\"type\":\"header\"}");
