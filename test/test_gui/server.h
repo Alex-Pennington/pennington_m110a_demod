@@ -881,6 +881,20 @@ private:
                 }
                 else if (type == "start") {
                     std::string backend = extract_json_value(line, "backend");
+                    std::string version = extract_json_value(line, "version");
+                    std::string build = extract_json_value(line, "build");
+                    std::string commit = extract_json_value(line, "commit");
+                    std::string branch = extract_json_value(line, "branch");
+                    
+                    // Build version header string
+                    std::ostringstream ver_header;
+                    ver_header << "M110A Modem v" << version;
+                    if (!branch.empty()) ver_header << " (" << branch << " branch";
+                    if (!build.empty()) ver_header << ", build " << build;
+                    if (!commit.empty()) ver_header << ", commit " << commit;
+                    if (!branch.empty()) ver_header << ")";
+                    
+                    send_sse(client, "{\"output\":\"" + json_escape(ver_header.str()) + "\",\"type\":\"version\"}");
                     send_sse(client, "{\"output\":\"Backend: " + json_escape(backend) + "\",\"type\":\"header\"}");
                 }
             }

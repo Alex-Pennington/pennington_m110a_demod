@@ -321,14 +321,10 @@ int main(int argc, char* argv[]) {
     
     auto channels = get_standard_channels();
     
-    // Test message - must be long enough to survive Brain's interleaver startup discard (~26 bytes)
-    // We prepend padding that will be lost, then check if the rest matches
-    const int BRAIN_DISCARD_BYTES = 32;  // Conservative estimate (actual ~26)
-    string padding(BRAIN_DISCARD_BYTES, 'X');  // Padding to be discarded
-    string actual_msg = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890";
-    string test_msg = padding + actual_msg;
+    // Test message - Brain decoder works correctly, no startup discard needed for self-loopback
+    string test_msg = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890";
     vector<uint8_t> test_data(test_msg.begin(), test_msg.end());
-    vector<uint8_t> expected_data(actual_msg.begin(), actual_msg.end());  // What we expect to receive
+    vector<uint8_t> expected_data = test_data;  // Expect to receive exactly what we sent
     
     // Stats
     map<string, Stats> mode_stats;
@@ -364,7 +360,7 @@ int main(int argc, char* argv[]) {
         // so we need a message long enough to survive that
         cout << "Sanity check: 600S encode/decode loopback... " << flush;
         try {
-            string sanity_str = "THE QUICK BROWN FOX JUMPS";
+            string sanity_str = "THE QUICK BROWN FOX";
             vector<uint8_t> sanity_msg(sanity_str.begin(), sanity_str.end());
             brain::Modem tx_check;
             auto pcm_check = tx_check.encode_48k(sanity_msg, brain::Mode::M600S);
@@ -374,10 +370,19 @@ int main(int argc, char* argv[]) {
             auto dec_check = rx_check.decode_48k(pcm_check);
             cout << "RX=" << dec_check.size() << " bytes";
             
-            if (dec_check.size() >= 4 && 
-                dec_check[0] == 'T' && dec_check[1] == 'E' && 
-                dec_check[2] == 'S' && dec_check[3] == 'T') {
-                cout << " [PASS]\n";
+            // Check if we got at least "THE QUICK" (first 9 chars)
+            bool match = (dec_check.size() >= 9);
+            for (size_t i = 0; i < 9 && match && i < dec_check.size(); i++) {
+                if (dec_check[i] != sanity_str[i]) match = false;
+            }
+            
+            if (match) {
+                cout << " [PASS: '";
+                for (size_t i = 0; i < min(dec_check.size(), (size_t)15); i++) {
+                    if (dec_check[i] >= 32 && dec_check[i] < 127) cout << (char)dec_check[i];
+                    else cout << ".";
+                }
+                cout << "...']\n";
             } else {
                 cout << " [FAIL: got '";
                 for (size_t i = 0; i < min(dec_check.size(), (size_t)10); i++) {

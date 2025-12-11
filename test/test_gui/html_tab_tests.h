@@ -33,7 +33,7 @@ const char* HTML_TAB_TESTS = R"HTML(
                                 <input type="radio" name="backend" id="backend-brain">
                                 <div class="radio-content">
                                     <label for="backend-brain">🧠 Brain Modem</label>
-                                    <span class="radio-desc">Paul Brain's reference (brain_exhaustive_test.exe)</span>
+                                    <span class="radio-desc">Charles Brain (G4GUO) reference (brain_exhaustive_test.exe)</span>
                                 </div>
                             </div>
                         </div>

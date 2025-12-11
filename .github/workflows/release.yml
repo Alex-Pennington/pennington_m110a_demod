@@ -18,6 +18,8 @@ jobs:
     
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Extract version from version.h
         id: version
@@ -86,6 +88,34 @@ jobs:
             test/exhaustive_test_unified.cpp api/modem_tx.cpp api/modem_rx.cpp src/io/pcm_file.cpp \
             -lws2_32
           
+          g++ -std=c++17 -O2 -I. -Isrc -Iextern -Iextern/brain_core -D_USE_MATH_DEFINES -static \
+            -o test/brain_exhaustive_test.exe \
+            test/brain_exhaustive_test.cpp \
+            extern/brain_core/m188110a/g110a.cpp \
+            extern/brain_core/m188110a/de110a.cpp \
+            extern/brain_core/m188110a/eq110a.cpp \
+            extern/brain_core/m188110a/in110a.cpp \
+            extern/brain_core/m188110a/ptx110a.cpp \
+            extern/brain_core/m188110a/rxm110a.cpp \
+            extern/brain_core/m188110a/t110a.cpp \
+            extern/brain_core/m188110a/txm110a.cpp \
+            extern/brain_core/m188110a/v110a.cpp \
+            -lws2_32
+          
+          g++ -std=c++17 -O2 -I. -Isrc -Iextern -Iextern/brain_core -D_USE_MATH_DEFINES -static \
+            -o test/interop_test.exe \
+            test/interop_test.cpp api/modem_tx.cpp api/modem_rx.cpp \
+            extern/brain_core/m188110a/g110a.cpp \
+            extern/brain_core/m188110a/de110a.cpp \
+            extern/brain_core/m188110a/eq110a.cpp \
+            extern/brain_core/m188110a/in110a.cpp \
+            extern/brain_core/m188110a/ptx110a.cpp \
+            extern/brain_core/m188110a/rxm110a.cpp \
+            extern/brain_core/m188110a/t110a.cpp \
+            extern/brain_core/m188110a/txm110a.cpp \
+            extern/brain_core/m188110a/v110a.cpp \
+            -lws2_32
+          
           if [ -f "test/test_gui/main.cpp" ]; then
             g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
               -o test/test_gui.exe \
@@ -121,6 +151,8 @@ jobs:
           
           Copy-Item server/m110a_server.exe release/bin/
           Copy-Item test/exhaustive_test.exe release/bin/
+          Copy-Item test/brain_exhaustive_test.exe release/bin/
+          Copy-Item test/interop_test.exe release/bin/
           Copy-Item test/test_gui.exe release/bin/
           Copy-Item src/melpe_core/build/melpe_vocoder.exe release/bin/
           
@@ -144,9 +176,11 @@ jobs:
           $install += "2. Or run: exhaustive_test.exe --help`n`n"
           $install += "## Components`n`n"
           $install += "- m110a_server.exe - TCP/IP modem server (ports 4998/4999)`n"
-          $install += "- exhaustive_test.exe - Test suite`n"
-          $install += "- test_gui.exe - Web GUI`n"
-          $install += "- melpe_vocoder.exe - MELPe codec`n`n"
+          $install += "- exhaustive_test.exe - PhoenixNest modem test suite`n"
+          $install += "- brain_exhaustive_test.exe - Brain modem test suite`n"
+          $install += "- interop_test.exe - PhoenixNest/Brain interoperability test`n"
+          $install += "- test_gui.exe - Web GUI for all tests`n"
+          $install += "- melpe_vocoder.exe - MELPe voice codec`n`n"
           $install += "## Support`n`n"
           $install += "alex.pennington@organicengineer.com`n"
           Set-Content -Path release/INSTALL.md -Value $install
@@ -194,9 +228,11 @@ jobs:
             
             ### Included
             - m110a_server.exe - TCP/IP modem server
-            - exhaustive_test.exe - Test suite  
-            - test_gui.exe - Web GUI
-            - melpe_vocoder.exe - MELPe codec
+            - exhaustive_test.exe - PhoenixNest test suite
+            - brain_exhaustive_test.exe - Brain modem test suite
+            - interop_test.exe - Cross-implementation interoperability test
+            - test_gui.exe - Web GUI for all tests
+            - melpe_vocoder.exe - MELPe voice codec
             - Reference PCM files for all 12 modes
             
             ---
