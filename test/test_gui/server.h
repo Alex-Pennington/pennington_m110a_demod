@@ -171,6 +171,13 @@ private:
         else if (path == "/melpe-save-recording" && method == "POST") {
             handle_melpe_save_recording(client, request);
         }
+        // Codec2 Vocoder routes
+        else if (path.find("/api/codec2/loopback?") == 0) {
+            handle_codec2_loopback(client, path);
+        }
+        else if (path.find("/api/codec2/output?") == 0) {
+            handle_codec2_output(client, path);
+        }
         else {
             send_404(client);
         }
@@ -595,6 +602,206 @@ private:
         json << "{\"success\":true,\"filename\":\"" << filename << "\",\"size\":" << pcm_data.size() 
              << ",\"duration\":" << std::fixed << std::setprecision(1) << duration << "}";
         send_json(client, json.str());
+    }
+    
+    // ============ CODEC2 HELPER FUNCTIONS ============
+    
+    // Find codec2_vocoder.exe - works in both dev and deployed scenarios
+    std::string find_codec2_exe() {
+        std::vector<std::string> candidates = {
+            exe_dir_ + "codec2_vocoder.exe",
+            exe_dir_ + "..\\bin\\codec2_vocoder.exe",
+            exe_dir_ + "../bin/codec2_vocoder.exe",
+            exe_dir_ + "..\\release\\bin\\codec2_vocoder.exe",
+            exe_dir_ + "../release/bin/codec2_vocoder.exe",
+            exe_dir_ + "..\\..\\src\\codec2_vocoder\\build\\codec2_vocoder.exe",
+            exe_dir_ + "../../src/codec2_vocoder/build/codec2_vocoder.exe",
+        };
+        for (const auto& candidate : candidates) {
+            if (fs::exists(candidate)) {
+                try {
+                    return fs::canonical(candidate).string();
+                } catch (...) {
+                    return candidate;
+                }
+            }
+        }
+        return "";
+    }
+    
+    // ============ CODEC2 VOCODER HANDLERS ============
+    
+    void handle_codec2_loopback(SOCKET client, const std::string& path) {
+        // Parse rate from query string
+        std::string rate = "1300";  // default
+        
+        size_t pos = path.find("rate=");
+        if (pos != std::string::npos) {
+            size_t end = path.find('&', pos);
+            if (end == std::string::npos) end = path.size();
+            rate = path.substr(pos + 5, end - pos - 5);
+        }
+        
+        // Validate rate
+        std::vector<std::string> valid_rates = {"3200", "2400", "1600", "1400", "1300", "1200", "700C"};
+        bool valid = false;
+        for (const auto& r : valid_rates) {
+            if (rate == r) { valid = true; break; }
+        }
+        if (!valid) {
+            send_json(client, "{\"success\":false,\"error\":\"Invalid rate. Use 3200, 2400, 1600, 1400, 1300, 1200, or 700C\"}");
+            return;
+        }
+        
+        std::string codec2_exe = find_codec2_exe();
+        if (codec2_exe.empty()) {
+            send_json(client, "{\"success\":false,\"error\":\"codec2_vocoder.exe not found\"}");
+            return;
+        }
+        
+        // Find test audio - use same directory as MELPe
+        std::string audio_dir = find_melpe_audio_dir();
+        if (audio_dir.empty()) {
+            audio_dir = exe_dir_;
+        }
+        
+        // Look for a test audio file
+        std::string input_file;
+        std::vector<std::string> test_files = {
+            "OSR_us_000_0010_8k.raw",
+            "OSR_us_000_0011_8k.raw",
+            "test_audio.raw",
+            "speech.raw"
+        };
+        
+        for (const auto& f : test_files) {
+            std::string path = audio_dir + f;
+            if (fs::exists(path)) {
+                input_file = path;
+                break;
+            }
+        }
+        
+        if (input_file.empty()) {
+            send_json(client, "{\"success\":false,\"error\":\"No test audio file found\"}");
+            return;
+        }
+        
+        // Create output filename
+        std::string output_file = "codec2_output_" + rate + "bps.raw";
+        std::string output_path = exe_dir_ + output_file;
+        
+        // Build command - run codec2_vocoder.exe in loopback mode
+        std::string cmd = "cmd /c \"\"" + codec2_exe + "\" -l -m " + rate + 
+                          " \"" + input_file + "\" \"" + output_path + "\"\" 2>&1";
+        
+        // Execute vocoder
+#ifdef _WIN32
+        FILE* proc = _popen(cmd.c_str(), "r");
+#else
+        FILE* proc = popen(cmd.c_str(), "r");
+#endif
+        
+        std::string output;
+        if (proc) {
+            char buf[256];
+            while (fgets(buf, sizeof(buf), proc)) {
+                output += buf;
+            }
+#ifdef _WIN32
+            _pclose(proc);
+#else
+            pclose(proc);
+#endif
+            
+            if (fs::exists(output_path)) {
+                auto input_size = fs::file_size(input_file);
+                auto output_size = fs::file_size(output_path);
+                double duration = (output_size / 2) / 8000.0;  // 16-bit samples at 8kHz
+                
+                // Calculate compression ratio
+                // Codec2 compresses speech, so we need bits per second
+                int bps = 0;
+                if (rate == "3200") bps = 3200;
+                else if (rate == "2400") bps = 2400;
+                else if (rate == "1600") bps = 1600;
+                else if (rate == "1400") bps = 1400;
+                else if (rate == "1300") bps = 1300;
+                else if (rate == "1200") bps = 1200;
+                else if (rate == "700C") bps = 700;
+                
+                // Original: 8000 Hz * 16 bits = 128000 bps
+                double compression_ratio = 128000.0 / bps;
+                
+                // Count frames from output
+                // Each frame produces different samples depending on mode
+                int samples_per_frame = 160;  // varies by mode, but output is always same sample rate
+                int frames = (int)(output_size / 2 / samples_per_frame);
+                
+                std::ostringstream json;
+                json << "{\"success\":true"
+                     << ",\"mode\":\"" << rate << " bps\""
+                     << ",\"frames\":" << frames
+                     << ",\"duration\":" << std::fixed << std::setprecision(2) << duration
+                     << ",\"compression_ratio\":" << std::setprecision(1) << compression_ratio
+                     << ",\"output_file\":\"" << output_file << "\""
+                     << ",\"input_size\":" << input_size
+                     << ",\"output_size\":" << output_size
+                     << "}";
+                send_json(client, json.str());
+            } else {
+                // Escape output for JSON
+                std::string escaped;
+                for (char c : output) {
+                    if (c == '"') escaped += "\\\"";
+                    else if (c == '\\') escaped += "\\\\";
+                    else if (c == '\n') escaped += "\\n";
+                    else if (c == '\r') continue;
+                    else escaped += c;
+                }
+                send_json(client, "{\"success\":false,\"error\":\"Vocoder failed: " + escaped + "\"}");
+            }
+        } else {
+            send_json(client, "{\"success\":false,\"error\":\"Could not start codec2_vocoder.exe\"}");
+        }
+    }
+    
+    void handle_codec2_output(SOCKET client, const std::string& path) {
+        std::string filename;
+        size_t pos = path.find("file=");
+        if (pos != std::string::npos) {
+            size_t end = path.find('&', pos);
+            if (end == std::string::npos) end = path.size();
+            filename = url_decode(path.substr(pos + 5, end - pos - 5));
+        }
+        
+        // Validate filename (must be our output file pattern)
+        if (filename.empty() || filename.find("..") != std::string::npos ||
+            filename.find("/") != std::string::npos || filename.find("\\") != std::string::npos ||
+            filename.find("codec2_output_") != 0) {
+            send_404(client);
+            return;
+        }
+        
+        std::string filepath = exe_dir_ + filename;
+        std::ifstream file(filepath, std::ios::binary);
+        if (!file.is_open()) {
+            send_404(client);
+            return;
+        }
+        
+        std::vector<char> content((std::istreambuf_iterator<char>(file)),
+                                   std::istreambuf_iterator<char>());
+        
+        std::ostringstream response;
+        response << "HTTP/1.1 200 OK\r\n"
+                 << "Content-Type: application/octet-stream\r\n"
+                 << "Content-Length: " << content.size() << "\r\n"
+                 << "Connection: close\r\n"
+                 << "\r\n";
+        std::string headers = response.str();
+        send(client, headers.c_str(), (int)headers.size(), 0);
+        send(client, content.data(), (int)content.size(), 0);
     }
     
     // PhoenixNest server control

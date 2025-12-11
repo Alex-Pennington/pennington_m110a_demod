@@ -128,15 +128,22 @@ jobs:
               -lws2_32 -lshell32
           fi
 
-      - name: Build MELPe vocoder
+      # MELPe removed - ETSI/TI licensed code
+      # Codec2 - Open Source (LGPL) voice codec by David Rowe VK5DGR
+      - name: Build Codec2 vocoder
         if: steps.check_tag.outputs.exists == 'false'
         shell: msys2 {0}
         run: |
-          cd src/melpe_core
+          cd extern/codec2
+          rm -rf build_win
+          mkdir -p build_win && cd build_win
+          cmake .. -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --target codec2
+          cd ../../../src/codec2_vocoder
           rm -rf build
           mkdir -p build && cd build
-          cmake .. -G "MSYS Makefiles"
-          cmake --build . --target melpe_vocoder
+          cmake .. -G "MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build .
 
       - name: Package release
         if: steps.check_tag.outputs.exists == 'false'
@@ -154,7 +161,7 @@ jobs:
           Copy-Item test/brain_exhaustive_test.exe release/bin/
           Copy-Item test/interop_test.exe release/bin/
           Copy-Item test/test_gui.exe release/bin/
-          Copy-Item src/melpe_core/build/melpe_vocoder.exe release/bin/
+          Copy-Item src/codec2_vocoder/build/codec2_vocoder.exe release/bin/
           
           Copy-Item README.md release/
           if (Test-Path docs/PROTOCOL.md) { Copy-Item docs/PROTOCOL.md release/docs/ }
@@ -180,7 +187,7 @@ jobs:
           $install += "- brain_exhaustive_test.exe - Brain modem test suite`n"
           $install += "- interop_test.exe - PhoenixNest/Brain interoperability test`n"
           $install += "- test_gui.exe - Web GUI for all tests`n"
-          $install += "- melpe_vocoder.exe - MELPe voice codec`n`n"
+          $install += "- codec2_vocoder.exe - Codec2 voice codec (LGPL)`n`n"
           $install += "## Support`n`n"
           $install += "alex.pennington@organicengineer.com`n"
           Set-Content -Path release/INSTALL.md -Value $install
@@ -232,7 +239,7 @@ jobs:
             - brain_exhaustive_test.exe - Brain modem test suite
             - interop_test.exe - Cross-implementation interoperability test
             - test_gui.exe - Web GUI for all tests
-            - melpe_vocoder.exe - MELPe voice codec
+            - codec2_vocoder.exe - Codec2 voice codec (LGPL, by VK5DGR)
             - Reference PCM files for all 12 modes
             
             ---

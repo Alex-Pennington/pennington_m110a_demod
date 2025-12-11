@@ -1,3 +1,6 @@
 [submodule "extern/brain_core"]
 	path = extern/brain_core
 	url = https://github.com/Alex-Pennington/brain_core.git
+[submodule "extern/codec2"]
+	path = extern/codec2
+	url = https://github.com/drowe67/codec2.git

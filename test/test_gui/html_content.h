@@ -4,11 +4,12 @@
  * @brief Combined HTML/CSS/JS for M110A Test GUI
  * 
  * This file combines modular components:
- * - html_common.h     - Shared CSS and utilities
- * - html_tab_tests.h  - Run Tests tab (PhoenixNest + Brain)
+ * - html_common.h      - Shared CSS and utilities
+ * - html_tab_tests.h   - Run Tests tab (PhoenixNest + Brain)
  * - html_tab_interop.h - Cross-Modem Interop tab
  * - html_tab_reports.h - Reports tab
- * - html_tab_melpe.h  - MELPe Vocoder tab
+ * - html_tab_melpe.h   - MELPe Vocoder tab
+ * - html_tab_codec2.h  - Codec2 Vocoder tab (open source)
  */
 
 #include "html_common.h"
@@ -16,6 +17,7 @@
 #include "html_tab_interop.h"
 #include "html_tab_reports.h"
 #include "html_tab_melpe.h"
+#include "html_tab_codec2.h"
 
 #include <string>
 #include <sstream>
@@ -38,6 +40,7 @@ inline std::string build_html_page() {
     html << HTML_CSS_INTEROP;   // Interop styles
     html << HTML_CSS_REPORTS;   // Reports styles
     html << HTML_CSS_MELPE;     // MELPe styles
+    html << HTML_CSS_CODEC2;    // Codec2 styles
 
     html << R"HTML(
     </style>
@@ -51,6 +54,7 @@ inline std::string build_html_page() {
             <button class="tab" onclick="showTab('interop')">Cross-Modem Interop</button>
             <button class="tab" onclick="showTab('reports')">Reports</button>
             <button class="tab" onclick="showTab('melpe')">MELPe Vocoder</button>
+            <button class="tab" onclick="showTab('codec2')">Codec2 Vocoder</button>
         </div>
 )HTML";
 
@@ -59,6 +63,7 @@ inline std::string build_html_page() {
     html << HTML_TAB_INTEROP;
     html << HTML_TAB_REPORTS;
     html << HTML_TAB_MELPE;
+    html << HTML_TAB_CODEC2;
 
     html << R"HTML(
     </div>
@@ -72,6 +77,7 @@ inline std::string build_html_page() {
     html << HTML_JS_INTEROP;
     html << HTML_JS_REPORTS;
     html << HTML_JS_MELPE;
+    html << HTML_JS_CODEC2;
 
     // Tab navigation and initialization
     html << R"JS(

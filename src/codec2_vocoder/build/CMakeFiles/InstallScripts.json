@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/pennington_m110a_demod/src/codec2_vocoder/build/cmake_install.cmake",
+		"D:/pennington_m110a_demod/src/codec2_vocoder/build/codec2_build/cmake_install.cmake",
+		"D:/pennington_m110a_demod/src/codec2_vocoder/build/codec2_build/src/cmake_install.cmake",
+		"D:/pennington_m110a_demod/src/codec2_vocoder/build/codec2_build/demo/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

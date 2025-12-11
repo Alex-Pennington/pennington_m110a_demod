@@ -1,0 +1,10 @@
+# Hashes of file build rules.
+2be03f0001002af5250d750c959e0c6e codec2_build/CMakeFiles/dist
+5a2f2111639a3e50cc5732c6ae9fc274 codec2_build/src/codebook.c
+3d00de4240e8281a8f11d3ff5977cd62 codec2_build/src/codebookd.c
+3ddfad27ebedaad12b0f926407a2c0cb codec2_build/src/codebookge.c
+863eed8745bca4d6816bcb2f69fc153a codec2_build/src/codebookjmv.c
+7d19bf9f037b853c2508f199d9555aaa codec2_build/src/codebooknewamp1.c
+f606a9810ccacf8251a4a610d5e3d108 codec2_build/src/codebooknewamp1_energy.c
+e291469899a103673204a6ef75daa073 codec2_build/src/codebooknewamp2.c
+5711a02668c3232fbe53542449348528 codec2_build/src/codebooknewamp2_energy.c

@@ -11,7 +11,7 @@
 #define BRAIN_WRAPPER_H
 
 // IMPORTANT: Include Brain/Windows headers BEFORE C++ stdlib to avoid std::byte conflict
-#include "brain_core/m188110a/Cm110s.h"
+#include "brain_core/include/m188110a/Cm110s.h"
 
 // Now safe to include C++ standard library
 #include <vector>

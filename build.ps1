@@ -162,17 +162,9 @@ $LDFLAGS = "-static -lws2_32"
 $MODEM_SOURCES = "api/modem_tx.cpp api/modem_rx.cpp"
 $PCM_SOURCES = "src/io/pcm_file.cpp"
 
-$BRAIN_SOURCES = @(
-    "extern/brain_core/m188110a/de110a.cpp",
-    "extern/brain_core/m188110a/eq110a.cpp",
-    "extern/brain_core/m188110a/g110a.cpp",
-    "extern/brain_core/m188110a/in110a.cpp",
-    "extern/brain_core/m188110a/ptx110a.cpp",
-    "extern/brain_core/m188110a/rxm110a.cpp",
-    "extern/brain_core/m188110a/t110a.cpp",
-    "extern/brain_core/m188110a/txm110a.cpp",
-    "extern/brain_core/m188110a/v110a.cpp"
-) -join ' '
+# brain_core now uses prebuilt static library instead of source files
+$BRAIN_INCLUDES = "-Iextern -Iextern/brain_core -Iextern/brain_core/include -Iextern/brain_core/include/m188110a"
+$BRAIN_LDFLAGS = "-Lextern/brain_core/lib/win64 -lm188110a"
 
 # ============================================================
 # Main
@@ -205,11 +197,11 @@ Write-Host "`nVersion: $(Get-VersionString $version) (build $($version.Build))" 
 Get-Process m110a_server -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 300
 
-# Check for brain_core
-$hasBrain = Test-Path "extern/brain_core/m188110a/Cm110s.h"
+# Check for brain_core (now uses prebuilt library)
+$hasBrain = (Test-Path "extern/brain_core/include/m188110a/Cm110s.h") -and (Test-Path "extern/brain_core/lib/win64/libm188110a.a")
 if (-not $hasBrain) {
-    Write-Host "`nWARNING: brain_core submodule not found, skipping Brain targets" -ForegroundColor Yellow
-    Write-Host "  Run: git submodule update --init" -ForegroundColor DarkYellow
+    Write-Host "`nWARNING: brain_core submodule not found or incomplete, skipping Brain targets" -ForegroundColor Yellow
+    Write-Host "  Run: git submodule update --init --recursive" -ForegroundColor DarkYellow
 }
 
 # Build all targets
@@ -220,8 +212,8 @@ $targets = @(
 )
 
 if ($hasBrain) {
-    $targets += @{ Name = "interop_test";           Cmd = "$CXX $CXXFLAGS -Iextern -Iextern/brain_core -o release/bin/interop_test.exe test/interop_test.cpp $MODEM_SOURCES $BRAIN_SOURCES $LDFLAGS" }
-    $targets += @{ Name = "brain_exhaustive_test";  Cmd = "$CXX $CXXFLAGS -Iextern -Iextern/brain_core -o release/bin/brain_exhaustive_test.exe test/brain_exhaustive_test.cpp $BRAIN_SOURCES $LDFLAGS" }
+    $targets += @{ Name = "interop_test";           Cmd = "$CXX $CXXFLAGS $BRAIN_INCLUDES -o release/bin/interop_test.exe test/interop_test.cpp $MODEM_SOURCES $LDFLAGS $BRAIN_LDFLAGS" }
+    $targets += @{ Name = "brain_exhaustive_test";  Cmd = "$CXX $CXXFLAGS $BRAIN_INCLUDES -o release/bin/brain_exhaustive_test.exe test/brain_exhaustive_test.cpp $LDFLAGS $BRAIN_LDFLAGS" }
 }
 
 $failed = @()
