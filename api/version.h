@@ -25,11 +25,11 @@ constexpr int VERSION_PATCH = 12;
 constexpr const char* VERSION_PRERELEASE = "";
 
 // Build information (auto-generated)
-constexpr int BUILD_NUMBER = 247;
-constexpr const char* GIT_COMMIT = "2c507b3";
+constexpr int BUILD_NUMBER = 263;
+constexpr const char* GIT_COMMIT = "934cffe";
 constexpr const char* GIT_BRANCH = "master";
 constexpr const char* BUILD_DATE = "2025-12-10";
-constexpr const char* BUILD_TIME = "19:26:53";
+constexpr const char* BUILD_TIME = "22:21:38";
 
 /// Get version string (e.g., "1.2.0" or "1.2.0-rc.1")
 inline std::string version() {

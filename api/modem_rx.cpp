@@ -1,4 +1,4 @@
-﻿// Copyright (C) 2025 Phoenix Nest LLC
+// Copyright (C) 2025 Phoenix Nest LLC
 // Phoenix Nest Modem - MIL-STD-188-110A HF Data Modem
 // Licensed under Phoenix Nest EULA - see phoenixnestmodem_eula.md
 /**
@@ -101,7 +101,7 @@ public:
                 result.error = Error(ErrorCode::RX_MODE_DETECT_FAILED, 
                                     "Mode detection failed (corr=" + 
                                     std::to_string(detect_result.correlation) + ")");
-                state_ = RxState::ERROR;
+                state_ = RxState::DECODE_ERROR;
                 return result;
             }
             
@@ -117,7 +117,7 @@ public:
         if (mode_id == ModeId::M75NS || mode_id == ModeId::M75NL) {
             result.success = false;
             result.error = Error(ErrorCode::NOT_IMPLEMENTED, "M75 modes not yet supported");
-            state_ = RxState::ERROR;
+            state_ = RxState::DECODE_ERROR;
             return result;
         }
         
@@ -156,7 +156,7 @@ public:
         if (brain_result.data_symbols.empty()) {
             result.success = false;
             result.error = Error(ErrorCode::RX_NO_SIGNAL, "No data symbols extracted");
-            state_ = RxState::ERROR;
+            state_ = RxState::DECODE_ERROR;
             return result;
         }
         
@@ -294,7 +294,7 @@ public:
         if (decoded.empty()) {
             result.success = false;
             result.error = Error(ErrorCode::RX_DECODE_FAILED, "Viterbi decode failed");
-            state_ = RxState::ERROR;
+            state_ = RxState::DECODE_ERROR;
             return result;
         }
         
@@ -432,7 +432,7 @@ public:
     
     bool has_error() const {
         std::lock_guard<std::mutex> lock(mutex_);
-        return state_ == RxState::ERROR;
+        return state_ == RxState::DECODE_ERROR;
     }
     
     DecodeResult get_result() const {
@@ -669,7 +669,7 @@ private:
      * - This padding decodes as zeros (can be 30+ bytes)
      * - Need to distinguish EOM zeros from padding zeros
      * 
-     * EOM produces: 4 Ã— unknown_len Ã— 3 / 16 bytes â‰ˆ 24 bytes for M2400S
+     * EOM produces: 4 × unknown_len × 3 / 16 bytes ≈ 24 bytes for M2400S
      * 
      * To distinguish from padding, we require:
      * - At least 40 trailing zeros (exceeds typical padding)
@@ -695,7 +695,7 @@ private:
         }
         
         // Calculate expected EOM size
-        // EOM = 4 frames Ã— unknown_len Ã— 3 bits / 2 (FEC) / 8 (bits/byte)
+        // EOM = 4 frames × unknown_len × 3 bits / 2 (FEC) / 8 (bits/byte)
         int expected_eom_bytes = (4 * unknown_len * 3) / 16;
         
         // Require trailing zeros >= expected EOM + 50% margin
@@ -1180,7 +1180,7 @@ private:
      *   - Gray code conversion (MGD3/INV_MGD3)
      *   - Mode-specific helical interleaver
      *   - SISO decoder (BCJR, K=7, rate 1/2)
-     *   - Iterative MLSE â†” SISO exchange
+     *   - Iterative MLSE ↔ SISO exchange
      * 
      * Returns improved symbols for passing to normal codec path.
      * 
@@ -1354,7 +1354,7 @@ private:
         // Configure phase tracker
         PhaseTrackerConfig pt_cfg;
         pt_cfg.symbol_rate = 2400.0f;
-        pt_cfg.max_freq_hz = 15.0f;  // Support up to Â±15 Hz offset
+        pt_cfg.max_freq_hz = 15.0f;  // Support up to ±15 Hz offset
         
         if (conservative) {
             // Conservative mode for use with equalizers
@@ -1538,3 +1538,4 @@ float ModemRX::estimate_snr(const Samples& samples) {
 
 } // namespace api
 } // namespace m110a
+

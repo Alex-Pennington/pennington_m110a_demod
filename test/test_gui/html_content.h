@@ -1136,7 +1136,90 @@ const char* HTML_PAGE = R"HTML(
         
         function runBrainToPnTest() { interopLog('Brain→PN test not yet implemented', 'info'); }
         function runPnToBrainTest() { interopLog('PN→Brain test not yet implemented', 'info'); }
-        function runMatrix() { interopLog('Matrix test not yet implemented', 'info'); }
+        
+        // Run local interop matrix using interop_test.exe --json
+        let interopRunning = false;
+        async function runMatrix() {
+            if (interopRunning) return;
+            interopRunning = true;
+            
+            // Reset matrix to pending state
+            const modes = ['75S','75L','150S','150L','300S','300L','600S','600L','1200S','1200L','2400S','2400L'];
+            modes.forEach(m => {
+                const cell1 = document.getElementById('cm-' + m + '-1');
+                const cell2 = document.getElementById('cm-' + m + '-2');
+                if (cell1) { cell1.className = 'matrix-cell matrix-pending'; cell1.textContent = '○'; }
+                if (cell2) { cell2.className = 'matrix-cell matrix-pending'; cell2.textContent = '○'; }
+            });
+            
+            document.getElementById('matrix-progress').textContent = '0/36';
+            interopLog('Starting local interop test (brain_core embedded)...', 'info');
+            
+            let testNum = 0;
+            let passed = 0;
+            
+            try {
+                const response = await fetch('/run-interop');
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (interopRunning) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    const text = decoder.decode(value);
+                    for (const line of text.split('\n')) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.substring(6));
+                                handleInteropEvent(data);
+                                if (data.done) interopRunning = false;
+                            } catch (e) {}
+                        }
+                    }
+                }
+            } catch (err) {
+                interopLog('Error: ' + err.message, 'error');
+            }
+            
+            interopRunning = false;
+            interopLog('Interop test complete', 'info');
+        }
+        
+        function handleInteropEvent(data) {
+            if (data.output) {
+                let type = 'info';
+                if (data.output.includes('PASS')) type = 'rx';
+                else if (data.output.includes('FAIL')) type = 'error';
+                interopLog(data.output, type);
+            }
+            
+            if (data.type === 'interop_result') {
+                const mode = data.mode;
+                const cell1 = document.getElementById('cm-' + mode + '-1'); // Brain→PN
+                const cell2 = document.getElementById('cm-' + mode + '-2'); // PN→Brain
+                
+                if (cell1) {
+                    cell1.className = data.brain_pn ? 'matrix-cell matrix-pass' : 'matrix-cell matrix-fail';
+                    cell1.textContent = data.brain_pn ? '✓' : '✗';
+                }
+                if (cell2) {
+                    cell2.className = data.pn_brain ? 'matrix-cell matrix-pass' : 'matrix-cell matrix-fail';
+                    cell2.textContent = data.pn_brain ? '✓' : '✗';
+                }
+            }
+            
+            if (data.progress !== undefined) {
+                const total = 36;
+                const done = Math.round(data.progress * total / 100);
+                document.getElementById('matrix-progress').textContent = done + '/' + total;
+            }
+            
+            if (data.passed !== undefined && data.total !== undefined) {
+                document.getElementById('matrix-progress').textContent = 
+                    data.passed + '/' + data.total + ' passed';
+            }
+        }
         
         // Reports
         async function loadReports() {

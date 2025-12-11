@@ -134,6 +134,9 @@ private:
         else if (path.find("/run-exhaustive?") == 0) {
             handle_run_exhaustive(client, path);
         }
+        else if (path == "/run-interop") {
+            handle_run_interop(client);
+        }
         else if (path == "/stop-test") {
             stop_test_ = true;
             send_json(client, "{\"success\":true}");
@@ -481,6 +484,121 @@ private:
             }
             return json.substr(pos, end - pos);
         }
+    }
+    
+    // ================================================================
+    // Run interop test - Uses JSON output from interop_test.exe --json
+    // ================================================================
+    void handle_run_interop(SOCKET client) {
+        send_sse_headers(client);
+        stop_test_ = false;
+        
+        // Find interop_test.exe
+        std::string test_exe;
+        std::vector<std::string> search_paths = {
+            exe_dir_ + "interop_test.exe",
+            exe_dir_ + "..\\interop_test.exe",
+            exe_dir_ + "..\\test\\interop_test.exe",
+            "interop_test.exe"
+        };
+        
+        for (const auto& p : search_paths) {
+            if (fs::exists(p)) {
+                test_exe = p;
+                break;
+            }
+        }
+        
+        if (test_exe.empty()) {
+            send_sse(client, "{\"output\":\"ERROR: interop_test.exe not found\",\"done\":true}");
+            return;
+        }
+        
+        std::ostringstream cmd;
+        cmd << "\"" << test_exe << "\" --json 2>NUL";
+        
+        send_sse(client, "{\"output\":\"Executing: " + json_escape(cmd.str()) + "\",\"type\":\"header\"}");
+        
+#ifdef _WIN32
+        FILE* pipe = _popen(cmd.str().c_str(), "r");
+        if (!pipe) {
+            send_sse(client, "{\"output\":\"ERROR: Could not start interop_test.exe\",\"done\":true}");
+            return;
+        }
+        
+        int test_num = 0;
+        int total_tests = 36;
+        
+        char buffer[2048];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr && !stop_test_) {
+            std::string line(buffer);
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+                line.pop_back();
+            }
+            if (line.empty() || line[0] != '{') continue;
+            
+            std::string event = extract_json_value(line, "event");
+            
+            if (event == "start") {
+                std::string total = extract_json_value(line, "total_tests");
+                std::string msg_size = extract_json_value(line, "message_size");
+                if (!total.empty()) total_tests = std::stoi(total);
+                send_sse(client, "{\"output\":\"Starting " + total + " interop tests (" + msg_size + " byte message)\",\"type\":\"header\",\"total\":" + total + "}");
+            }
+            else if (event == "result") {
+                test_num++;
+                std::string mode = extract_json_value(line, "mode");
+                std::string pn_brain = extract_json_value(line, "pn_brain");
+                std::string brain_pn = extract_json_value(line, "brain_pn");
+                std::string auto_detect = extract_json_value(line, "auto");
+                std::string detected = extract_json_value(line, "detected");
+                
+                int progress = (test_num * 100) / total_tests;
+                
+                std::ostringstream sse;
+                sse << "{\"output\":\"" << mode << ": "
+                    << "PN→Brain=" << (pn_brain == "true" ? "PASS" : "FAIL") << " "
+                    << "Brain→PN=" << (brain_pn == "true" ? "PASS" : "FAIL") << " "
+                    << "Auto=" << (auto_detect == "true" ? "PASS" : "FAIL")
+                    << " (" << detected << ")\""
+                    << ",\"type\":\"interop_result\""
+                    << ",\"mode\":\"" << mode << "\""
+                    << ",\"pn_brain\":" << pn_brain
+                    << ",\"brain_pn\":" << brain_pn
+                    << ",\"auto\":" << auto_detect
+                    << ",\"detected\":\"" << detected << "\""
+                    << ",\"progress\":" << progress
+                    << ",\"currentTest\":\"" << mode << "\""
+                    << "}";
+                send_sse(client, sse.str());
+            }
+            else if (event == "complete") {
+                std::string passed = extract_json_value(line, "passed");
+                std::string total = extract_json_value(line, "total");
+                std::string elapsed = extract_json_value(line, "elapsed");
+                
+                std::ostringstream sse;
+                sse << "{\"output\":\"\\n=== INTEROP TEST COMPLETE ===\\n"
+                    << "Passed: " << passed << "/" << total << "\\n"
+                    << "Time: " << elapsed << "s\""
+                    << ",\"done\":true"
+                    << ",\"passed\":" << passed
+                    << ",\"total\":" << total
+                    << ",\"elapsed\":" << elapsed
+                    << ",\"progress\":100"
+                    << "}";
+                send_sse(client, sse.str());
+            }
+        }
+        
+        _pclose(pipe);
+        
+        if (stop_test_) {
+            send_sse(client, "{\"output\":\"\\n=== TEST STOPPED BY USER ===\",\"type\":\"warning\",\"done\":true}");
+        }
+#else
+        send_sse(client, "{\"output\":\"Linux not supported yet\",\"done\":true}");
+#endif
     }
     
     // Reports

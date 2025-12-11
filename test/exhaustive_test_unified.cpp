@@ -32,7 +32,6 @@
 #include "test_framework.h"
 #include "direct_backend.h"
 #include "server_backend.h"
-#include "common/license.h"
 
 #include <iostream>
 #include <memory>
@@ -373,29 +372,6 @@ void print_reference_test_summary(const std::vector<ReferenceTestResult>& result
 // ============================================================
 
 int main(int argc, char* argv[]) {
-    // Check license first
-    LicenseInfo license_info;
-    LicenseStatus license_status = LicenseManager::load_license_file("license.key", license_info);
-    
-    if (license_status != LicenseStatus::VALID) {
-        std::cout << "================================================\n";
-        std::cout << "  LICENSE REQUIRED\n";
-        std::cout << "================================================\n\n";
-        
-        if (license_status == LicenseStatus::NOT_FOUND) {
-            std::cout << "No license file found.\n\n";
-            std::cout << "Hardware ID: " << LicenseManager::get_hardware_id() << "\n\n";
-            std::cout << "Go to https://www.organicengineer.com/projects to obtain a license key using this hardware ID.\n";
-            std::cout << "Save the license key to 'license.key'.\n\n";
-        } else {
-            std::cout << "License Status: " << LicenseManager::get_status_message(license_status) << "\n\n";
-            std::cout << "Hardware ID: " << LicenseManager::get_hardware_id() << "\n\n";
-        }
-        
-        std::cout << "================================================\n";
-        return 1;
-    }
-    
     // Force unbuffered stdout for real-time JSON output
     std::cout.setf(std::ios::unitbuf);
     
@@ -792,7 +768,7 @@ int main(int argc, char* argv[]) {
             // Write CSV header
             if (!csv_file.empty() && eq == eq_list[0]) {
                 write_progressive_csv_header(csv_file, mode_filter, prog_snr, prog_freq, prog_multipath,
-                                             LicenseManager::get_hardware_id());
+                                             "");
                 std::cout << "CSV file initialized: " << csv_file << "\n\n";
             }
             
@@ -860,7 +836,7 @@ int main(int argc, char* argv[]) {
         generate_progressive_markdown_report(report_file, all_eq_results, 
             (int)total_elapsed, backend->backend_name(), use_auto_detect,
             prog_snr, prog_freq, prog_multipath,
-            LicenseManager::get_hardware_id());
+            "");
         
         backend->disconnect();
         return 0;
@@ -1096,7 +1072,7 @@ int main(int argc, char* argv[]) {
     
     // Generate report
     generate_markdown_report(report_file, results, backend->backend_name(),
-                            LicenseManager::get_hardware_id());
+                            "");
     
     backend->disconnect();
     

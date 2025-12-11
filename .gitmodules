@@ -1,0 +1,3 @@
+[submodule "extern/brain_core"]
+	path = extern/brain_core
+	url = https://github.com/Alex-Pennington/brain_core.git

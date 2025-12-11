@@ -65,7 +65,7 @@ enum class RxState {
     SYNCHRONIZING,  ///< Acquiring timing/carrier
     RECEIVING,      ///< Decoding data
     COMPLETE,       ///< Decode finished
-    ERROR           ///< Error occurred
+    DECODE_ERROR           ///< Error occurred
 };
 
 /**
@@ -278,3 +278,4 @@ private:
 } // namespace m110a
 
 #endif // M110A_API_MODEM_RX_H
+

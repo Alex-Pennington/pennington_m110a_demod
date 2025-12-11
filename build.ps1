@@ -31,7 +31,7 @@ USAGE:
     .\build.ps1 [options]
 
 OPTIONS:
-    -Target <target>      Build target: server, test, unified, gui, all (default: all)
+    -Target <target>      Build target: server, test, unified, gui, interop, all (default: all)
     -Increment <type>     Version increment: major, minor, patch
     -Clean                Clean build directory before building
     -j <n>                Parallel jobs for 'all' target (like make -j4)
@@ -327,6 +327,41 @@ function Build-TestGui {
     }
 }
 
+# Brain modem sources for interop testing
+$BRAIN_SOURCES = @(
+    "extern/brain_core/m188110a/de110a.cpp",
+    "extern/brain_core/m188110a/eq110a.cpp",
+    "extern/brain_core/m188110a/g110a.cpp",
+    "extern/brain_core/m188110a/in110a.cpp",
+    "extern/brain_core/m188110a/ptx110a.cpp",
+    "extern/brain_core/m188110a/rxm110a.cpp",
+    "extern/brain_core/m188110a/t110a.cpp",
+    "extern/brain_core/m188110a/txm110a.cpp",
+    "extern/brain_core/m188110a/v110a.cpp"
+)
+
+function Build-InteropTest {
+    Write-Host "`n=== Building Interop Test (PhoenixNest <-> Brain) ===" -ForegroundColor Yellow
+    
+    if (-not (Test-Path "extern/brain_core/m188110a/Cm110s.h")) {
+        Write-Host "  Brain core submodule not found. Run: git submodule update --init" -ForegroundColor Red
+        throw "Missing brain_core submodule"
+    }
+    
+    $sources = @("test/interop_test.cpp") + $MODEM_SOURCES + $BRAIN_SOURCES
+    
+    $cmd = "$CXX $CXXFLAGS -Iextern -Iextern/brain_core -o test/interop_test.exe $($sources -join ' ') $LDFLAGS"
+    Write-Host $cmd -ForegroundColor DarkGray
+    
+    Invoke-Expression $cmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Interop test built successfully" -ForegroundColor Green
+    } else {
+        throw "Interop test build failed"
+    }
+}
+
 function Clean-Build {
     Write-Host "`n=== Cleaning ===" -ForegroundColor Yellow
     
@@ -379,6 +414,9 @@ switch ($Target.ToLower()) {
     }
     "gui" {
         Build-TestGui
+    }
+    "interop" {
+        Build-InteropTest
     }
     "all" {
         if ($j -gt 1) {
@@ -441,7 +479,7 @@ switch ($Target.ToLower()) {
     }
     default {
         Write-Host "Unknown target: $Target" -ForegroundColor Red
-        Write-Host "Valid targets: server, test, unified, unit, gui, all" -ForegroundColor Yellow
+        Write-Host "Valid targets: server, test, unified, unit, gui, interop, all" -ForegroundColor Yellow
         exit 1
     }
 }
