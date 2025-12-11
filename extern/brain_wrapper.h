@@ -243,7 +243,19 @@ private:
     static void rx_callback_static(uint8_t byte) {
         std::lock_guard<std::mutex> lock(rx_mutex_);
         if (current_instance_) {
-            current_instance_->decoded_data_.push_back(byte);
+            // Reverse bit order (MIL-STD-188-110A LSB/MSB correction)
+            // Brain decoder outputs bits in reverse order from transmission
+            uint8_t reversed = 0;
+            reversed |= ((byte >> 0) & 1) << 7;
+            reversed |= ((byte >> 1) & 1) << 6;
+            reversed |= ((byte >> 2) & 1) << 5;
+            reversed |= ((byte >> 3) & 1) << 4;
+            reversed |= ((byte >> 4) & 1) << 3;
+            reversed |= ((byte >> 5) & 1) << 2;
+            reversed |= ((byte >> 6) & 1) << 1;
+            reversed |= ((byte >> 7) & 1) << 0;
+            
+            current_instance_->decoded_data_.push_back(reversed);
         }
     }
 };
