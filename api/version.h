@@ -16,13 +16,13 @@ namespace m110a {
 
 constexpr int VERSION_MAJOR = 1;
 constexpr int VERSION_MINOR = 4;
-constexpr int VERSION_PATCH = 0;
+constexpr int VERSION_PATCH = 1;
 constexpr const char* VERSION_PRERELEASE = "";
-constexpr int BUILD_NUMBER = 291;
-constexpr const char* GIT_COMMIT = "4018bb8";
+constexpr int BUILD_NUMBER = 292;
+constexpr const char* GIT_COMMIT = "da3229b";
 constexpr const char* GIT_BRANCH = "master";
 constexpr const char* BUILD_DATE = "2025-12-11";
-constexpr const char* BUILD_TIME = "03:15:40";
+constexpr const char* BUILD_TIME = "03:19:13";
 
 inline std::string version() {
     std::string v = std::to_string(VERSION_MAJOR) + "." +
