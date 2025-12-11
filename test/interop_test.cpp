@@ -18,6 +18,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cstdio>
 #include <chrono>
 #include <sstream>
 #include <algorithm>
@@ -30,6 +31,7 @@
 #include "api/modem_rx.h"
 #include "api/modem_config.h"
 #include "api/modem_types.h"
+#include "api/version.h"
 
 using namespace std;
 
@@ -200,6 +202,20 @@ ModeResults test_mode(const ModeMapping& m, const vector<uint8_t>& data) {
 }
 
 int main(int argc, char* argv[]) {
+    // Force unbuffered output for real-time output
+    cout.setf(ios::unitbuf);
+    cerr.setf(ios::unitbuf);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    
+    // Always output version header first - critical for record keeping
+    cerr << "==============================================\n";
+    cerr << m110a::version_header() << "\n";
+    cerr << "==============================================\n";
+    cerr << m110a::build_info() << "\n";
+    cerr << "Test: M110A Cross-Modem Interoperability\n";
+    cerr << "==============================================\n" << flush;
+    
     bool parallel = false;  // Brain modem has global state, not thread-safe
     
     for (int i = 1; i < argc; i++) {
@@ -212,11 +228,13 @@ int main(int argc, char* argv[]) {
     const int TOTAL_TESTS = NUM_MODES * TESTS_PER_MODE;
     
     if (g_json_output) {
-        json_evt("start", "\"total_tests\":" + to_string(TOTAL_TESTS) + ",\"message_size\":" + to_string(data.size()));
+        json_evt("start", "\"version\":\"" + string(m110a::version()) + "\",\"build\":" + to_string(m110a::BUILD_NUMBER) + ",\"commit\":\"" + string(m110a::GIT_COMMIT) + "\",\"branch\":\"" + string(m110a::GIT_BRANCH) + "\",\"total_tests\":" + to_string(TOTAL_TESTS) + ",\"message_size\":" + to_string(data.size()));
     } else {
         cout << "+====================================================================================+\n";
-        cout << "|              M110A CROSS-MODEM INTEROPERABILITY TEST (Parallel)                   |\n";
-        cout << "+====================================================================================+\n\n";
+        cout << "|              M110A CROSS-MODEM INTEROPERABILITY TEST                              |\n";
+        cout << "+====================================================================================+\n";
+        cout << m110a::version_header() << "\n";
+        cout << m110a::build_info() << "\n\n";
         cout << "Test: \"" << TEST_MESSAGE << "\" (" << data.size() << " bytes)\n";
         cout << "Modes: " << NUM_MODES << " | Tests per mode: " << TESTS_PER_MODE << " | Total: " << TOTAL_TESTS << "\n";
         cout << "Note: Brain RX only supports auto-detect (no explicit mode setting)\n\n";

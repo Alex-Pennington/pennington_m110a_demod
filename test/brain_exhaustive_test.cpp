@@ -24,6 +24,7 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <cstdio>
 #include <chrono>
 #include <sstream>
 #include <algorithm>
@@ -235,7 +236,14 @@ int main(int argc, char* argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     
-    cerr << "[DEBUG] brain_exhaustive_test starting...\n" << flush;
+    // Always output version header first - critical for record keeping
+    cerr << "==============================================\n";
+    cerr << m110a::version_header() << "\n";
+    cerr << "==============================================\n";
+    cerr << m110a::build_info() << "\n";
+    cerr << "Test: Brain M110A Exhaustive\n";
+    cerr << "Brain Core: Charles Brain (G4GUO) & Steve Hajducek (N2CKH)\n";
+    cerr << "==============================================\n" << flush;
     
     // Parse arguments
     int duration_sec = 0;
@@ -332,9 +340,13 @@ int main(int argc, char* argv[]) {
     
     // Start message
     if (json_output) {
-        cout << "{\"type\":\"start\",\"backend\":\"Brain Direct API\",\"modes\":" << modes.size()
+        cout << "{\"type\":\"start\",\"backend\":\"Brain Direct API\""
+             << ",\"version\":\"" << m110a::version() << "\""
+             << ",\"build\":" << m110a::BUILD_NUMBER
+             << ",\"commit\":\"" << m110a::GIT_COMMIT << "\""
+             << ",\"branch\":\"" << m110a::GIT_BRANCH << "\""
+             << ",\"modes\":" << modes.size()
              << ",\"channels\":" << channels.size() << "}\n" << flush;
-        cerr << "[DEBUG] Starting tests with " << modes.size() << " modes, " << channels.size() << " channels\n" << flush;
     } else {
         cout << "==============================================\n";
         cout << m110a::version_header() << "\n";
@@ -419,19 +431,15 @@ int main(int argc, char* argv[]) {
                 
                 try {
                     // Encode (send full message with padding)
-                    if (json_output) cerr << "[DEBUG] TX " << mode.name << " + " << cond.name << "... " << flush;
                     brain::Modem tx;
                     auto pcm = tx.encode_48k(test_data, mode.mode);
-                    if (json_output) cerr << pcm.size() << " samples, ";
                     
                     // Apply channel
                     auto noisy = channel.apply(pcm, cond);
                     
                     // Decode (new modem instance - Brain has global state issues)
-                    if (json_output) cerr << "RX... " << flush;
                     brain::Modem rx;
                     auto decoded = rx.decode_48k(noisy);
-                    if (json_output) cerr << decoded.size() << " bytes\n" << flush;
                     
                     decoded_bytes = (int)decoded.size();
                     

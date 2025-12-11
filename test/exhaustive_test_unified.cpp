@@ -374,6 +374,17 @@ void print_reference_test_summary(const std::vector<ReferenceTestResult>& result
 int main(int argc, char* argv[]) {
     // Force unbuffered stdout for real-time JSON output
     std::cout.setf(std::ios::unitbuf);
+    std::cerr.setf(std::ios::unitbuf);
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    
+    // Always output version header first - critical for record keeping
+    std::cerr << "==============================================\n";
+    std::cerr << m110a::version_header() << "\n";
+    std::cerr << "==============================================\n";
+    std::cerr << m110a::build_info() << "\n";
+    std::cerr << "Test: PhoenixNest M110A Exhaustive\n";
+    std::cerr << "==============================================\n" << std::flush;
     
     // Configuration
     int max_iterations = 1;
@@ -591,8 +602,12 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "\n";
     } else {
-        // JSON start message
+        // JSON start message - include version info for record keeping
         std::cout << "{\"type\":\"start\",\"backend\":\"" << backend->backend_name() << "\""
+                  << ",\"version\":\"" << m110a::version() << "\""
+                  << ",\"build\":" << m110a::BUILD_NUMBER
+                  << ",\"commit\":\"" << m110a::GIT_COMMIT << "\""
+                  << ",\"branch\":\"" << m110a::GIT_BRANCH << "\""
                   << ",\"mode_detection\":\"" << (use_auto_detect ? "AUTO" : "KNOWN") << "\""
                   << ",\"equalizers\":[";
         for (size_t i = 0; i < eq_list.size(); i++) {
