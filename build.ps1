@@ -345,6 +345,8 @@ Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "M110A Modem Build System" -ForegroundColor Cyan  
 Write-Host "============================================" -ForegroundColor Cyan
 
+$buildTimer = [System.Diagnostics.Stopwatch]::StartNew()
+
 Set-Location $ProjectRoot
 
 if ($Clean) {
@@ -452,6 +454,10 @@ Write-Host "  git commit -m `"Release $versionStr`"" -ForegroundColor DarkCyan
 Write-Host "  git push origin master" -ForegroundColor DarkCyan
 Write-Host "`nCI will auto-tag, build, and create GitHub release." -ForegroundColor Green
 
+$buildTimer.Stop()
+$elapsed = $buildTimer.Elapsed
+
 Write-Host "`n============================================" -ForegroundColor Cyan
 Write-Host "Build Complete" -ForegroundColor Green
+Write-Host "Time: $($elapsed.Minutes)m $($elapsed.Seconds).$($elapsed.Milliseconds.ToString('000'))s" -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Cyan
