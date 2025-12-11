@@ -250,3 +250,12 @@ if ($failed.Count -eq 0) {
 }
 Write-Host "Output: release/bin/" -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Cyan
+
+# Release instructions
+Write-Host ""
+Write-Host "TO TRIGGER GITHUB RELEASE:" -ForegroundColor Magenta
+Write-Host "  .\build.ps1 -Increment patch" -ForegroundColor White
+Write-Host "  git add -A" -ForegroundColor White
+Write-Host "  git commit -m 'Release: <description>'" -ForegroundColor White
+Write-Host "  git push origin master" -ForegroundColor White
+Write-Host ""

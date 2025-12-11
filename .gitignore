@@ -26,3 +26,6 @@ gpg/private_key.asc
 gpg/gnupg/
 gpg/*.exe
 gpg/GnuPG/
+
+# MELPe vocoder - ETSI/TI/Microsoft licensed, not for public distribution
+src/melpe_core/
