@@ -1,0 +1,47 @@
+Brain Modem RX Startup Discard Issue
+Background
+The Brain modem's output_rx_octet() function in g110a.cpp discards the first 26 bytes of every received transmission as "interleaver/Viterbi startup garbage":
+cpp#define RX_DISCARD_BYTES 26
+
+void Cm110s::output_rx_octet( unsigned char octet ) {
+    // Discard first RX_DISCARD_BYTES due to interleaver/Viterbi startup garbage
+    if (g_rx_discard_count < RX_DISCARD_BYTES) {
+        g_rx_discard_count++;
+        return;
+    }
+    rx_callbk( corrected );
+}
+Implications
+1. Minimum Message Length
+
+Messages shorter than ~30 bytes may be completely discarded
+Real-world protocols should pad or use longer packets
+
+2. Fading Channel Impact
+
+If signal fades and RX loses lock mid-transmission, it will re-sync
+Each re-sync triggers a fresh 26-byte discard
+Deep fades could cause repeated data loss beyond just the fade duration
+Example: 3 re-syncs during a transmission = 78 bytes lost to discard alone
+
+3. Auto-Detect Mode
+
+Brain RX only supports auto-detect (no explicit mode setting)
+Auto-detect requires preamble lock before data delivery
+If preamble is corrupted or partially missed, sync may take longer
+Late sync + 26-byte discard = significant leading data loss
+
+4. Short Interleave vs Long Interleave
+
+The 26-byte discard appears tuned for short interleave modes
+Long interleave modes may need different handling (larger interleaver blocks)
+
+Recommendations for Protocol Design
+
+Use message lengths >> 30 bytes
+Include redundant header/sync at message start
+Consider ARQ for critical data
+Account for ~30 byte "warm-up" period in throughput calculations
+
+
+This explains why the 4-byte "TEST" sanity check failed - it was entirely consumed by the discard window.

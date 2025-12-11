@@ -257,13 +257,28 @@ int main(int argc, char* argv[]) {
         if (g_json_output) {
             ostringstream s;
             s << "\"mode\":\"" << r.mode_name << "\""
+              // Pass/fail flags
               << ",\"pn_brain\":" << (r.pn_to_brain.pass ? "true" : "false")
               << ",\"brain_pn\":" << (r.brain_to_pn_set.pass ? "true" : "false")
               << ",\"brain_pn_set\":" << (r.brain_to_pn_set.pass ? "true" : "false")
               << ",\"brain_pn_auto\":" << (r.brain_to_pn_auto.pass ? "true" : "false")
               << ",\"auto\":" << (r.brain_to_pn_auto.pass ? "true" : "false")
+              // Detected modes
               << ",\"detected_pn\":\"" << r.brain_to_pn_auto.detected_mode << "\""
-              << ",\"detected_brain\":\"" << r.pn_to_brain.detected_mode << "\"";
+              << ",\"detected_brain\":\"" << r.pn_to_brain.detected_mode << "\""
+              // BER values
+              << ",\"ber_pn_brain\":" << fixed << setprecision(4) << r.pn_to_brain.ber
+              << ",\"ber_brain_pn_set\":" << r.brain_to_pn_set.ber
+              << ",\"ber_brain_pn_auto\":" << r.brain_to_pn_auto.ber
+              // Byte counts
+              << ",\"decoded_pn_brain\":" << r.pn_to_brain.decoded
+              << ",\"decoded_brain_pn_set\":" << r.brain_to_pn_set.decoded
+              << ",\"decoded_brain_pn_auto\":" << r.brain_to_pn_auto.decoded
+              << ",\"expected\":" << r.pn_to_brain.expected
+              // Error messages
+              << ",\"error_pn_brain\":\"" << r.pn_to_brain.error << "\""
+              << ",\"error_brain_pn_set\":\"" << r.brain_to_pn_set.error << "\""
+              << ",\"error_brain_pn_auto\":\"" << r.brain_to_pn_auto.error << "\"";
             json_evt("result", s.str());
         } else {
             auto fmt = [](const TestResult& t, bool show_mode = false) {

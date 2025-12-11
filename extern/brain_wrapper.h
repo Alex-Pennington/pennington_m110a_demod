@@ -184,7 +184,8 @@ public:
         }
         
         // Flush with silence (like brain_core server does)
-        std::vector<int16_t> flush(1920 * 3, 0);
+        // Need extra flush to fully drain the decoder pipeline
+        std::vector<int16_t> flush(1920 * 10, 0);  // 10 frames of silence
         for (size_t i = 0; i < flush.size(); i += BLOCK_SIZE) {
             int len = std::min(BLOCK_SIZE, static_cast<int>(flush.size() - i));
             modem_->rx_process_block(flush.data() + i, len);

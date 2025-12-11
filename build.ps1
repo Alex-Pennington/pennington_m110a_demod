@@ -31,7 +31,7 @@ USAGE:
     .\build.ps1 [options]
 
 OPTIONS:
-    -Target <target>      Build target: server, test, unified, gui, interop, all (default: all)
+    -Target <target>      Build target: server, test, unified, gui, interop, brain, all (default: all)
     -Increment <type>     Version increment: major, minor, patch
     -Clean                Clean build directory before building
     -j <n>                Parallel jobs for 'all' target (like make -j4)
@@ -362,6 +362,28 @@ function Build-InteropTest {
     }
 }
 
+function Build-BrainExhaustiveTest {
+    Write-Host "`n=== Building Brain Exhaustive Test ===" -ForegroundColor Yellow
+    
+    if (-not (Test-Path "extern/brain_core/m188110a/Cm110s.h")) {
+        Write-Host "  Brain core submodule not found. Run: git submodule update --init" -ForegroundColor Red
+        throw "Missing brain_core submodule"
+    }
+    
+    $sources = @("test/brain_exhaustive_test.cpp") + $BRAIN_SOURCES
+    
+    $cmd = "$CXX $CXXFLAGS -Iextern -Iextern/brain_core -o test/brain_exhaustive_test.exe $($sources -join ' ') $LDFLAGS"
+    Write-Host $cmd -ForegroundColor DarkGray
+    
+    Invoke-Expression $cmd
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Brain exhaustive test built successfully" -ForegroundColor Green
+    } else {
+        throw "Brain exhaustive test build failed"
+    }
+}
+
 function Clean-Build {
     Write-Host "`n=== Cleaning ===" -ForegroundColor Yellow
     
@@ -417,6 +439,9 @@ switch ($Target.ToLower()) {
     }
     "interop" {
         Build-InteropTest
+    }
+    "brain" {
+        Build-BrainExhaustiveTest
     }
     "all" {
         if ($j -gt 1) {
@@ -479,7 +504,7 @@ switch ($Target.ToLower()) {
     }
     default {
         Write-Host "Unknown target: $Target" -ForegroundColor Red
-        Write-Host "Valid targets: server, test, unified, unit, gui, interop, all" -ForegroundColor Yellow
+        Write-Host "Valid targets: server, test, unified, unit, gui, interop, brain, all" -ForegroundColor Yellow
         exit 1
     }
 }
