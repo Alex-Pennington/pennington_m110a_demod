@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file exhaustive_test.cpp
  * @brief Unified Exhaustive Modem Test Suite
  * 
@@ -14,6 +14,7 @@
  * 
  * Options:
  *   --iterations N  Number of test iterations (default: 1)
+ *   --duration N    Run for N seconds (overrides iterations)
  *   --mode MODE     Test only specific mode (e.g., 600S, 1200L)
  *   --report FILE   Output report file (auto-generated if not specified)
  *   --server        Use server backend instead of direct API
@@ -24,6 +25,7 @@
  *   --prog-freq     Progressive frequency offset test only
  *   --prog-multipath Progressive multipath test only
  *   --csv FILE      Output progressive results to CSV
+ *   --json          Machine-readable JSON lines output
  *   --help          Show this help
  */
 
@@ -394,8 +396,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // Force unbuffered stdout for real-time JSON output
+    std::cout.setf(std::ios::unitbuf);
+    
     // Configuration
     int max_iterations = 1;
+    int duration_seconds = 0;  // 0 = use iterations instead
     std::string mode_filter;
     std::vector<std::string> mode_list;  // List of specific modes
     std::vector<std::string> eq_list;    // List of equalizers to test
@@ -411,6 +417,7 @@ int main(int argc, char* argv[]) {
     std::string equalizer = "DFE";  // Default equalizer
     int parallel_threads = 1;  // Number of parallel threads (1 = sequential)
     bool use_auto_detect = false;  // Use auto-detection (default: known mode)
+    bool json_output = false;  // Machine-readable JSON output
     
     // Helper to split comma-separated string
     auto split_csv = [](const std::string& s) -> std::vector<std::string> {
@@ -435,6 +442,8 @@ int main(int argc, char* argv[]) {
         std::string arg = argv[i];
         if ((arg == "--iterations" || arg == "-n") && i + 1 < argc) {
             max_iterations = std::stoi(argv[++i]);
+        } else if ((arg == "--duration" || arg == "-d") && i + 1 < argc) {
+            duration_seconds = std::stoi(argv[++i]);
         } else if (arg == "--mode" && i + 1 < argc) {
             mode_filter = argv[++i];
         } else if (arg == "--report" && i + 1 < argc) {
@@ -480,6 +489,8 @@ int main(int argc, char* argv[]) {
             reference_mode = true;
         } else if (arg == "--use-auto-detect") {
             use_auto_detect = true;
+        } else if (arg == "--json") {
+            json_output = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << m110a::version_header() << "\n\n";
             std::cout << "Usage: " << argv[0] << " [options]\n\n";
@@ -490,6 +501,8 @@ int main(int argc, char* argv[]) {
             std::cout << "Standard Test Options:\n";
             std::cout << "  --iterations N  Number of test iterations (default: 1)\n";
             std::cout << "  -n N            Short form of --iterations\n";
+            std::cout << "  --duration N    Run for N seconds (overrides iterations)\n";
+            std::cout << "  -d N            Short form of --duration\n";
             std::cout << "  --mode MODE     Test only specific mode (e.g., 600S, 1200L)\n";
             std::cout << "                  Use 'SHORT' for all short, 'LONG' for all long\n";
             std::cout << "  --modes LIST    Comma-separated list of modes (e.g., 600S,1200L,2400S)\n";
@@ -510,6 +523,8 @@ int main(int argc, char* argv[]) {
             std::cout << "Performance Options:\n";
             std::cout << "  --parallel N    Run N tests in parallel (Direct API only)\n";
             std::cout << "  -j N            Short form of --parallel\n\n";
+            std::cout << "Output Options:\n";
+            std::cout << "  --json          Machine-readable JSON lines output\n\n";
             std::cout << "Reference Sample Test Options:\n";
             std::cout << "  --reference     Test Brain Modem reference samples for interoperability\n";
             std::cout << "  --ref           Short form of --reference\n";
@@ -554,71 +569,114 @@ int main(int argc, char* argv[]) {
         backend = std::make_unique<DirectBackend>(42, use_auto_detect);
     }
     
-    // Print header
-    std::cout << "==============================================\n";
-    std::cout << m110a::version_header() << "\n";
-    std::cout << "==============================================\n";
-    std::cout << m110a::build_info() << "\n";
-    std::cout << "Backend: " << backend->backend_name() << "\n";
-    std::cout << "Mode Detection: " << (use_auto_detect ? "AUTO (tests AFC+detection)" : "KNOWN (AFC-friendly)") << "\n";
-    
     // Build equalizer list (use eq_list if provided, else single equalizer)
     if (eq_list.empty()) {
         eq_list.push_back(equalizer);
     }
-    std::cout << "Equalizers: ";
-    for (size_t i = 0; i < eq_list.size(); i++) {
-        if (i > 0) std::cout << ", ";
-        std::cout << eq_list[i];
-    }
-    std::cout << "\n";
     
-    if (progressive_mode) {
-        std::cout << "Mode: PROGRESSIVE (find mode limits)\n";
-        std::cout << "Tests: ";
-        if (prog_snr) std::cout << "SNR ";
-        if (prog_freq) std::cout << "Freq ";
-        if (prog_multipath) std::cout << "Multipath ";
+    // Print header (only if not JSON mode)
+    if (!json_output) {
+        std::cout << "==============================================\n";
+        std::cout << m110a::version_header() << "\n";
+        std::cout << "==============================================\n";
+        std::cout << m110a::build_info() << "\n";
+        std::cout << "Backend: " << backend->backend_name() << "\n";
+        std::cout << "Mode Detection: " << (use_auto_detect ? "AUTO (tests AFC+detection)" : "KNOWN (AFC-friendly)") << "\n";
+        
+        std::cout << "Equalizers: ";
+        for (size_t i = 0; i < eq_list.size(); i++) {
+            if (i > 0) std::cout << ", ";
+            std::cout << eq_list[i];
+        }
+        std::cout << "\n";
+        
+        if (progressive_mode) {
+            std::cout << "Mode: PROGRESSIVE (find mode limits)\n";
+            std::cout << "Tests: ";
+            if (prog_snr) std::cout << "SNR ";
+            if (prog_freq) std::cout << "Freq ";
+            if (prog_multipath) std::cout << "Multipath ";
+            std::cout << "\n";
+        } else if (duration_seconds > 0) {
+            std::cout << "Duration: " << duration_seconds << " seconds\n";
+        } else {
+            std::cout << "Iterations: " << max_iterations << "\n";
+        }
+        if (!mode_filter.empty()) {
+            std::cout << "Mode Filter: " << mode_filter << "\n";
+        }
+        
+        // Show parallel info (only for direct backend)
+        if (parallel_threads > 1 && !use_server) {
+            std::cout << "Parallel: " << parallel_threads << " threads\n";
+        } else if (parallel_threads > 1 && use_server) {
+            std::cout << "Note: Parallel execution not supported with server backend\n";
+            parallel_threads = 1;
+        }
         std::cout << "\n";
     } else {
-        std::cout << "Iterations: " << max_iterations << "\n";
+        // JSON start message
+        std::cout << "{\"type\":\"start\",\"backend\":\"" << backend->backend_name() << "\""
+                  << ",\"mode_detection\":\"" << (use_auto_detect ? "AUTO" : "KNOWN") << "\""
+                  << ",\"equalizers\":[";
+        for (size_t i = 0; i < eq_list.size(); i++) {
+            if (i > 0) std::cout << ",";
+            std::cout << "\"" << eq_list[i] << "\"";
+        }
+        std::cout << "]";
+        if (duration_seconds > 0) {
+            std::cout << ",\"duration_sec\":" << duration_seconds;
+        } else {
+            std::cout << ",\"iterations\":" << max_iterations;
+        }
+        if (!mode_filter.empty()) {
+            std::cout << ",\"mode_filter\":\"" << mode_filter << "\"";
+        }
+        std::cout << "}\n" << std::flush;
+        
+        // Suppress parallel warning in JSON mode
+        if (parallel_threads > 1 && use_server) {
+            parallel_threads = 1;
+        }
     }
-    if (!mode_filter.empty()) {
-        std::cout << "Mode Filter: " << mode_filter << "\n";
-    }
-    
-    // Show parallel info (only for direct backend)
-    if (parallel_threads > 1 && !use_server) {
-        std::cout << "Parallel: " << parallel_threads << " threads\n";
-    } else if (parallel_threads > 1 && use_server) {
-        std::cout << "Note: Parallel execution not supported with server backend\n";
-        parallel_threads = 1;
-    }
-    std::cout << "\n";
     
     // Connect
     if (!backend->connect()) {
-        std::cerr << "ERROR: Cannot connect to backend\n";
-        if (use_server) {
-            std::cerr << "Make sure the server is running: m110a_server.exe\n";
+        if (json_output) {
+            std::cout << "{\"type\":\"error\",\"message\":\"Cannot connect to backend\"}\n" << std::flush;
+        } else {
+            std::cerr << "ERROR: Cannot connect to backend\n";
+            if (use_server) {
+                std::cerr << "Make sure the server is running: m110a_server.exe\n";
+            }
         }
         return 1;
     }
     
-    std::cout << "Connected.\n";
+    if (!json_output) {
+        std::cout << "Connected.\n";
+    } else {
+        std::cout << "{\"type\":\"info\",\"message\":\"Connected\"}\n" << std::flush;
+    }
     
     // Validate all equalizers (must be after connect for server backend)
     for (const auto& eq : eq_list) {
         if (!backend->set_equalizer(eq)) {
-            std::cerr << "Invalid equalizer type: " << eq << "\n";
-            std::cerr << "Valid types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO\n";
+            if (json_output) {
+                std::cout << "{\"type\":\"error\",\"message\":\"Invalid equalizer: " << eq << "\"}\n" << std::flush;
+            } else {
+                std::cerr << "Invalid equalizer type: " << eq << "\n";
+                std::cerr << "Valid types: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO\n";
+            }
             return 1;
         }
     }
     // Set back to first equalizer
     backend->set_equalizer(eq_list[0]);
     
-    std::cout << "\n";
+    if (!json_output) {
+        std::cout << "\n";
+    }
     
     // ================================================================
     // Reference Sample Test Mode
@@ -706,7 +764,11 @@ int main(int argc, char* argv[]) {
     }
     
     if (modes.empty()) {
-        std::cerr << "ERROR: No modes match filter\n";
+        if (json_output) {
+            std::cout << "{\"type\":\"error\",\"message\":\"No modes match filter\"}\n" << std::flush;
+        } else {
+            std::cerr << "ERROR: No modes match filter\n";
+        }
         return 1;
     }
     
@@ -810,36 +872,42 @@ int main(int argc, char* argv[]) {
     
     TestResults results;
     auto start_time = steady_clock::now();
+    steady_clock::time_point end_time;
+    bool use_duration = duration_seconds > 0;
     
-    // Build list of all test combinations
-    struct TestJob {
-        std::string eq;
-        ModeInfo mode;
-        ChannelCondition channel;
-        std::string record_name;
-    };
+    if (use_duration) {
+        end_time = start_time + seconds(duration_seconds);
+        max_iterations = 999999;  // Effectively unlimited
+    }
     
-    std::vector<TestJob> all_jobs;
-    for (int iter = 0; iter < max_iterations; iter++) {
-        for (const auto& eq : eq_list) {
-            for (const auto& mode : modes) {
-                for (const auto& channel : channels) {
-                    // No skipping - this is EXHAUSTIVE testing
-                    
-                    TestJob job;
-                    job.eq = eq;
-                    job.mode = mode;
-                    job.channel = channel;
-                    job.record_name = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
-                    all_jobs.push_back(job);
+    // Parallel execution (only for iteration mode, not duration mode)
+    if (parallel_threads > 1 && !use_server && !use_duration) {
+        // Build list of all test combinations for parallel execution
+        struct TestJob {
+            std::string eq;
+            ModeInfo mode;
+            ChannelCondition channel;
+            std::string record_name;
+        };
+        
+        std::vector<TestJob> all_jobs;
+        for (int iter = 0; iter < max_iterations; iter++) {
+            for (const auto& eq : eq_list) {
+                for (const auto& mode : modes) {
+                    for (const auto& channel : channels) {
+                        TestJob job;
+                        job.eq = eq;
+                        job.mode = mode;
+                        job.channel = channel;
+                        job.record_name = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
+                        all_jobs.push_back(job);
+                    }
                 }
             }
         }
-    }
-    
-    // Parallel execution
-    if (parallel_threads > 1 && !use_server) {
-        std::cout << "Running " << all_jobs.size() << " tests with " << parallel_threads << " threads...\n";
+        if (!json_output) {
+            std::cout << "Running " << all_jobs.size() << " tests with " << parallel_threads << " threads...\n";
+        }
         
         ParallelProgress progress;
         progress.init((int)all_jobs.size());
@@ -882,14 +950,22 @@ int main(int argc, char* argv[]) {
         
         pool.wait_all();
         progress.print_status();
-        std::cout << "\n";
+        if (!json_output) std::cout << "\n";
         
     } else {
-        // Sequential execution (original code)
+        // Sequential execution
         int iteration = 0;
+        bool should_stop = false;
         
-        while (iteration < max_iterations) {
+        while (!should_stop) {
             iteration++;
+            
+            // Check termination condition
+            if (use_duration) {
+                if (steady_clock::now() >= end_time) break;
+            } else {
+                if (iteration > max_iterations) break;
+            }
             
             for (const auto& eq : eq_list) {
                 backend->set_equalizer(eq);
@@ -898,15 +974,17 @@ int main(int argc, char* argv[]) {
                     // No skipping - this is EXHAUSTIVE testing
                     
                     for (const auto& channel : channels) {
-                        // No skipping - this is EXHAUSTIVE testing
+                        // Check time again for duration mode
+                        if (use_duration && steady_clock::now() >= end_time) {
+                            should_stop = true;
+                            break;
+                        }
                         
                         auto now = steady_clock::now();
                         auto elapsed = (int)duration_cast<seconds>(now - start_time).count();
                         
                         // Include eq in display
                         std::string mode_with_eq = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
-                        print_progress(elapsed, mode_with_eq, channel.name, results.total_tests,
-                                       results.overall_pass_rate(), iteration, max_iterations);
                         
                         double ber;
                         bool passed = backend->run_test(mode, channel, test_data, ber);
@@ -914,8 +992,29 @@ int main(int argc, char* argv[]) {
                         // Record with eq prefix if multiple equalizers
                         std::string record_name = (eq_list.size() > 1) ? eq + ":" + mode.name : mode.name;
                         results.record(record_name, channel.name, passed, ber);
+                        
+                        // Output progress
+                        if (json_output) {
+                            std::cout << "{\"type\":\"test\""
+                                      << ",\"elapsed\":" << elapsed
+                                      << ",\"mode\":\"" << mode_with_eq << "\""
+                                      << ",\"channel\":\"" << channel.name << "\""
+                                      << ",\"tests\":" << results.total_tests
+                                      << ",\"passed\":" << results.total_passed()
+                                      << ",\"rate\":" << std::fixed << std::setprecision(1) << results.overall_pass_rate()
+                                      << ",\"result\":\"" << (passed ? "PASS" : "FAIL") << "\""
+                                      << ",\"ber\":" << std::scientific << std::setprecision(6) << ber
+                                      << ",\"iter\":" << iteration
+                                      << ",\"max_iter\":" << max_iterations
+                                      << "}\n" << std::flush;
+                        } else {
+                            print_progress(elapsed, mode_with_eq, channel.name, results.total_tests,
+                                           results.overall_pass_rate(), iteration, max_iterations);
+                        }
                     }
+                    if (should_stop) break;
                 }
+                if (should_stop) break;
             }
         }
     }
@@ -924,19 +1023,76 @@ int main(int argc, char* argv[]) {
     results.duration_seconds = (int)duration_cast<seconds>(
         steady_clock::now() - start_time).count();
     
-    // Print results
-    std::cout << "\n\n";
-    std::cout << "==============================================\n";
-    std::cout << "EXHAUSTIVE TEST RESULTS\n";
-    std::cout << "==============================================\n";
-    std::cout << "Duration: " << results.duration_seconds << " seconds\n";
-    std::cout << "Iterations: " << results.iterations << "\n";
-    std::cout << "Total Tests: " << results.total_tests << "\n";
+    // Calculate rating
+    std::string rating;
+    double rate = results.overall_pass_rate();
+    if (rate >= 95.0) rating = "EXCELLENT";
+    else if (rate >= 80.0) rating = "GOOD";
+    else if (rate >= 60.0) rating = "FAIR";
+    else rating = "NEEDS WORK";
     
-    print_results_by_mode(results);
-    print_results_by_channel(results);
-    print_mode_channel_matrix(results);
-    print_summary(results);
+    // Print results
+    if (json_output) {
+        // Mode stats
+        for (const auto& [mode, stats] : results.mode_stats) {
+            std::cout << "{\"type\":\"mode_stats\""
+                      << ",\"mode\":\"" << mode << "\""
+                      << ",\"passed\":" << stats.passed
+                      << ",\"failed\":" << stats.failed
+                      << ",\"total\":" << stats.total
+                      << ",\"rate\":" << std::fixed << std::setprecision(1) << stats.pass_rate()
+                      << ",\"avg_ber\":" << std::scientific << std::setprecision(6) << stats.avg_ber()
+                      << "}\n" << std::flush;
+        }
+        
+        // Channel stats
+        for (const auto& [channel, stats] : results.channel_stats) {
+            std::cout << "{\"type\":\"channel_stats\""
+                      << ",\"channel\":\"" << channel << "\""
+                      << ",\"passed\":" << stats.passed
+                      << ",\"failed\":" << stats.failed
+                      << ",\"total\":" << stats.total
+                      << ",\"rate\":" << std::fixed << std::setprecision(1) << stats.pass_rate()
+                      << ",\"avg_ber\":" << std::scientific << std::setprecision(6) << stats.avg_ber()
+                      << "}\n" << std::flush;
+        }
+        
+        // Final summary
+        double avg_ber = 0.0;
+        int ber_count = 0;
+        for (const auto& [_, stats] : results.mode_stats) {
+            if (stats.ber_tests > 0) {
+                avg_ber += stats.total_ber;
+                ber_count += stats.ber_tests;
+            }
+        }
+        if (ber_count > 0) avg_ber /= ber_count;
+        
+        std::cout << "{\"type\":\"done\""
+                  << ",\"duration\":" << results.duration_seconds
+                  << ",\"iterations\":" << results.iterations
+                  << ",\"tests\":" << results.total_tests
+                  << ",\"passed\":" << results.total_passed()
+                  << ",\"failed\":" << results.total_failed()
+                  << ",\"rate\":" << std::fixed << std::setprecision(1) << results.overall_pass_rate()
+                  << ",\"avg_ber\":" << std::scientific << std::setprecision(6) << avg_ber
+                  << ",\"rating\":\"" << rating << "\""
+                  << ",\"report\":\"" << report_file << "\""
+                  << "}\n" << std::flush;
+    } else {
+        std::cout << "\n\n";
+        std::cout << "==============================================\n";
+        std::cout << "EXHAUSTIVE TEST RESULTS\n";
+        std::cout << "==============================================\n";
+        std::cout << "Duration: " << results.duration_seconds << " seconds\n";
+        std::cout << "Iterations: " << results.iterations << "\n";
+        std::cout << "Total Tests: " << results.total_tests << "\n";
+        
+        print_results_by_mode(results);
+        print_results_by_channel(results);
+        print_mode_channel_matrix(results);
+        print_summary(results);
+    }
     
     // Generate report
     generate_markdown_report(report_file, results, backend->backend_name(),

@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file server.h
- * @brief HTTP server for test GUI
+ * @brief HTTP server for test GUI - parses JSON output from exhaustive_test.exe
  */
 
 #include "utils.h"
@@ -18,6 +18,7 @@
 #include <fstream>
 #include <random>
 #include <ctime>
+#include <cstdio>
 
 namespace fs = std::filesystem;
 
@@ -212,7 +213,6 @@ private:
         std::string host = params.count("host") ? params["host"] : "127.0.0.1";
         int port = params.count("port") ? std::stoi(params["port"]) : 5100;
         
-        // Try to connect
         SOCKET test_sock = socket(AF_INET, SOCK_STREAM, 0);
         if (test_sock == INVALID_SOCKET) {
             send_json(client, "{\"success\":false,\"error\":\"Socket creation failed\"}");
@@ -236,7 +236,6 @@ private:
             return;
         }
         
-        // Read welcome/version
         char buf[256];
         int n = recv(test_sock, buf, sizeof(buf) - 1, 0);
         closesocket(test_sock);
@@ -253,73 +252,235 @@ private:
         }
     }
     
-    // Run exhaustive test
+    // ================================================================
+    // Run exhaustive test - Uses JSON output from exhaustive_test.exe
+    // ================================================================
     void handle_run_exhaustive(SOCKET client, const std::string& path) {
         auto params = parse_query_string(path);
-        std::string config_json = params.count("config") ? params["config"] : "{}";
         
         // Send SSE headers
         send_sse_headers(client);
         
         stop_test_ = false;
         
-        // Parse basic config (simplified - in production would use JSON parser)
-        int duration_sec = 180;
+        // Find exhaustive_test.exe
+        std::string test_exe;
+        std::vector<std::string> search_paths = {
+            exe_dir_ + "exhaustive_test.exe",
+            exe_dir_ + "..\\exhaustive_test.exe",
+            exe_dir_ + "..\\test\\exhaustive_test.exe",
+            "exhaustive_test.exe"
+        };
         
-        auto start_time = std::chrono::steady_clock::now();
-        auto end_time = start_time + std::chrono::seconds(duration_sec);
-        
-        int tests = 0, passed = 0, iteration = 0;
-        
-        send_sse(client, "{\"output\":\"Starting exhaustive test...\",\"type\":\"header\"}");
-        
-        while (!stop_test_ && std::chrono::steady_clock::now() < end_time) {
-            iteration++;
-            
-            // Simulated test execution
-            // In real implementation, this would call the modem API
-            tests++;
-            bool success = (rand() % 100) < 95; // 95% pass rate simulation
-            if (success) passed++;
-            
-            double rate = tests > 0 ? 100.0 * passed / tests : 0.0;
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - start_time).count();
-            auto remaining = duration_sec - elapsed;
-            double progress = 100.0 * elapsed / duration_sec;
-            
-            std::ostringstream json;
-            json << "{\"tests\":" << tests 
-                 << ",\"passed\":" << passed
-                 << ",\"rate\":" << rate
-                 << ",\"progress\":" << progress
-                 << ",\"elapsed\":\"" << (elapsed / 60) << ":" << std::setw(2) << std::setfill('0') << (elapsed % 60) << "\""
-                 << ",\"remaining\":\"" << remaining << "s\""
-                 << ",\"iteration\":" << iteration
-                 << ",\"currentTest\":\"Mode " << (tests % 13) << " iteration " << iteration << "\""
-                 << "}";
-            send_sse(client, json.str());
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        for (const auto& p : search_paths) {
+            if (fs::exists(p)) {
+                test_exe = p;
+                break;
+            }
         }
         
-        // Final results
-        double final_rate = tests > 0 ? 100.0 * passed / tests : 0.0;
-        std::string rating = final_rate >= 95 ? "EXCELLENT" : final_rate >= 80 ? "GOOD" : final_rate >= 60 ? "FAIR" : "NEEDS WORK";
+        if (test_exe.empty()) {
+            send_sse(client, "{\"output\":\"ERROR: exhaustive_test.exe not found\",\"done\":true}");
+            return;
+        }
         
-        std::ostringstream summary;
-        summary << "{\"output\":\"\\n=== SUMMARY ===\\nTests: " << tests 
-                << "\\nPassed: " << passed 
-                << "\\nRate: " << std::fixed << std::setprecision(1) << final_rate << "%"
-                << "\\nRating: " << rating << "\""
-                << ",\"type\":\"header\",\"done\":true}";
-        send_sse(client, summary.str());
+        // Parse parameters
+        int duration_sec = params.count("duration") ? std::stoi(params["duration"]) : 180;
+        std::string modes_str = params.count("modes") ? url_decode(params["modes"]) : "";
         
-        // Store last results for export
-        last_results_.total_tests = tests;
-        last_results_.total_passed = passed;
-        last_results_.iterations = iteration;
-        last_results_.rating = rating;
+        // Build command with --json flag for machine-readable output
+        std::ostringstream cmd;
+        cmd << "\"" << test_exe << "\" --json --duration " << duration_sec;
+        
+        if (!modes_str.empty() && modes_str != "all") {
+            cmd << " --mode " << modes_str;
+        }
+        
+        send_sse(client, "{\"output\":\"Executing: " + json_escape(cmd.str()) + "\",\"type\":\"header\"}");
+        
+#ifdef _WIN32
+        FILE* pipe = _popen(cmd.str().c_str(), "r");
+        if (!pipe) {
+            send_sse(client, "{\"output\":\"ERROR: Could not start exhaustive_test.exe\",\"done\":true}");
+            return;
+        }
+        
+        char buffer[2048];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr && !stop_test_) {
+            std::string line(buffer);
+            
+            // Remove trailing newline
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+                line.pop_back();
+            }
+            
+            if (line.empty()) continue;
+            
+            // Skip non-JSON lines (debug output like [RX DEBUG], [RX] extract_data, etc.)
+            if (line[0] != '{') {
+                // Optionally log to console for debugging
+                // std::cout << "[SKIPPED] " << line << "\n";
+                continue;
+            }
+            
+            // The exhaustive_test outputs JSON lines - forward them directly
+            // but wrap in our SSE format
+            if (line[0] == '{') {
+                // Parse the JSON to extract key fields for our UI
+                std::string type = extract_json_value(line, "type");
+                
+                if (type == "test") {
+                    // Individual test result
+                    std::string mode = extract_json_value(line, "mode");
+                    std::string channel = extract_json_value(line, "channel");
+                    std::string tests = extract_json_value(line, "tests");
+                    std::string passed = extract_json_value(line, "passed");
+                    std::string rate = extract_json_value(line, "rate");
+                    std::string result = extract_json_value(line, "result");
+                    std::string ber = extract_json_value(line, "ber");
+                    std::string elapsed = extract_json_value(line, "elapsed");
+                    
+                    // Forward to browser with our SSE format
+                    std::ostringstream sse;
+                    sse << "{\"output\":\"[" << elapsed << "s] " << mode << " + " << channel 
+                        << " | " << result << "\""
+                        << ",\"tests\":" << tests
+                        << ",\"passed\":" << passed
+                        << ",\"rate\":" << rate
+                        << ",\"elapsed\":\"" << elapsed << "s\""
+                        << ",\"currentTest\":\"" << mode << " + " << channel << "\""
+                        << ",\"ber\":" << ber
+                        << "}";
+                    send_sse(client, sse.str());
+                    
+                    // Store for export
+                    last_results_.total_tests = std::stoi(tests);
+                    last_results_.total_passed = std::stoi(passed);
+                }
+                else if (type == "mode_stats") {
+                    std::string mode = extract_json_value(line, "mode");
+                    std::string passed = extract_json_value(line, "passed");
+                    std::string failed = extract_json_value(line, "failed");
+                    std::string total = extract_json_value(line, "total");
+                    std::string rate = extract_json_value(line, "rate");
+                    
+                    std::ostringstream sse;
+                    sse << "{\"output\":\"Mode " << mode << ": " << passed << "/" 
+                        << total << " (" << rate << "%)\""
+                        << ",\"type\":\"mode_stat\""
+                        << ",\"mode\":\"" << mode << "\""
+                        << ",\"passed\":" << passed
+                        << ",\"failed\":" << failed
+                        << ",\"total\":" << total
+                        << ",\"rate\":" << rate
+                        << "}";
+                    send_sse(client, sse.str());
+                }
+                else if (type == "channel_stats") {
+                    std::string channel = extract_json_value(line, "channel");
+                    std::string passed = extract_json_value(line, "passed");
+                    std::string failed = extract_json_value(line, "failed");
+                    std::string total = extract_json_value(line, "total");
+                    std::string rate = extract_json_value(line, "rate");
+                    std::string avg_ber = extract_json_value(line, "avg_ber");
+                    
+                    std::ostringstream sse;
+                    sse << "{\"output\":\"Channel " << channel << ": " << rate << "%\""
+                        << ",\"type\":\"channel_stat\""
+                        << ",\"channel\":\"" << channel << "\""
+                        << ",\"passed\":" << passed
+                        << ",\"failed\":" << failed
+                        << ",\"total\":" << total
+                        << ",\"rate\":" << rate
+                        << ",\"avgBer\":" << avg_ber
+                        << "}";
+                    send_sse(client, sse.str());
+                }
+                else if (type == "done") {
+                    std::string tests = extract_json_value(line, "tests");
+                    std::string passed = extract_json_value(line, "passed");
+                    std::string failed = extract_json_value(line, "failed");
+                    std::string rate = extract_json_value(line, "rate");
+                    std::string rating = extract_json_value(line, "rating");
+                    std::string duration = extract_json_value(line, "duration");
+                    std::string avg_ber = extract_json_value(line, "avg_ber");
+                    
+                    // Final summary
+                    std::ostringstream sse;
+                    sse << "{\"output\":\"\\n=== TEST COMPLETE ===\\n"
+                        << "Tests: " << tests << "\\n"
+                        << "Passed: " << passed << "\\n"
+                        << "Failed: " << failed << "\\n"
+                        << "Rate: " << rate << "%\\n"
+                        << "Rating: " << rating << "\""
+                        << ",\"done\":true"
+                        << ",\"tests\":" << tests
+                        << ",\"passed\":" << passed
+                        << ",\"failed\":" << failed
+                        << ",\"rate\":" << rate
+                        << ",\"rating\":\"" << rating << "\""
+                        << ",\"avgBer\":" << avg_ber
+                        << ",\"progress\":100"
+                        << "}";
+                    send_sse(client, sse.str());
+                    
+                    // Store for export
+                    last_results_.total_tests = std::stoi(tests);
+                    last_results_.total_passed = std::stoi(passed);
+                    last_results_.rating = rating;
+                }
+                else if (type == "info") {
+                    std::string message = extract_json_value(line, "message");
+                    send_sse(client, "{\"output\":\"" + json_escape(message) + "\",\"type\":\"info\"}");
+                }
+                else if (type == "error") {
+                    std::string message = extract_json_value(line, "message");
+                    send_sse(client, "{\"output\":\"ERROR: " + json_escape(message) + "\",\"type\":\"error\"}");
+                }
+                else if (type == "start") {
+                    std::string backend = extract_json_value(line, "backend");
+                    send_sse(client, "{\"output\":\"Backend: " + json_escape(backend) + "\",\"type\":\"header\"}");
+                }
+            }
+        }
+        
+        int result = _pclose(pipe);
+        
+        if (stop_test_) {
+            send_sse(client, "{\"output\":\"\\n=== TEST STOPPED BY USER ===\",\"type\":\"warning\",\"done\":true}");
+        }
+#else
+        send_sse(client, "{\"output\":\"Linux not supported yet\",\"done\":true}");
+#endif
+    }
+    
+    // Simple JSON value extractor (no external dependency)
+    std::string extract_json_value(const std::string& json, const std::string& key) {
+        std::string search = "\"" + key + "\":";
+        size_t pos = json.find(search);
+        if (pos == std::string::npos) return "";
+        
+        pos += search.length();
+        
+        // Skip whitespace
+        while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+        
+        if (pos >= json.size()) return "";
+        
+        if (json[pos] == '"') {
+            // String value
+            pos++;
+            size_t end = json.find('"', pos);
+            if (end == std::string::npos) return "";
+            return json.substr(pos, end - pos);
+        } else {
+            // Number or other value
+            size_t end = pos;
+            while (end < json.size() && json[end] != ',' && json[end] != '}' && json[end] != ' ') {
+                end++;
+            }
+            return json.substr(pos, end - pos);
+        }
     }
     
     // Reports
@@ -400,22 +561,24 @@ private:
             md << "## Results\n\n";
             md << "- Total Tests: " << last_results_.total_tests << "\n";
             md << "- Passed: " << last_results_.total_passed << "\n";
+            md << "- Failed: " << (last_results_.total_tests - last_results_.total_passed) << "\n";
             md << "- Rating: " << last_results_.rating << "\n";
             send_response(client, "text/markdown", md.str());
         }
         else if (path == "/export-csv") {
             std::ostringstream csv;
-            csv << "Category,Passed,Failed,Total,Rate,AvgBER\n";
+            csv << "Category,Passed,Failed,Total,Rate\n";
             csv << "Total," << last_results_.total_passed << "," 
                 << (last_results_.total_tests - last_results_.total_passed) << ","
                 << last_results_.total_tests << ","
-                << (last_results_.total_tests > 0 ? 100.0 * last_results_.total_passed / last_results_.total_tests : 0) << ",0\n";
+                << (last_results_.total_tests > 0 ? 100.0 * last_results_.total_passed / last_results_.total_tests : 0) << "\n";
             send_response(client, "text/csv", csv.str());
         }
         else {
             std::ostringstream json;
             json << "{\"total\":" << last_results_.total_tests
                  << ",\"passed\":" << last_results_.total_passed
+                 << ",\"failed\":" << (last_results_.total_tests - last_results_.total_passed)
                  << ",\"rating\":\"" << last_results_.rating << "\"}";
             send_json(client, json.str());
         }

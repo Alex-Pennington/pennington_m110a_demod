@@ -7,6 +7,8 @@
  * - Run Tests tab with comprehensive configuration
  * - Cross-Modem Interop tab
  * - Reports tab
+ * 
+ * Updated to work with JSON output from exhaustive_test.exe --json
  */
 
 namespace test_gui {
@@ -144,11 +146,20 @@ const char* HTML_PAGE = R"HTML(
         .output-line.header { color: #00d4ff; font-weight: bold; }
         .output-line.pass { color: #00ff88; }
         .output-line.fail { color: #ff3a50; }
+        .output-line.warning { color: #ffaa00; }
+        .output-line.error { color: #ff3a50; }
         
         /* Export bar */
         .export-bar { background: #0f0f1a; border: 1px solid #1e1e2e; border-radius: 4px; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
         .export-label { font-size: 11px; color: #6a7080; }
         .export-buttons { display: flex; gap: 8px; }
+        
+        /* Rating badge */
+        .rating-badge { display: inline-block; padding: 4px 12px; border-radius: 4px; font-weight: bold; font-size: 14px; }
+        .rating-excellent { background: #00ff88; color: #000; }
+        .rating-good { background: #00d4ff; color: #000; }
+        .rating-fair { background: #ffaa00; color: #000; }
+        .rating-poor { background: #ff3a50; color: #fff; }
         
         /* Interop styles */
         .interop-section { background: #0f3460; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
@@ -327,7 +338,6 @@ const char* HTML_PAGE = R"HTML(
                             <div class="checkbox-item"><input type="checkbox" id="mode-1200l" checked><label for="mode-1200l">1200L</label></div>
                             <div class="checkbox-item"><input type="checkbox" id="mode-2400s" checked><label for="mode-2400s">2400S</label></div>
                             <div class="checkbox-item"><input type="checkbox" id="mode-2400l" checked><label for="mode-2400l">2400L</label></div>
-                            <div class="checkbox-item"><input type="checkbox" id="mode-4800s" checked><label for="mode-4800s">4800S</label></div>
                         </div>
                     </div>
                     
@@ -440,25 +450,37 @@ const char* HTML_PAGE = R"HTML(
                         <div class="progress-details">
                             <span>Elapsed: <span id="elapsed-time">0:00</span></span>
                             <span>Remaining: <span id="remaining-time">—</span></span>
-                            <span>Iteration: <span id="iteration">0</span></span>
+                            <span>Rating: <span id="test-rating">—</span></span>
                         </div>
                     </div>
                     
-                    <!-- Results Table -->
+                    <!-- Results Tables -->
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                        <!-- Modes Table -->
+                        <div class="results-table-container">
+                            <table class="results-table">
+                                <thead><tr><th>Mode</th><th class="num">Passed</th><th class="num">Failed</th><th class="num">Total</th><th class="num">Rate</th></tr></thead>
+                                <tbody id="modes-body">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                        
+                        <!-- Channels Table -->
+                        <div class="results-table-container">
+                            <table class="results-table">
+                                <thead><tr><th>Channel</th><th class="num">Passed</th><th class="num">Failed</th><th class="num">Total</th><th class="num">Rate</th></tr></thead>
+                                <tbody id="results-body">
+                                    <!-- Populated dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Totals Row -->
                     <div class="results-table-container">
                         <table class="results-table">
-                            <thead><tr><th>Category</th><th class="num">Passed</th><th class="num">Failed</th><th class="num">Total</th><th class="num">Rate</th><th class="num">Avg BER</th></tr></thead>
-                            <tbody id="results-body">
-                                <tr><td>Clean Loopback</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                                <tr><td>AWGN Channel</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                                <tr><td>Multipath</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                                <tr><td>Freq Offset</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                                <tr><td>Message Sizes</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                                <tr><td>Random Data</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                                <tr><td>DFE Equalizer</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                                <tr><td>MLSE Equalizer</td><td class="num pass">—</td><td class="num fail">—</td><td class="num">—</td><td class="num rate">—</td><td class="num">—</td></tr>
-                            </tbody>
-                            <tfoot><tr><td>TOTAL</td><td class="num pass" id="total-passed">—</td><td class="num fail" id="total-failed">—</td><td class="num" id="total-tests">—</td><td class="num rate" id="total-rate">—</td><td class="num" id="total-ber">—</td></tr></tfoot>
+                            <tbody><tr style="background: #1a1a2a; font-weight: bold;"><td>TOTAL</td><td class="num pass" id="total-passed">—</td><td class="num fail" id="total-failed">—</td><td class="num" id="total-tests">—</td><td class="num rate" id="total-rate">—</td><td class="num" id="total-ber">—</td></tr></tbody>
                         </table>
                     </div>
                     
@@ -587,6 +609,8 @@ const char* HTML_PAGE = R"HTML(
         let currentBackend = 'direct';
         let pnServerRunning = false;
         let brainConnected = false;
+        let testStartTime = null;
+        let testDurationSec = 0;
         
         // Tab navigation
         function showTab(name) {
@@ -655,80 +679,64 @@ const char* HTML_PAGE = R"HTML(
             else selectModes('all');
         }
         
-        // Gather config
-        function gatherConfig() {
-            const getModes = () => {
-                const modes = [];
-                document.querySelectorAll('[id^="mode-"]:checked').forEach(cb => {
-                    modes.push(cb.id.replace('mode-', '').toUpperCase());
-                });
-                return modes;
-            };
-            const getCheckedValues = (prefix) => {
-                const vals = [];
-                document.querySelectorAll(`[id^="${prefix}"]:checked`).forEach(cb => {
-                    vals.push(cb.id.replace(prefix, '').replace('-', '.'));
-                });
-                return vals;
-            };
-            
-            return {
-                backend: currentBackend,
-                tcpHost: document.getElementById('tcp-host').value,
-                tcpCtrlPort: document.getElementById('tcp-ctrl-port').value,
-                tcpDataPort: document.getElementById('tcp-data-port').value,
-                workers: document.getElementById('num-workers').value,
-                batchSize: document.getElementById('batch-size').value,
-                parallelMode: document.getElementById('parallel-mode').value,
-                duration: document.getElementById('duration').value,
-                durationUnit: document.getElementById('duration-unit').value,
-                seed: document.getElementById('rng-seed').value,
-                modes: getModes(),
-                categories: {
-                    clean: document.getElementById('cat-clean').checked,
-                    awgn: document.getElementById('cat-awgn').checked,
-                    multipath: document.getElementById('cat-multipath').checked,
-                    freqoff: document.getElementById('cat-freqoff').checked,
-                    sizes: document.getElementById('cat-sizes').checked,
-                    random: document.getElementById('cat-random').checked,
-                    dfe: document.getElementById('cat-dfe').checked,
-                    mlse: document.getElementById('cat-mlse').checked
-                },
-                snrLevels: getCheckedValues('snr-'),
-                mpDelays: getCheckedValues('mp-'),
-                echoGain: document.getElementById('echo-gain').value,
-                freqOffsets: getCheckedValues('foff-'),
-                testMessage: document.getElementById('test-message').value,
-                msgSizes: getCheckedValues('size-'),
-                generateReport: document.getElementById('opt-report').checked,
-                exportCsv: document.getElementById('opt-csv').checked,
-                verbose: document.getElementById('opt-verbose').checked,
-                savePcm: document.getElementById('opt-savepcm').checked
-            };
+        // Get selected modes as comma-separated string
+        function getSelectedModes() {
+            const modes = [];
+            document.querySelectorAll('[id^="mode-"]:checked').forEach(cb => {
+                modes.push(cb.id.replace('mode-', '').toUpperCase());
+            });
+            return modes.length === 12 ? 'all' : modes.join(',');
         }
         
-        // Start test
+        // Get duration in seconds
+        function getDurationSeconds() {
+            const value = parseInt(document.getElementById('duration').value) || 3;
+            const unit = document.getElementById('duration-unit').value;
+            if (unit === 'sec') return value;
+            if (unit === 'hr') return value * 3600;
+            return value * 60; // minutes
+        }
+        
+        // Start test - sends simple params expected by server.h
         async function startTest() {
             if (testRunning) return;
             testRunning = true;
+            testStartTime = Date.now();
+            testDurationSec = getDurationSeconds();
             
             document.getElementById('btn-start').style.display = 'none';
             document.getElementById('btn-stop').style.display = 'inline-block';
             document.getElementById('status-dot').className = 'status-dot running';
             document.getElementById('status-text').textContent = 'Running...';
             
-            const config = gatherConfig();
+            // Reset metrics
+            document.getElementById('metric-tests').textContent = '0';
+            document.getElementById('metric-passed').textContent = '0';
+            document.getElementById('metric-rate').textContent = '—';
+            document.getElementById('metric-ber').textContent = '—';
+            document.getElementById('progress-fill').style.width = '0%';
+            document.getElementById('progress-pct').textContent = '0';
+            document.getElementById('test-rating').textContent = '—';
+            
             clearOutput();
+            channelResults = {};  // Clear previous results
+            modeResults = {};     // Clear previous results
+            document.getElementById('results-body').innerHTML = '';  // Clear channel table
+            document.getElementById('modes-body').innerHTML = '';    // Clear modes table
             addOutput('==============================================', 'header');
             addOutput('M110A Exhaustive Test Suite', 'header');
             addOutput('==============================================', 'header');
-            addOutput('Backend: ' + (config.backend === 'direct' ? 'Direct API' : 'TCP Server'), 'info');
-            addOutput('Modes: ' + config.modes.join(', '), 'info');
-            addOutput('Duration: ' + config.duration + ' ' + config.durationUnit, 'info');
-            addOutput('', 'info');
+            addOutput('Starting tests...', 'info');
+            
+            // Build URL params for server.h
+            const durationSec = getDurationSeconds();
+            const modes = getSelectedModes();
             
             const params = new URLSearchParams();
-            params.set('config', JSON.stringify(config));
+            params.set('duration', durationSec.toString());
+            if (modes !== 'all') {
+                params.set('modes', modes);
+            }
             
             try {
                 const response = await fetch('/run-exhaustive?' + params.toString());
@@ -744,34 +752,277 @@ const char* HTML_PAGE = R"HTML(
                         if (line.startsWith('data: ')) {
                             try {
                                 const data = JSON.parse(line.substring(6));
-                                if (data.output) addOutput(data.output, data.type || 'info');
-                                if (data.tests !== undefined) document.getElementById('metric-tests').textContent = data.tests;
-                                if (data.passed !== undefined) document.getElementById('metric-passed').textContent = data.passed;
-                                if (data.rate !== undefined) document.getElementById('metric-rate').textContent = data.rate.toFixed(1) + '%';
-                                if (data.currentTest) document.getElementById('current-test').textContent = data.currentTest;
-                                if (data.progress !== undefined) document.getElementById('progress-fill').style.width = data.progress + '%';
-                                if (data.elapsed) document.getElementById('elapsed-time').textContent = data.elapsed;
-                                if (data.remaining) document.getElementById('remaining-time').textContent = data.remaining;
-                                if (data.iteration !== undefined) document.getElementById('iteration').textContent = data.iteration;
-                                if (data.done) testRunning = false;
-                            } catch (e) {}
+                                handleTestEvent(data);
+                            } catch (e) {
+                                // Ignore parse errors
+                            }
                         }
                     }
                 }
             } catch (err) {
-                addOutput('Error: ' + err.message, 'fail');
+                addOutput('Error: ' + err.message, 'error');
             }
             
+            finishTest();
+        }
+        
+        // Handle SSE event from server
+        function handleTestEvent(data) {
+            // Output text
+            if (data.output) {
+                let type = data.type || 'info';
+                // Auto-detect type from content
+                if (data.output.includes('PASS')) type = 'pass';
+                else if (data.output.includes('FAIL')) type = 'fail';
+                else if (data.output.includes('ERROR')) type = 'error';
+                else if (data.output.includes('===')) type = 'header';
+                addOutput(data.output, type);
+            }
+            
+            // Update metrics
+            if (data.tests !== undefined) {
+                document.getElementById('metric-tests').textContent = data.tests;
+                document.getElementById('total-tests').textContent = data.tests;
+            }
+            if (data.passed !== undefined) {
+                document.getElementById('metric-passed').textContent = data.passed;
+                document.getElementById('total-passed').textContent = data.passed;
+            }
+            if (data.failed !== undefined) {
+                document.getElementById('total-failed').textContent = data.failed;
+            }
+            if (data.rate !== undefined) {
+                const rateStr = data.rate.toFixed(1) + '%';
+                document.getElementById('metric-rate').textContent = rateStr;
+                document.getElementById('total-rate').textContent = rateStr;
+            }
+            if (data.ber !== undefined) {
+                const ber = parseFloat(data.ber);
+                if (!isNaN(ber)) {
+                    const berStr = ber < 0.0001 ? ber.toExponential(2) : ber.toFixed(6);
+                    document.getElementById('metric-ber').textContent = berStr;
+                }
+            }
+            if (data.avgBer !== undefined) {
+                const avgBer = parseFloat(data.avgBer);
+                if (!isNaN(avgBer)) {
+                    const berStr = avgBer < 0.0001 ? avgBer.toExponential(2) : avgBer.toFixed(6);
+                    document.getElementById('metric-ber').textContent = berStr;
+                    document.getElementById('total-ber').textContent = berStr;
+                }
+            }
+            
+            // Update current test
+            if (data.currentTest) {
+                document.getElementById('current-test').textContent = data.currentTest;
+            }
+            
+            // Update progress
+            if (data.progress !== undefined) {
+                document.getElementById('progress-fill').style.width = data.progress + '%';
+                document.getElementById('progress-pct').textContent = Math.round(data.progress);
+            } else if (testStartTime && testDurationSec > 0) {
+                // Calculate progress from elapsed time
+                const elapsed = (Date.now() - testStartTime) / 1000;
+                const progress = Math.min(100, (elapsed / testDurationSec) * 100);
+                document.getElementById('progress-fill').style.width = progress + '%';
+                document.getElementById('progress-pct').textContent = Math.round(progress);
+            }
+            
+            // Update elapsed time
+            if (data.elapsed) {
+                document.getElementById('elapsed-time').textContent = data.elapsed;
+            } else if (testStartTime) {
+                const elapsed = Math.floor((Date.now() - testStartTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                document.getElementById('elapsed-time').textContent = mins + ':' + secs.toString().padStart(2, '0');
+            }
+            
+            // Update remaining time
+            if (data.remaining) {
+                document.getElementById('remaining-time').textContent = data.remaining;
+            } else if (testStartTime && testDurationSec > 0) {
+                const elapsed = (Date.now() - testStartTime) / 1000;
+                const remaining = Math.max(0, testDurationSec - elapsed);
+                const mins = Math.floor(remaining / 60);
+                const secs = Math.floor(remaining % 60);
+                document.getElementById('remaining-time').textContent = mins + ':' + secs.toString().padStart(2, '0');
+            }
+            
+            // Update rating
+            if (data.rating) {
+                const ratingEl = document.getElementById('test-rating');
+                ratingEl.textContent = data.rating;
+                // Apply color based on rating
+                if (data.rating === 'EXCELLENT') ratingEl.style.color = '#00ff88';
+                else if (data.rating === 'GOOD') ratingEl.style.color = '#00d4ff';
+                else if (data.rating === 'FAIR') ratingEl.style.color = '#ffaa00';
+                else ratingEl.style.color = '#ff3a50';
+            }
+            
+            // Handle mode stats from final summary
+            if (data.type === 'mode_stat') {
+                if (data.mode) {
+                    updateModeRow(data.mode, data.passed, data.failed, data.total, data.rate);
+                } else if (data.output) {
+                    // Parse "Mode 2400S: 4/11 (36.4%)" format
+                    const match = data.output.match(/Mode (\S+): (\d+)\/(\d+) \(([\d.]+)%\)/);
+                    if (match) {
+                        const passed = parseInt(match[2]);
+                        const total = parseInt(match[3]);
+                        updateModeRow(match[1], passed, total - passed, total, parseFloat(match[4]));
+                    }
+                }
+            }
+            
+            // Handle channel stats from final summary
+            if (data.type === 'channel_stat') {
+                if (data.channel) {
+                    updateChannelRow(data.channel, data.passed, data.failed, data.total, data.rate, data.avgBer);
+                }
+            }
+            
+            // Track results in real-time from individual test events
+            if (data.currentTest && data.ber !== undefined) {
+                // Parse "2400S + awgn_15db" format
+                const match = data.currentTest.match(/^(\S+) \+ (\S+)$/);
+                if (match) {
+                    const mode = match[1];
+                    const channel = match[2];
+                    const passed = data.output && data.output.includes('PASS');
+                    accumulateModeResult(mode, passed);
+                    accumulateChannelResult(channel, passed, data.ber);
+                }
+            }
+            
+            // Test complete
+            if (data.done) {
+                testRunning = false;
+            }
+        }
+        
+        // Track channel results for table
+        let channelResults = {};
+        let modeResults = {};
+        
+        function accumulateModeResult(mode, passed) {
+            if (!modeResults[mode]) {
+                modeResults[mode] = { passed: 0, failed: 0, total: 0, rate: 0 };
+            }
+            const r = modeResults[mode];
+            r.total++;
+            if (passed) r.passed++;
+            else r.failed++;
+            r.rate = (r.passed / r.total) * 100;
+            rebuildModeTable();
+        }
+        
+        function updateModeRow(mode, passed, failed, total, rate) {
+            modeResults[mode] = { passed, failed, total, rate };
+            rebuildModeTable();
+        }
+        
+        function rebuildModeTable() {
+            const tbody = document.getElementById('modes-body');
+            tbody.innerHTML = '';
+            
+            // Sort modes by speed
+            const sortOrder = ['75S', '75L', '150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L'];
+            const modes = Object.keys(modeResults).sort((a, b) => {
+                const ia = sortOrder.indexOf(a);
+                const ib = sortOrder.indexOf(b);
+                if (ia === -1 && ib === -1) return a.localeCompare(b);
+                if (ia === -1) return 1;
+                if (ib === -1) return -1;
+                return ia - ib;
+            });
+            
+            for (const m of modes) {
+                const r = modeResults[m];
+                const rateClass = r.rate >= 80 ? 'pass' : r.rate >= 50 ? 'rate' : 'fail';
+                const row = document.createElement('tr');
+                row.innerHTML = `<td>${m}</td><td class="num pass">${r.passed}</td><td class="num fail">${r.failed}</td><td class="num">${r.total}</td><td class="num ${rateClass}">${r.rate.toFixed(1)}%</td>`;
+                tbody.appendChild(row);
+            }
+        }
+        
+        function accumulateChannelResult(channel, passed, ber) {
+            if (!channelResults[channel]) {
+                channelResults[channel] = { passed: 0, failed: 0, total: 0, rate: 0, totalBer: 0, avgBer: 0 };
+            }
+            const r = channelResults[channel];
+            r.total++;
+            if (passed) r.passed++;
+            else r.failed++;
+            r.totalBer += ber;
+            r.avgBer = r.totalBer / r.total;
+            r.rate = (r.passed / r.total) * 100;
+            
+            // Rebuild table
+            rebuildChannelTable();
+        }
+        
+        function updateChannelRow(channel, passed, failed, total, rate, avgBer) {
+            // Store result (overwrite with final stats)
+            channelResults[channel] = { passed, failed, total, rate, avgBer };
+            rebuildChannelTable();
+        }
+        
+        function rebuildChannelTable() {
+            const tbody = document.getElementById('results-body');
+            tbody.innerHTML = '';
+            
+            // Sort channels for display
+            const sortOrder = ['clean', 'awgn_30db', 'awgn_25db', 'awgn_20db', 'awgn_15db', 
+                              'mp_24samp', 'mp_48samp', 'foff_1hz', 'foff_5hz', 
+                              'moderate_hf', 'poor_hf'];
+            const channels = Object.keys(channelResults).sort((a, b) => {
+                const ia = sortOrder.indexOf(a);
+                const ib = sortOrder.indexOf(b);
+                if (ia === -1 && ib === -1) return a.localeCompare(b);
+                if (ia === -1) return 1;
+                if (ib === -1) return -1;
+                return ia - ib;
+            });
+            
+            for (const ch of channels) {
+                const r = channelResults[ch];
+                const rateClass = r.rate >= 80 ? 'pass' : r.rate >= 50 ? 'rate' : 'fail';
+                const berStr = r.avgBer < 0.0001 ? r.avgBer.toExponential(2) : r.avgBer.toFixed(6);
+                const row = document.createElement('tr');
+                row.innerHTML = `<td>${ch}</td><td class="num pass">${r.passed}</td><td class="num fail">${r.failed}</td><td class="num">${r.total}</td><td class="num ${rateClass}">${r.rate.toFixed(1)}%</td><td class="num">${berStr}</td>`;
+                tbody.appendChild(row);
+            }
+        }
+        
+        function finishTest() {
             testRunning = false;
             document.getElementById('btn-start').style.display = 'inline-block';
             document.getElementById('btn-stop').style.display = 'none';
-            document.getElementById('status-dot').className = 'status-dot';
-            document.getElementById('status-text').textContent = 'Complete';
+            
+            const passRate = parseFloat(document.getElementById('metric-rate').textContent) || 0;
+            if (passRate >= 95) {
+                document.getElementById('status-dot').className = 'status-dot pass';
+                document.getElementById('status-text').textContent = 'Complete - EXCELLENT';
+            } else if (passRate >= 80) {
+                document.getElementById('status-dot').className = 'status-dot pass';
+                document.getElementById('status-text').textContent = 'Complete - GOOD';
+            } else {
+                document.getElementById('status-dot').className = 'status-dot fail';
+                document.getElementById('status-text').textContent = 'Complete - Needs Work';
+            }
+            
+            document.getElementById('progress-fill').style.width = '100%';
+            document.getElementById('progress-pct').textContent = '100';
+            document.getElementById('current-test').textContent = 'Done';
         }
         
         function stopTest() {
             testRunning = false;
             fetch('/stop-test');
+            addOutput('Test stopped by user', 'warning');
+            finishTest();
         }
         
         function resetConfig() {
@@ -783,10 +1034,15 @@ const char* HTML_PAGE = R"HTML(
         // Output
         function addOutput(text, type = 'info') {
             const output = document.getElementById('output');
-            const line = document.createElement('div');
-            line.className = 'output-line ' + type;
-            line.textContent = text;
-            output.appendChild(line);
+            // Handle multi-line text (split on \n)
+            const lines = text.split('\\n');
+            for (const lineText of lines) {
+                if (lineText.trim() === '') continue;
+                const line = document.createElement('div');
+                line.className = 'output-line ' + type;
+                line.textContent = lineText;
+                output.appendChild(line);
+            }
             output.scrollTop = output.scrollHeight;
         }
         

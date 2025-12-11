@@ -19,17 +19,17 @@ namespace m110a {
 // Semantic version
 constexpr int VERSION_MAJOR = 1;
 constexpr int VERSION_MINOR = 3;
-constexpr int VERSION_PATCH = 1;
+constexpr int VERSION_PATCH = 7;
 
 // Prerelease tag (empty for stable releases)
 constexpr const char* VERSION_PRERELEASE = "";
 
 // Build information (auto-generated)
-constexpr int BUILD_NUMBER = 218;
-constexpr const char* GIT_COMMIT = "bcdcf86";
+constexpr int BUILD_NUMBER = 241;
+constexpr const char* GIT_COMMIT = "1e0532b";
 constexpr const char* GIT_BRANCH = "master";
 constexpr const char* BUILD_DATE = "2025-12-10";
-constexpr const char* BUILD_TIME = "13:07:31";
+constexpr const char* BUILD_TIME = "19:06:57";
 
 /// Get version string (e.g., "1.2.0" or "1.2.0-rc.1")
 inline std::string version() {
@@ -44,27 +44,23 @@ inline std::string version() {
 }
 
 /// Get full version string with branch and build info
-/// Format: "1.2.0-rc.1 (turbo) build.42.abc1234"
 inline std::string version_full() {
     return version() + " (" + GIT_BRANCH + ") build." + 
            std::to_string(BUILD_NUMBER) + "." + GIT_COMMIT;
 }
 
 /// Get build info string for reports
-/// Format: "Build 42 (abc1234) turbo 2025-12-08 07:30:00"
 inline std::string build_info() {
     return std::string("Build ") + std::to_string(BUILD_NUMBER) + 
            " (" + GIT_COMMIT + ") " + GIT_BRANCH + " " + BUILD_DATE + " " + BUILD_TIME;
 }
 
 /// Get version for help/usage display
-/// Format: "v1.2.0-turbo+42"
 inline std::string version_short() {
     return "v" + version() + "-" + GIT_BRANCH + "+" + std::to_string(BUILD_NUMBER);
 }
 
 /// Get detailed version info for headers
-/// Format: "M110A Modem v1.2.0 (turbo branch, build 42, commit abc1234)"
 inline std::string version_header() {
     return std::string("M110A Modem v") + version() + " (" + GIT_BRANCH + 
            " branch, build " + std::to_string(BUILD_NUMBER) + ", commit " + GIT_COMMIT + ")";
@@ -75,13 +71,6 @@ inline std::string copyright_notice() {
     return "Copyright (c) 2024-2025 Alex Pennington\n"
            "Email: alex.pennington@organicengineer.com\n"
            "MIL-STD-188-110A Compatible HF Modem";
-}
-
-/// Get EULA acceptance notice
-inline std::string eula_notice() {
-    return "By using this software, you agree to the End User License Agreement.\n"
-           "See EULA.md for complete terms and conditions.\n"
-           "License required - Contact: alex.pennington@organicengineer.com";
 }
 
 } // namespace m110a
