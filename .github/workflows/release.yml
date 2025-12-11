@@ -70,7 +70,7 @@ jobs:
         with:
           msystem: MINGW64
           update: true
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-make make
 
       - name: Build executables
         if: steps.check_tag.outputs.exists == 'false'
@@ -105,7 +105,7 @@ jobs:
           cd src/melpe_core
           rm -rf build
           mkdir -p build && cd build
-          cmake .. -G "MinGW Makefiles"
+          cmake .. -G "MSYS Makefiles"
           cmake --build . --target melpe_vocoder
 
       - name: Package release
