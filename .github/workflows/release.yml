@@ -103,6 +103,7 @@ jobs:
         shell: msys2 {0}
         run: |
           cd src/melpe_core
+          rm -rf build
           mkdir -p build && cd build
           cmake .. -G "MinGW Makefiles"
           cmake --build . --target melpe_vocoder

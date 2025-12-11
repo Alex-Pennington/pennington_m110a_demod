@@ -1,3 +1,0 @@
-"C:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\melpe_vocoder.dir/objects.a
-C:\Users\rayve\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin\ar.exe qc CMakeFiles\melpe_vocoder.dir/objects.a @CMakeFiles\melpe_vocoder.dir\objects1.rsp
-C:\Users\rayve\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin\c++.exe -Wl,--whole-archive CMakeFiles\melpe_vocoder.dir/objects.a -Wl,--no-whole-archive -o melpe_vocoder.exe -Wl,--out-implib,libmelpe_vocoder.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\melpe_vocoder.dir\linkLibs.rsp

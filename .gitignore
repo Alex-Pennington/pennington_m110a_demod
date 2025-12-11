@@ -9,6 +9,7 @@ rx_pcm_in/
 *.o
 *.obj
 *.pdb
+src/melpe_core/build/
 
 # Release packages (these go to GitHub Releases, not the repo)
 M110A_Modem_*.zip
