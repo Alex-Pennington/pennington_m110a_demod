@@ -693,7 +693,7 @@ private:
     }
     
     // ================================================================
-    // Run exhaustive test - Uses JSON output from exhaustive_test.exe
+    // Run exhaustive test - Supports both PhoenixNest and Brain backends
     // ================================================================
     void handle_run_exhaustive(SOCKET client, const std::string& path) {
         auto params = parse_query_string(path);
@@ -703,13 +703,18 @@ private:
         
         stop_test_ = false;
         
-        // Find exhaustive_test.exe
+        // Get backend selection (default to phoenixnest)
+        std::string backend = params.count("backend") ? params["backend"] : "phoenixnest";
+        bool use_brain = (backend == "brain");
+        
+        // Find appropriate test executable based on backend
         std::string test_exe;
+        std::string exe_name = use_brain ? "brain_exhaustive_test.exe" : "exhaustive_test.exe";
         std::vector<std::string> search_paths = {
-            exe_dir_ + "exhaustive_test.exe",
-            exe_dir_ + "..\\exhaustive_test.exe",
-            exe_dir_ + "..\\test\\exhaustive_test.exe",
-            "exhaustive_test.exe"
+            exe_dir_ + exe_name,
+            exe_dir_ + "..\\" + exe_name,
+            exe_dir_ + "..\\test\\" + exe_name,
+            exe_name
         };
         
         for (const auto& p : search_paths) {
@@ -720,7 +725,7 @@ private:
         }
         
         if (test_exe.empty()) {
-            send_sse(client, "{\"output\":\"ERROR: exhaustive_test.exe not found\",\"done\":true}");
+            send_sse(client, "{\"output\":\"ERROR: " + exe_name + " not found\",\"done\":true}");
             return;
         }
         
@@ -736,6 +741,8 @@ private:
             cmd << " --mode " << modes_str;
         }
         
+        std::string backend_label = use_brain ? "Brain" : "PhoenixNest";
+        send_sse(client, "{\"output\":\"=== " + backend_label + " Exhaustive Test ===\",\"type\":\"header\"}");
         send_sse(client, "{\"output\":\"Executing: " + json_escape(cmd.str()) + "\",\"type\":\"header\"}");
         
 #ifdef _WIN32
