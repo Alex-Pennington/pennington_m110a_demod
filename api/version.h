@@ -19,17 +19,17 @@ namespace m110a {
 // Semantic version
 constexpr int VERSION_MAJOR = 1;
 constexpr int VERSION_MINOR = 3;
-constexpr int VERSION_PATCH = 11;
+constexpr int VERSION_PATCH = 12;
 
 // Prerelease tag (empty for stable releases)
 constexpr const char* VERSION_PRERELEASE = "";
 
 // Build information (auto-generated)
-constexpr int BUILD_NUMBER = 246;
-constexpr const char* GIT_COMMIT = "a0cb264";
+constexpr int BUILD_NUMBER = 247;
+constexpr const char* GIT_COMMIT = "2c507b3";
 constexpr const char* GIT_BRANCH = "master";
 constexpr const char* BUILD_DATE = "2025-12-10";
-constexpr const char* BUILD_TIME = "19:18:05";
+constexpr const char* BUILD_TIME = "19:26:53";
 
 /// Get version string (e.g., "1.2.0" or "1.2.0-rc.1")
 inline std::string version() {
