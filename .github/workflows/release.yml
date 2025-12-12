@@ -81,7 +81,7 @@ jobs:
           # Main modem server (TX/RX via TCP)
           g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
             -o server/m110a_server.exe \
-            server/main.cpp api/modem_tx.cpp api/modem_rx.cpp \
+            server/main.cpp server/tcp_server_base.cpp api/modem_tx.cpp api/modem_rx.cpp \
             -lws2_32
           
           # Web-based test GUI
