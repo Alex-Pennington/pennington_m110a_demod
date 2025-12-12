@@ -1,7 +1,27 @@
 # Current Work
 
 **Branch:** `PhoenixNest_to_Brain_Testing`  
-**Last Updated:** 2025-12-12 3:26 PM EDT
+**Last Updated:** 2025-12-12 4:02 PM EDT
+
+---
+
+## ✅ MAJOR BREAKTHROUGH: Cross-Modem Interop WORKING!
+
+**Phoenix Nest TX → Brain Core RX: 9/12 modes passing!**
+
+| Mode | Result | Mode | Result |
+|------|--------|------|--------|
+| 600S | ✅ PASS | 600L | ✅ PASS |
+| 300S | ✅ PASS | 300L | ✅ PASS |
+| 1200S | ✅ PASS | 1200L | ✅ PASS |
+| 2400S | ✅ PASS | 2400L | ✅ PASS |
+| 150S | ⚠️ PARTIAL | 150L | ✅ PASS |
+| 75S | ❌ TX N/A | 75L | ❌ TX N/A |
+
+**Root Cause Fixed:** `src/m110a/brain_preamble.h::encode_frame()` had 3 bugs:
+1. Scrambler index was continuous across frame (should restart per segment)
+2. Count segment encoding was wrong (used countdown%8, should use add_count_seq pattern)
+3. Zero segment was outputting raw pscramble (should use psymbol[0] + scramble)
 
 ---
 
