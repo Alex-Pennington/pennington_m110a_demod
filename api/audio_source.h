@@ -135,8 +135,9 @@ public:
             );
             
             phase_ += phase_inc;
-            if (phase_ > 2.0f * static_cast<float>(M_PI)) {
-                phase_ -= 2.0f * static_cast<float>(M_PI);
+            // Use fmod for robust phase wrapping (handles accumulated errors)
+            if (phase_ >= 2.0f * static_cast<float>(M_PI)) {
+                phase_ = std::fmod(phase_, 2.0f * static_cast<float>(M_PI));
             }
         }
         

@@ -473,12 +473,14 @@ private:
             
             // Output samples while phase >= 1
             while (resample_phase_ >= 1.0f) {
+                // Calculate interpolation fraction BEFORE decrement
+                // frac represents how far between prev_sample_ and sample we are
+                float frac = 1.0f - (resample_phase_ - 1.0f);
                 resample_phase_ -= 1.0f;
                 
                 // Linear interpolation between prev and current
-                float frac = resample_phase_;
                 std::complex<float> interpolated = 
-                    prev_sample_ * (1.0f - frac) + sample * frac;
+                    prev_sample_ * frac + sample * (1.0f - frac);
                 output.push_back(interpolated);
             }
             
