@@ -4,12 +4,20 @@
  * @brief Combined HTML/CSS/JS for M110A Test GUI
  * 
  * This file combines modular components:
- * - html_common.h      - Shared CSS and utilities
- * - html_tab_melpe.h   - MELPe Vocoder tab
- * - html_tab_codec2.h  - Codec2 Vocoder tab (open source)
+ * - html_common.h       - Shared CSS and utilities
+ * - html_tab_phoenix.h  - Phoenix Tests tab
+ * - html_tab_brain.h    - Brain Tests tab
+ * - html_tab_interop.h  - Cross-Modem Interop tab
+ * - html_tab_reports.h  - Reports tab
+ * - html_tab_melpe.h    - MELPe Vocoder tab
+ * - html_tab_codec2.h   - Codec2 Vocoder tab (open source)
  */
 
 #include "html_common.h"
+#include "html_tab_phoenix.h"
+#include "html_tab_brain.h"
+#include "html_tab_interop.h"
+#include "html_tab_reports.h"
 #include "html_tab_melpe.h"
 #include "html_tab_codec2.h"
 
@@ -25,12 +33,15 @@ inline std::string build_html_page() {
     html << R"HTML(<!DOCTYPE html>
 <html>
 <head>
-    <title>M110A Vocoder Suite</title>
+    <title>M110A Modem Test Suite</title>
     <style>
 )HTML";
 
     // Include CSS from modules
     html << HTML_CSS;           // Common styles
+    html << HTML_CSS_BRAIN;     // Brain styles
+    html << HTML_CSS_INTEROP;   // Interop styles
+    html << HTML_CSS_REPORTS;   // Reports styles
     html << HTML_CSS_MELPE;     // MELPe styles
     html << HTML_CSS_CODEC2;    // Codec2 styles
 
@@ -39,15 +50,23 @@ inline std::string build_html_page() {
 </head>
 <body>
     <div class="container">
-        <h1>M110A Vocoder Suite</h1>
+        <h1>M110A Modem Test Suite</h1>
         
         <div class="tabs">
-            <button class="tab active" onclick="showTab('melpe')">MELPe Vocoder</button>
+            <button class="tab active" onclick="showTab('phoenix')">🚀 Phoenix Tests</button>
+            <button class="tab" onclick="showTab('brain')">🧠 Brain Tests</button>
+            <button class="tab" onclick="showTab('interop')">Cross-Modem Interop</button>
+            <button class="tab" onclick="showTab('reports')">Reports</button>
+            <button class="tab" onclick="showTab('melpe')">MELPe Vocoder</button>
             <button class="tab" onclick="showTab('codec2')">Codec2 Vocoder</button>
         </div>
 )HTML";
 
     // Include tab content from modules
+    html << HTML_TAB_PHOENIX;
+    html << HTML_TAB_BRAIN;
+    html << HTML_TAB_INTEROP;
+    html << HTML_TAB_REPORTS;
     html << HTML_TAB_MELPE;
     html << HTML_TAB_CODEC2;
 
@@ -59,6 +78,10 @@ inline std::string build_html_page() {
 
     // Include JavaScript from modules
     html << HTML_JS_COMMON;
+    html << HTML_JS_PHOENIX;
+    html << HTML_JS_BRAIN;
+    html << HTML_JS_INTEROP;
+    html << HTML_JS_REPORTS;
     html << HTML_JS_MELPE;
     html << HTML_JS_CODEC2;
 
@@ -70,15 +93,15 @@ inline std::string build_html_page() {
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelector('.tab[onclick*="' + name + '"]').classList.add('active');
             document.getElementById('tab-' + name).classList.add('active');
+            if (name === 'reports') loadReports();
             if (name === 'melpe') loadMelpeFiles();
-            if (name === 'codec2') loadCodec2Files();
+            if (name === 'codec2') initCodec2Tab();
         }
         
         // Initialize on load
         document.addEventListener('DOMContentLoaded', function() {
-            loadMelpeFiles();
-            loadCodec2Files();
-            updateCodec2RateBadge();
+            initInteropMatrix();
+            updateRateBadge();
         });
 )JS";
 

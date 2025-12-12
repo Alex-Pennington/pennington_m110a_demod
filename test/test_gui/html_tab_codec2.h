@@ -59,6 +59,16 @@ const char* HTML_TAB_CODEC2 = R"HTML(
                     <h3>Test Configuration</h3>
                     
                     <div class="form-group" style="margin-bottom: 12px;">
+                        <label>Audio File</label>
+                        <select id="codec2-file" onchange="onCodec2FileChange()">
+                            <option value="OSR_us_000_0010_8k.raw">OSR Sample 0010 (Harvard Sentences)</option>
+                            <option value="OSR_us_000_0011_8k.raw">OSR Sample 0011 (Harvard Sentences)</option>
+                            <option value="OSR_us_000_0030_8k.raw">OSR Sample 0030 (Harvard Sentences)</option>
+                            <option value="OSR_us_000_0031_8k.raw">OSR Sample 0031 (Harvard Sentences)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group" style="margin-bottom: 12px;">
                         <label>Bit Rate</label>
                         <select id="codec2-rate" onchange="updateCodec2RateBadge()">
                             <option value="3200">3200 bps (highest quality)</option>
@@ -76,7 +86,7 @@ const char* HTML_TAB_CODEC2 = R"HTML(
                     </button>
                     
                     <div class="codec2-status" id="codec2-status">
-                        Ready. Select a bit rate and click Run.
+                        Ready. Select a file and bit rate, then click Run.
                     </div>
                     
                     <!-- Recording Section -->
@@ -150,6 +160,109 @@ const char* HTML_TAB_CODEC2 = R"HTML(
 const char* HTML_JS_CODEC2 = R"JS(
 // Codec2 Vocoder Functions
 
+let codec2AudioContext = null;
+let codec2InputBuffer = null;
+
+async function onCodec2FileChange() {
+    const filename = document.getElementById('codec2-file').value;
+    const status = document.getElementById('codec2-status');
+    status.className = 'codec2-status';
+    status.textContent = 'Loading ' + filename + '...';
+    
+    try {
+        const response = await fetch('/melpe-audio?file=' + encodeURIComponent(filename));
+        if (!response.ok) throw new Error('File not found');
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const pcmData = new Int16Array(arrayBuffer);
+        
+        if (!codec2AudioContext) {
+            codec2AudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 8000 });
+        }
+        
+        const floatData = new Float32Array(pcmData.length);
+        for (let i = 0; i < pcmData.length; i++) {
+            floatData[i] = pcmData[i] / 32768.0;
+        }
+        
+        codec2InputBuffer = codec2AudioContext.createBuffer(1, floatData.length, 8000);
+        codec2InputBuffer.getChannelData(0).set(floatData);
+        
+        const duration = floatData.length / 8000;
+        
+        drawCodec2Waveform('codec2-viz-input', floatData);
+        
+        status.className = 'codec2-status success';
+        status.textContent = 'Loaded ' + filename + ' (' + duration.toFixed(1) + 's)';
+    } catch (e) {
+        status.className = 'codec2-status error';
+        status.textContent = 'Error loading file: ' + e.message;
+    }
+}
+
+function drawCodec2Waveform(canvasId, data) {
+    const canvas = document.getElementById(canvasId);
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width = canvas.offsetWidth;
+    const height = canvas.height = canvas.offsetHeight;
+    
+    ctx.fillStyle = '#0a0a12';
+    ctx.fillRect(0, 0, width, height);
+    
+    ctx.strokeStyle = '#00d4ff';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    
+    const step = Math.ceil(data.length / width);
+    const mid = height / 2;
+    
+    for (let i = 0; i < width; i++) {
+        let min = 1.0, max = -1.0;
+        for (let j = 0; j < step; j++) {
+            const idx = i * step + j;
+            if (idx < data.length) {
+                if (data[idx] < min) min = data[idx];
+                if (data[idx] > max) max = data[idx];
+            }
+        }
+        const y1 = mid - min * mid;
+        const y2 = mid - max * mid;
+        ctx.moveTo(i, y1);
+        ctx.lineTo(i, y2);
+    }
+    
+    ctx.stroke();
+}
+
+let codec2OutputContext = null;
+let codec2OutputBuffer = null;
+
+async function loadCodec2OutputAudio(filename, rate) {
+    try {
+        const response = await fetch('/api/codec2/output?file=' + encodeURIComponent(filename));
+        if (!response.ok) throw new Error('Output file not found');
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const pcmData = new Int16Array(arrayBuffer);
+        
+        if (!codec2OutputContext) {
+            codec2OutputContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 8000 });
+        }
+        
+        const floatData = new Float32Array(pcmData.length);
+        for (let i = 0; i < pcmData.length; i++) {
+            floatData[i] = pcmData[i] / 32768.0;
+        }
+        
+        codec2OutputBuffer = codec2OutputContext.createBuffer(1, floatData.length, 8000);
+        codec2OutputBuffer.getChannelData(0).set(floatData);
+        
+        drawCodec2Waveform('codec2-viz-output', floatData);
+    } catch (e) {
+        console.error('Error loading Codec2 output:', e);
+    }
+}
+
 function updateCodec2RateBadge() {
     const rate = document.getElementById('codec2-rate').value;
     const badge = document.getElementById('codec2-rate-badge');
@@ -159,13 +272,14 @@ function updateCodec2RateBadge() {
 
 function runCodec2Vocoder() {
     const rate = document.getElementById('codec2-rate').value;
+    const file = document.getElementById('codec2-file').value;
     const status = document.getElementById('codec2-status');
     const stats = document.getElementById('codec2-stats');
     
     status.className = 'codec2-status';
     status.textContent = 'Running Codec2 ' + rate + ' bps loopback test...';
     
-    fetch('/api/codec2/loopback?rate=' + rate)
+    fetch('/api/codec2/loopback?rate=' + rate + '&file=' + encodeURIComponent(file))
         .then(r => r.json())
         .then(data => {
             if (data.success) {
@@ -176,6 +290,7 @@ function runCodec2Vocoder() {
                     'Frames: ' + data.frames + '<br>' +
                     'Duration: ' + data.duration.toFixed(2) + ' sec<br>' +
                     'Compression: ' + data.compression_ratio.toFixed(1) + ':1';
+                loadCodec2OutputAudio(data.output_file, rate);
             } else {
                 status.className = 'codec2-status error';
                 status.textContent = 'Error: ' + data.error;
@@ -221,12 +336,72 @@ function toggleCodec2Recording() {
     }
 }
 
+let codec2InputSourceNode = null;
+let codec2OutputSourceNode = null;
+
 function playCodec2Input() {
-    fetch('/api/codec2/play/input', { method: 'POST' });
+    if (!codec2InputBuffer || !codec2AudioContext) return;
+    stopCodec2Input();
+    codec2InputSourceNode = codec2AudioContext.createBufferSource();
+    codec2InputSourceNode.buffer = codec2InputBuffer;
+    codec2InputSourceNode.connect(codec2AudioContext.destination);
+    codec2InputSourceNode.start();
+}
+
+function stopCodec2Input() {
+    if (codec2InputSourceNode) {
+        try { codec2InputSourceNode.stop(); } catch (e) {}
+        codec2InputSourceNode = null;
+    }
 }
 
 function playCodec2Output() {
-    fetch('/api/codec2/play/output', { method: 'POST' });
+    if (!codec2OutputBuffer || !codec2OutputContext) return;
+    stopCodec2Output();
+    codec2OutputSourceNode = codec2OutputContext.createBufferSource();
+    codec2OutputSourceNode.buffer = codec2OutputBuffer;
+    codec2OutputSourceNode.connect(codec2OutputContext.destination);
+    codec2OutputSourceNode.start();
+}
+
+function stopCodec2Output() {
+    if (codec2OutputSourceNode) {
+        try { codec2OutputSourceNode.stop(); } catch (e) {}
+        codec2OutputSourceNode = null;
+    }
+}
+
+async function loadCodec2Files() {
+    try {
+        const response = await fetch('/melpe-list-recordings');
+        const data = await response.json();
+        if (data.recordings && data.recordings.length > 0) {
+            const select = document.getElementById('codec2-file');
+            // Remove any existing custom recordings section
+            const existingCustom = select.querySelectorAll('option[data-custom]');
+            existingCustom.forEach(opt => opt.remove());
+            
+            let hasCustomSection = false;
+            data.recordings.forEach(rec => {
+                if (!hasCustomSection) {
+                    const opt = document.createElement('option');
+                    opt.disabled = true;
+                    opt.setAttribute('data-custom', 'true');
+                    opt.textContent = '── Custom Recordings ──';
+                    select.appendChild(opt);
+                    hasCustomSection = true;
+                }
+                const opt = document.createElement('option');
+                opt.value = rec.filename;
+                opt.setAttribute('data-custom', 'true');
+                opt.textContent = rec.name + ' (' + rec.duration.toFixed(1) + 's)';
+                select.appendChild(opt);
+            });
+        }
+    } catch (e) {
+        console.log('Could not load custom recordings:', e);
+    }
+    onCodec2FileChange();
 }
 )JS";
 

@@ -240,10 +240,26 @@ private:
         (void)data;
     }
     
+    /**
+     * Reverse bit order in a byte (SYNC mode compatibility)
+     * 
+     * Qt MSDMT does this in the application layer for SYNC modes because:
+     * - TX uses send_sync_octet_array (LSB first)
+     * - RX modem core packs MSB first
+     * - So received bytes need bit reversal
+     */
+    static uint8_t reverse_bits(uint8_t byte) {
+        byte = ((byte >> 1) & 0x55) | ((byte << 1) & 0xAA);
+        byte = ((byte >> 2) & 0x33) | ((byte << 2) & 0xCC);
+        byte = (byte >> 4) | (byte << 4);
+        return byte;
+    }
+    
     static void rx_callback_static(uint8_t byte) {
         std::lock_guard<std::mutex> lock(rx_mutex_);
         if (current_instance_) {
-            current_instance_->decoded_data_.push_back(byte);
+            // Reverse bits for SYNC mode (like Qt MSDMT does)
+            current_instance_->decoded_data_.push_back(reverse_bits(byte));
         }
     }
 };

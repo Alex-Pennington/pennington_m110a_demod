@@ -44,7 +44,7 @@ const char* HTML_CSS_MELPE = R"CSS(
 // ============================================================
 const char* HTML_TAB_MELPE = R"HTML(
         <!-- ============ MELPE VOCODER TAB ============ -->
-        <div id="tab-melpe" class="tab-content active">
+        <div id="tab-melpe" class="tab-content">
             <div class="melpe-header">
                 <h2>MELPe Vocoder Test</h2>
                 <p>NATO STANAG 4591 - Mixed-Excitation Linear Prediction Enhanced</p>

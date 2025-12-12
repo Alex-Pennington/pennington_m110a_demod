@@ -206,14 +206,26 @@ if (-not $hasBrain) {
 
 # Build all targets
 $targets = @(
-    @{ Name = "m110a_server";           Cmd = "$CXX $CXXFLAGS -o release/bin/m110a_server.exe server/main.cpp server/brain_server.cpp $MODEM_SOURCES $LDFLAGS" },
-    @{ Name = "exhaustive_test";        Cmd = "$CXX $CXXFLAGS -o release/bin/exhaustive_test.exe test/exhaustive_test_unified.cpp $MODEM_SOURCES $PCM_SOURCES $LDFLAGS" },
+    @{ Name = "m110a_server";           Cmd = "$CXX $CXXFLAGS -o release/bin/m110a_server.exe server/main.cpp server/tcp_server.cpp $MODEM_SOURCES $LDFLAGS" },
     @{ Name = "test_gui";               Cmd = "$CXX $CXXFLAGS -o release/bin/test_gui.exe test/test_gui/main.cpp $LDFLAGS -lshell32" }
 )
 
+# Build brain_modem_server if brain_core is available
 if ($hasBrain) {
-    $targets += @{ Name = "interop_test";           Cmd = "$CXX $CXXFLAGS $BRAIN_INCLUDES -o release/bin/interop_test.exe test/interop_test.cpp $MODEM_SOURCES $LDFLAGS $BRAIN_LDFLAGS" }
-    $targets += @{ Name = "brain_exhaustive_test";  Cmd = "$CXX $CXXFLAGS $BRAIN_INCLUDES -o release/bin/brain_exhaustive_test.exe test/brain_exhaustive_test.cpp $LDFLAGS $BRAIN_LDFLAGS" }
+    Write-Host "`n=== brain_modem_server ===" -ForegroundColor Yellow
+    Push-Location "extern/brain_core"
+    try {
+        & .\build.ps1 2>&1 | Out-Null
+        if (Test-Path "brain_modem_server.exe") {
+            Copy-Item "brain_modem_server.exe" "../../release/bin/brain_modem_server.exe" -Force
+            Write-Host "  OK" -ForegroundColor Green
+        } else {
+            Write-Host "  FAILED" -ForegroundColor Red
+        }
+    } catch {
+        Write-Host "  FAILED: $_" -ForegroundColor Red
+    }
+    Pop-Location
 }
 
 $failed = @()

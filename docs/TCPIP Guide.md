@@ -113,83 +113,8 @@ STATUS:RX:NO DCD
 OK:RXAUDIOINJECT:COMPLETE:<sample_count> samples
 ```
 
-**With channel simulation enabled:**
-```
-OK:RXAUDIOINJECT:COMPLETE:<sample_count> samples (channel sim applied)
-```
-
 **Errors:**
 - `ERROR:RXAUDIOINJECT:FILE NOT FOUND:<path>`
-
----
-
-## Channel Simulation Commands (Testing Extension)
-
-These commands enable channel impairment simulation for RX testing.  
-Impairments are applied during `CMD:RXAUDIOINJECT` operations.
-
-### CMD:CHANNEL CONFIG
-Display current channel simulation configuration.
-
-**Response:**
-```
-OK:CHANNEL CONFIG:CHANNEL CONFIG:
-  Enabled: YES/NO
-  AWGN: ON/OFF (SNR=<db>dB)
-  Multipath: ON/OFF (delay=<samples> samples, gain=<value>)
-  FreqOffset: ON/OFF (<hz>Hz)
-```
-
----
-
-### CMD:CHANNEL PRESET:\<preset\>
-Apply a predefined channel configuration.
-
-| Preset | SNR | Multipath | Freq Offset | Description |
-|--------|-----|-----------|-------------|-------------|
-| `GOOD` / `GOOD_HF` | 25 dB | 24 samples, 0.3 | 0 Hz | Good HF conditions |
-| `MODERATE` / `MODERATE_HF` | 18 dB | 48 samples, 0.4 | 0 Hz | Moderate HF |
-| `POOR` / `POOR_HF` | 12 dB | 48 samples, 0.5 | 5 Hz | Poor HF (challenging) |
-| `CCIR_GOOD` | 20 dB | 24 samples, 0.2 | 0 Hz | CCIR good channel |
-| `CCIR_MODERATE` | 15 dB | 48 samples, 0.35 | 0 Hz | CCIR moderate |
-| `CCIR_POOR` | 10 dB | 96 samples, 0.5 | 0 Hz | CCIR poor channel |
-| `CLEAN` / `OFF` | - | - | - | No impairments |
-
-**Example:** `CMD:CHANNEL PRESET:MODERATE`  
-**Response:** `OK:CHANNEL PRESET:MODERATE_HF (SNR=18dB, multipath=24/0.4, freq_offset=5Hz)`
-
----
-
-### CMD:CHANNEL AWGN:\<snr_db\>
-Enable AWGN (Additive White Gaussian Noise) with specified SNR.
-
-**Example:** `CMD:CHANNEL AWGN:20`  
-**Response:** `OK:CHANNEL AWGN:Enabled with SNR=20dB`
-
----
-
-### CMD:CHANNEL MULTIPATH:\<delay_samples\>
-Enable multipath simulation with specified delay.
-
-**Example:** `CMD:CHANNEL MULTIPATH:24`  
-**Response:** `OK:CHANNEL MULTIPATH:Enabled with delay=24 samples, gain=0.5`
-
-**Optional gain:** `CMD:CHANNEL MULTIPATH:24,0.3` sets delay=24, gain=0.3
-
----
-
-### CMD:CHANNEL FREQOFFSET:\<hz\>
-Enable frequency offset simulation.
-
-**Example:** `CMD:CHANNEL FREQOFFSET:5`  
-**Response:** `OK:CHANNEL FREQOFFSET:Enabled with offset=5Hz`
-
----
-
-### CMD:CHANNEL OFF
-Disable all channel impairments.
-
-**Response:** `OK:CHANNEL OFF:All channel impairments disabled`
 
 ---
 
@@ -209,26 +134,6 @@ Set the equalizer type used during RX demodulation.
 **Example:** `CMD:SET EQUALIZER:DFE`  
 **Response:** `OK:SET EQUALIZER:DFE`  
 **Error:** `ERROR:SET EQUALIZER:UNKNOWN: <type> (valid: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO)`
-
----
-
-### CMD:RUN BERTEST:\<input\>[,\<output\>]
-Apply configured channel impairments to a PCM file.
-
-Used for creating impaired test samples from clean transmissions.
-
-**Parameters:**
-- `input` - Path to input PCM file
-- `output` (optional) - Path to output PCM file. If omitted, overwrites input.
-
-**Example:** `CMD:RUN BERTEST:clean.pcm,impaired.pcm`  
-**Response:** `OK:RUN BERTEST:Applied [AWGN=20dB MP=24samp ] to 60800 samples -> impaired.pcm`
-
-**Errors:**
-- `ERROR:RUN BERTEST:Cannot read file: <path>`
-- `ERROR:RUN BERTEST:No channel impairments configured. Use CMD:CHANNEL commands first.`
-
-**Note:** Channel impairments must be configured before running BERTEST.
 
 ---
 

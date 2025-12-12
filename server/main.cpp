@@ -3,7 +3,7 @@
 // Licensed under Phoenix Nest EULA - see phoenixnestmodem_eula.md
 /**
  * @file main.cpp
- * @brief Brain Modem Compatible Server - Main Entry Point
+ * @brief M110A Modem TCP Server - Main Entry Point
  * 
  * Usage:
  *   m110a_server [options]
@@ -16,7 +16,7 @@
  *   --help            Show this help
  */
 
-#include "brain_server.h"
+#include "tcp_server.h"
 #include "api/modem.h"
 #include "api/version.h"
 

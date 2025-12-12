@@ -634,12 +634,21 @@ private:
     void handle_codec2_loopback(SOCKET client, const std::string& path) {
         // Parse rate from query string
         std::string rate = "1300";  // default
+        std::string file = "";
         
         size_t pos = path.find("rate=");
         if (pos != std::string::npos) {
             size_t end = path.find('&', pos);
             if (end == std::string::npos) end = path.size();
             rate = path.substr(pos + 5, end - pos - 5);
+        }
+        
+        // Parse file parameter
+        pos = path.find("file=");
+        if (pos != std::string::npos) {
+            size_t end = path.find('&', pos);
+            if (end == std::string::npos) end = path.size();
+            file = url_decode(path.substr(pos + 5, end - pos - 5));
         }
         
         // Validate rate
@@ -665,20 +674,30 @@ private:
             audio_dir = exe_dir_;
         }
         
-        // Look for a test audio file
+        // Use specified file or search for default
         std::string input_file;
-        std::vector<std::string> test_files = {
-            "OSR_us_000_0010_8k.raw",
-            "OSR_us_000_0011_8k.raw",
-            "test_audio.raw",
-            "speech.raw"
-        };
-        
-        for (const auto& f : test_files) {
-            std::string path = audio_dir + f;
+        if (!file.empty()) {
+            std::string path = audio_dir + file;
             if (fs::exists(path)) {
                 input_file = path;
-                break;
+            }
+        }
+        
+        // Fallback: search for test files
+        if (input_file.empty()) {
+            std::vector<std::string> test_files = {
+                "OSR_us_000_0010_8k.raw",
+                "OSR_us_000_0011_8k.raw",
+                "test_audio.raw",
+                "speech.raw"
+            };
+            
+            for (const auto& f : test_files) {
+                std::string path = audio_dir + f;
+                if (fs::exists(path)) {
+                    input_file = path;
+                    break;
+                }
             }
         }
         

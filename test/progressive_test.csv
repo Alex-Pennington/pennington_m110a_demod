@@ -1,6 +1,0 @@
-# M110A Modem Progressive Test Results
-# Version: 1.2.0+build.41.449c87a
-# Date: 2025-12-08 07:39:42
-# Mode Filter: 600S
-Mode,Data_Rate_BPS,Min_SNR_dB
-600S,600,-5.00
