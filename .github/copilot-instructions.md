@@ -42,13 +42,43 @@ Or in C/C++:
 
 ---
 
-## 📁 Path-Specific Instructions
+## ⚠️ GIT WORKFLOW - ASK BEFORE MERGING ⚠️
+
+**This is the second most important rule in this project.**
+
+### Rules
+1. **NEVER** merge to `master` or `main` without explicit user permission
+2. **NEVER** push to `master` or `main` without explicit user permission
+3. **ALWAYS** work on feature branches for new development
+4. **ALWAYS** ask before merging, even if all tests pass
+5. **ALWAYS** fetch and check for remote changes before any merge
+
+### Workflow
+1. Create a feature branch: `git checkout -b feature/my-feature`
+2. Make commits on the feature branch
+3. Push the feature branch: `git push -u origin feature/my-feature`
+4. **STOP and ASK**: "Tests pass. Ready to merge to master?"
+5. Only merge after user confirms
+
+### Why This Matters
+- Other developers may have commits on master
+- Merging without checking can cause conflicts
+- The user is the project owner and decides when code is ready
+
+---
+
+## 📁 3. Path-Specific Instructions
 
 This project uses GitHub's official path-specific custom instructions system. Additional rules for specific folders are defined in `.github/instructions/*.instructions.md` files with glob patterns.
 
+**⚠️ IMPORTANT: Before working in ANY folder listed below, READ the corresponding instructions file FIRST.**
+
 Current path-specific instructions:
 - `api.instructions.md` → `api/**` - Public API, version.h is auto-generated
+- `docs.instructions.md` → `docs/**` - Documentation standards
 - `extern.instructions.md` → `extern/**` - External dependencies, DO NOT MODIFY
+- `hfchansim.instructions.md` → `hfchansim/**` - HF channel simulator
+- `server.instructions.md` → `server/**` - TCP server implementation
 - `src.instructions.md` → `src/**` - Core implementation, dependency awareness
 - `testing.instructions.md` → `testing/**` - Test framework and interop testing rules
 
@@ -59,7 +89,7 @@ These are automatically applied when working on files matching the glob patterns
 ## Project Overview
 This project implements a MIL-STD-188-110A HF modem with modulation/demodulation capabilities for military standard communications.
 
-## Coding Guidelines
+## 4. Coding Guidelines
 - Use C++17 standard for core signal processing
 - Follow MISRA C guidelines where applicable for safety-critical code
 - Use fixed-point arithmetic for DSP operations where possible
@@ -75,7 +105,7 @@ This project implements a MIL-STD-188-110A HF modem with modulation/demodulation
 - `docs/` - Documentation and specifications
 - `release/bin/` - Build output (executables)
 
-## Build System
+## 5. Build System
 - PowerShell-based build system (`build.ps1`)
 - All executables output to `release/bin/`
 - Uses MinGW g++ compiler with C++17
