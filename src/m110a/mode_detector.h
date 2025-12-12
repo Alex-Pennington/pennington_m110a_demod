@@ -33,14 +33,14 @@
 namespace m110a {
 
 // Preamble structure constants per MIL-STD-188-110A
-// Note: Positions verified empirically against reference waveforms
+// Standard positions per Section C.5.2.2 - compatible with Brain Core
 constexpr int PREAMBLE_COMMON_START = 0;
-constexpr int PREAMBLE_COMMON_LEN = 320;     // Extended common sync
-constexpr int PREAMBLE_D1_START = 320;       // D1 mode identifier
+constexpr int PREAMBLE_COMMON_LEN = 288;     // Common sync pattern
+constexpr int PREAMBLE_D1_START = 288;       // D1 mode identifier
 constexpr int PREAMBLE_D1_LEN = 32;
-constexpr int PREAMBLE_D2_START = 352;       // D2 mode identifier  
+constexpr int PREAMBLE_D2_START = 320;       // D2 mode identifier  
 constexpr int PREAMBLE_D2_LEN = 32;
-constexpr int PREAMBLE_COUNT_START = 384;    // Count sequence
+constexpr int PREAMBLE_COUNT_START = 352;    // Count sequence
 constexpr int PREAMBLE_COUNT_LEN = 96;
 constexpr int PREAMBLE_FRAME_LEN = 480;
 

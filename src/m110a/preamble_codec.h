@@ -38,11 +38,11 @@
 namespace m110a {
 
 // MIL-STD-188-110A compliant preamble structure constants
-// Per Section C.5.2.2 and empirically verified against reference waveforms
-constexpr int CODEC_COMMON_SYMBOLS = 320;    // Extended common sync (including leading sync)
-constexpr int CODEC_D1_SYMBOLS = 32;         // D1 mode identifier
-constexpr int CODEC_D2_SYMBOLS = 32;         // D2 mode identifier  
-constexpr int CODEC_COUNT_SYMBOLS = 64;      // Block count sequence
+// Per Section C.5.2.2 - Standard positions for Brain Core compatibility
+constexpr int CODEC_COMMON_SYMBOLS = 288;    // Common sync pattern
+constexpr int CODEC_D1_SYMBOLS = 32;         // D1 mode identifier (starts at 288)
+constexpr int CODEC_D2_SYMBOLS = 32;         // D2 mode identifier (starts at 320)
+constexpr int CODEC_COUNT_SYMBOLS = 96;      // Block count sequence
 constexpr int CODEC_ZERO_SYMBOLS = 32;       // Zero padding
 constexpr int CODEC_FRAME_LEN = 480;         // Total preamble frame
 constexpr int MODE_ID_BITS = 5;              // Legacy - for decoder compatibility
@@ -163,16 +163,16 @@ public:
         // For shorter preambles, use proportional scaling
         int common_syms, d1_syms, d2_syms, count_syms;
         if (total_symbols >= CODEC_FRAME_LEN) {
-            common_syms = CODEC_COMMON_SYMBOLS;   // 320
+            common_syms = CODEC_COMMON_SYMBOLS;   // 288
             d1_syms = CODEC_D1_SYMBOLS;           // 32
             d2_syms = CODEC_D2_SYMBOLS;           // 32
-            count_syms = CODEC_COUNT_SYMBOLS;     // 64
+            count_syms = CODEC_COUNT_SYMBOLS;     // 96
         } else {
             // Proportional structure for short preambles
-            common_syms = (total_symbols * 67) / 100;  // 67%
+            common_syms = (total_symbols * 60) / 100;  // 60%
             d1_syms = std::max(8, (total_symbols * 7) / 100);
             d2_syms = d1_syms;
-            count_syms = (total_symbols * 13) / 100;
+            count_syms = (total_symbols * 20) / 100;
         }
         
         MultiModeMapper mapper(Modulation::PSK8);
@@ -221,9 +221,9 @@ public:
      */
     static int get_common_symbols(int total_preamble) {
         if (total_preamble >= CODEC_FRAME_LEN) {
-            return CODEC_COMMON_SYMBOLS;  // 320
+            return CODEC_COMMON_SYMBOLS;  // 288
         }
-        return (total_preamble * 67) / 100;
+        return (total_preamble * 60) / 100;
     }
     
     /**
