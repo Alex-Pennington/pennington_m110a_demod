@@ -13,16 +13,112 @@ This validates that both modem implementations are compatible with MIL-STD-188-1
 
 ---
 
+## Git History Discovery (2025-12-12)
+
+### Working Cross-Modem Test Found!
+
+**Commit `34ba342`** (Dec 10, 2025) - "Phoenix Nest Interoperability Status Brain TX → Phoenix Nest RX: 10/12 PASS ✅"
+
+This commit had a working Python script `test_cross_modem.py` (now deleted) that achieved:
+- **10/12 modes passed** (all except 75S/75L which weren't implemented)
+- Direction: **Brain TX → Phoenix Nest RX** (opposite of what we're trying now)
+
+### Key Differences: Working vs. Current Attempt
+
+| Working Test (Brain → PN) | Our Current Test (PN → BC) |
+|---------------------------|----------------------------|
+| Brain TX (48kHz) → PN RX (48kHz) | PN TX (48kHz) → BC RX (9600 Hz) |
+| **Same sample rate** | **Different sample rates** - requires decimation |
+| Used pre-recorded reference PCM | Live TX → RX |
+| Python script | C++ client |
+
+### Reference PCM Files Exist
+
+Location: `refrence_pcm/` directory contains Brain-generated PCM for all 12 modes:
+- `tx_600S_20251206_202518_709.pcm` (and all other modes)
+- Sample rate: **48000 Hz**
+- Test message: **"THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 1234567890"**
+
+### The Core Problem (UPDATED 2025-12-12)
+
+**Sample rate is NOT the issue!** Brain Core server accepts 48kHz and decimates internally via `decode_48k()`.
+
+The REAL problem is **preamble/mode detection incompatibility**:
+- Brain Core RX detects **1200 BPS SHORT** when Phoenix Nest sends 600S
+- Brain Core RX decodes 0 bytes from PN output
+- Even Brain TX → Brain RX gives garbled data (bit-reversal applied but still garbage)
+
+### Test Results Summary
+
+| Direction | Result | Notes |
+|-----------|--------|-------|
+| Brain TX → PN RX | ✅ 4/4 PASS | "THE QUICK BROWN FOX..." decoded correctly |
+| PN TX → PN RX | ✅ WORKS | Loopback successful |
+| PN TX → Brain RX | ❌ FAIL | BC detects wrong mode (1200S instead of 600S) |
+| Brain TX → Brain RX | ❌ PARTIAL | Decodes bytes but data is garbled |
+
+### Archive Resources
+
+`ARCHIVE/exhaustive_tests/` contains:
+- `server_backend.h` - Working ServerBackend class with proper timeout handling
+- `test_gui/brain_client.h` - Clean Brain modem TCP client
+- `test_gui/pn_client.h` - Clean Phoenix Nest TCP client  
+- `test_gui/html_tab_interop.h` - Interop GUI (never fully implemented)
+
+### Next Steps Options
+
+1. ~~Restore `test_cross_modem.py`~~ - ✅ Verified Brain→PN works (4/4 pass)
+2. ~~Fix sample rate issue~~ - Not the problem (BC handles 48kHz internally)
+3. **Investigate preamble differences** - Why does BC detect wrong mode from PN?
+4. **Check D1/D2 symbol positions** - Reference commit `cdd2995` fixed D1/D2 for external interop
+
+---
+
 ## Architecture (from testing.instructions.md)
 
 | Modem | Control Port | Data Port | Sample Rate |
 |-------|-------------|-----------|-------------|
 | Phoenix Nest | 4999 | 4998 | 48000 Hz |
-| Brain Core | 3999 | 3998 | 9600 Hz |
+| Brain Core | 3999 | 3998 | 48000 Hz (decimates internally to 9600) |
 
-**Critical:** Phoenix Nest outputs 48000 Hz, Brain Core expects 9600 Hz.
-- Decimation ratio: 5:1 (average every 5 samples)
-- Must decimate PN output before feeding to BC
+**Update:** Brain Core's `brain_tcp_server` uses `decode_48k()` which handles decimation.
+No external decimation needed!
+
+---
+
+## ROOT CAUSE IDENTIFIED (2025-12-12)
+
+### The Preamble Encoding Mismatch
+
+**Phoenix Nest TX (`preamble_codec.h`):**
+- Uses **simple mode_id bit repetition** at symbols 288-351
+- NOT MIL-STD-188-110A compliant D1/D2 encoding
+
+**Phoenix Nest RX (`mode_detector.h`):**
+- Uses **Walsh-Hadamard PSYMBOL patterns** (MIL-STD Table C-VII)
+- Uses **PSCRAMBLE scrambler** (MIL-STD Section C.5.2.1)
+- D1/D2 lookup per MIL-STD Table C-VI: `{6,6}=600S`, `{6,5}=1200S`, etc.
+- Looks at symbols 320-383 for D1/D2
+
+**Brain Core (both TX and RX):**
+- Uses standard MIL-STD D1/D2 Walsh encoding
+
+**Why Each Test Case Works/Fails:**
+| Direction | Result | Reason |
+|-----------|--------|--------|
+| Brain TX → PN RX | ✅ WORKS | Brain uses standard D1/D2, PN RX decodes it correctly |
+| PN TX → PN RX | ✅ WORKS | PN has fallback decoder for its own custom format |
+| PN TX → Brain RX | ❌ FAILS | PN TX uses custom format, Brain expects standard D1/D2 |
+| Brain TX → Brain RX | ⚠️ GARBLED | Bit-reversal issue or interleaver mismatch |
+
+### Fix Required
+
+Update `preamble_codec.h` to use standard MIL-STD-188-110A D1/D2 Walsh encoding:
+- D1 at symbols 320-351 (32 symbols)
+- D2 at symbols 352-383 (32 symbols)
+- Use PSYMBOL[d] Walsh pattern × 4 repetitions
+- Apply PSCRAMBLE[32] scrambler
+- D1/D2 values per Table C-VI
 
 ---
 
