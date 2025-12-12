@@ -15,14 +15,14 @@
 namespace m110a {
 
 constexpr int VERSION_MAJOR = 1;
-constexpr int VERSION_MINOR = 4;
-constexpr int VERSION_PATCH = 1;
+constexpr int VERSION_MINOR = 5;
+constexpr int VERSION_PATCH = 0;
 constexpr const char* VERSION_PRERELEASE = "";
-constexpr int BUILD_NUMBER = 322;
-constexpr const char* GIT_COMMIT = "a9b00a8";
-constexpr const char* GIT_BRANCH = "PhoenixNest_to_Brain_Testing";
+constexpr int BUILD_NUMBER = 323;
+constexpr const char* GIT_COMMIT = "caafec3";
+constexpr const char* GIT_BRANCH = "master";
 constexpr const char* BUILD_DATE = "2025-12-12";
-constexpr const char* BUILD_TIME = "15:55:29";
+constexpr const char* BUILD_TIME = "17:27:41";
 
 inline std::string version() {
     std::string v = std::to_string(VERSION_MAJOR) + "." +
