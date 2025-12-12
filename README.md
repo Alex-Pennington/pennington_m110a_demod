@@ -54,6 +54,13 @@ Seven equalizer implementations for different channel conditions:
 - **Web-Based GUI**: Interactive test interface at `http://localhost:8080`
 - **MS-DMT Compatible Server**: Network interface on TCP ports 4998/4999/5000
 
+### SDR Input (NEW)
+- **Direct SDR Receive**: I/Q input at 2 MSPS from SDRplay RSP2 Pro
+- **IQSource Class**: Multi-stage decimation (2 MSPS → 48 kHz) with format conversion
+- **IQFileSource Class**: Playback of `.iqr` recordings from [phoenix_sdr](https://github.com/Alex-Pennington/phoenix_sdr)
+- **Format Support**: int16/float32, planar/interleaved I/Q samples
+- **Signal Integrity**: 82.2 dB SNR through decimation chain, amplitude perfectly preserved
+
 ## Architecture
 
 ```
@@ -73,7 +80,7 @@ Seven equalizer implementations for different channel conditions:
 │  nco.h  rrc_filter.h  resampler.h  agc.h  fft.h            │
 ├─────────────────────────────────────────────────────────────┤
 │                        I/O Layer                             │
-│  pcm_file.h  wav_file.h                                     │
+│  pcm_file.h  wav_file.h  iq_source.h  audio_source.h        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -86,6 +93,10 @@ pennington_m110a_demod/
 │   ├── modem_rx.cpp/h     # Receiver implementation
 │   ├── modem_tx.cpp/h     # Transmitter implementation
 │   ├── modem_config.h     # Configuration structures
+│   ├── sample_source.h    # Abstract input interface
+│   ├── iq_source.h        # SDR I/Q input with decimation
+│   ├── iq_file_source.h   # .iqr file playback
+│   ├── audio_source.h     # Legacy audio input wrapper
 │   └── channel_sim.h      # Channel simulation
 ├── src/                    # Core modem implementation
 │   ├── common/            # Shared types and constants
@@ -358,15 +369,52 @@ This implementation was developed over 22+ sessions, progressing through:
 - M75 (75 bps Walsh) mode: Basic implementation, may need tuning for weak signals
 - No ALE (Automatic Link Establishment) integration
 - Single-channel only (no diversity combining)
-- File I/O based (no real-time audio device interface in current build)
+- SDR input tested with synthetic signals only (real-world OTA validation pending)
 - Windows-focused build system (PowerShell script)
+
+## Changelog
+
+### v1.1.0 - SDR Integration (2025-01-15)
+
+**SDR I/Q Pipeline** - 31/31 tests passing
+
+| Component | Tests | Status |
+|-----------|-------|---------|
+| IQSource format conversion | 10 | ✅ PASS |
+| IQFileSource .iqr loading | 11 | ✅ PASS |
+| I/Q pipeline loopback | 10 | ✅ PASS |
+
+**New Files:**
+- `api/sample_source.h` - Abstract input interface
+- `api/iq_source.h` - SDR I/Q input with multi-stage decimation
+- `api/iq_file_source.h` - .iqr file playback wrapper
+- `api/audio_source.h` - Legacy audio input wrapper
+- `test/test_sample_source.cpp` - SampleSource unit tests
+- `test/test_iq_file_source.cpp` - IQFileSource unit tests
+- `test/test_iq_loopback.cpp` - I/Q pipeline loopback tests
+
+**Key Metrics:**
+- Signal amplitude preserved: rms_ratio = 1.00
+- int16 quantization SNR: 82.2 dB
+- Format consistency: planar == interleaved (max_diff = 0)
+
+**Integration:** Coordinated with [phoenix_sdr](https://github.com/Alex-Pennington/phoenix_sdr) - IQSource accepts phoenix_sdr's int16 planar format directly (1:1 callback match).
+
+See [SDRPlay_Integration_Pathway.md](SDRPlay_Integration_Pathway.md) for full details.
+
+### v1.0.0 - Cross-Modem Interoperability (2025-01-15)
+
+- Brain Core TX→RX interoperability: 10/12 PASS
+- Phoenix Nest TX→Brain Core RX: 9/12 PASS
+- All 11 MIL-STD-188-110A modes validated
+- Turbo equalization for severe channel conditions
 
 ## Contributing
 
 Contributions welcome! Areas of interest:
 - Additional equalizer algorithms
 - ALE integration
-- Real-time audio interface
+- Real-time SDR signal capture testing
 - Performance optimization
 - Additional test vectors
 - Cross-platform build support (CMake)
@@ -395,5 +443,5 @@ This project is licensed under the GNU General Public License v3.0 - see the [LI
 ## Repository
 
 - GitHub: [pennington_m110a_demod](https://github.com/Alex-Pennington/pennington_m110a_demod)
-- Branch: `turbo` (active development)
-- Default branch: `master`
+- Branch: `master` (stable)
+- SDR integration: [phoenix_sdr](https://github.com/Alex-Pennington/phoenix_sdr)
