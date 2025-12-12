@@ -138,25 +138,6 @@ Build targets:
 .\test\test_gui.exe
 ```
 
-### Run Tests from Command Line
-
-```powershell
-# Single test
-.\test\exhaustive_test.exe --mode 2400S --eq DFE -n 1
-
-# Multiple modes and equalizers
-.\test\exhaustive_test.exe --modes 2400S,1200S,600L --eqs DFE,TURBO,NONE -n 5
-
-# Parallel execution with 4 threads
-.\test\exhaustive_test.exe --modes 2400S,1200L,600S --parallel 4 -n 10
-
-# Progressive test suite (all modes/equalizers)
-.\test\exhaustive_test.exe --progressive -n 50
-
-# Test with Server backend
-.\test\exhaustive_test.exe --mode 1200S --backend server --server-host localhost --server-port 4998 -n 1
-```
-
 ## Usage
 
 ### Direct API Usage
