@@ -265,7 +265,7 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 
 | Test | Description | Status |
 |------|-------------|--------|
-| .iqr playback | Load capture, verify decimation | ❌ TODO |
+| .iqr playback | Load capture, verify decimation | ✅ DONE (IQFileSource) |
 | Known signal decode | Capture 110A signal, verify decode | ❌ TODO |
 | Loopback | TX→capture→RX, compare data | ❌ TODO |
 | Audio vs I/Q comparison | Same signal, both paths, compare BER | ❌ TODO |
@@ -283,7 +283,7 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 
 ### Immediate (File-Based Testing)
 
-1. [ ] Create `IQFileSource` wrapper for `.iqr` playback
+1. [x] Create `IQFileSource` wrapper for `.iqr` playback ✅
 2. [ ] Capture a known MIL-STD-188-110A signal (or generate with TX)
 3. [ ] Feed `.iqr` to IQSource, verify decimated output looks correct
 4. [ ] Connect to demodulator, verify decode
@@ -319,8 +319,10 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 |------|---------|
 | `api/sample_source.h` | Abstract input interface |
 | `api/iq_source.h` | I/Q input with decimation |
+| `api/iq_file_source.h` | .iqr file reader wrapper |
 | `api/audio_source.h` | Legacy audio input wrapper |
-| `test/test_sample_source.cpp` | Unit tests |
+| `test/test_sample_source.cpp` | Unit tests for IQSource/AudioSource |
+| `test/test_iq_file_source.cpp` | Unit tests for IQFileSource (11 tests) |
 
 ---
 
@@ -330,6 +332,7 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 |------|--------|-----|
 | 2025-01-15 | Document created | Copilot |
 | 2025-01-15 | Added IQSource interface from SDRPlay_Integration branch | Copilot |
+| 2025-01-15 | Added IQFileSource wrapper for .iqr playback | Copilot |
 
 ---
 
