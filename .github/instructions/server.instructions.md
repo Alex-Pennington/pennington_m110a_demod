@@ -23,6 +23,15 @@ This folder contains TCP server implementations for the M110A modem project.
 - `tcp_server.h/.cpp` - Phoenix Nest TCP server (uses modem API)
 - `brain_tcp_server.h` - Brain Core TCP server (uses brain_wrapper.h)
 - `brain_server_main.cpp` - Brain Core server entry point
+- `test_tcp_base.cpp` - Unit tests for tcp_server_base (9/9 pass)
+
+## Server Status (2025-12-12)
+
+| Server | Persistent Connections | Status |
+|--------|----------------------|--------|
+| brain_tcp_server | ✅ 12/12 PASS | **USE THIS** |
+| brain_modem_server | ❌ 0/12 FAIL | Legacy, don't use |
+| m110a_server | Untested | Phoenix Nest |
 
 ## TCP Connection Model
 

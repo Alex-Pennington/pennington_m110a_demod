@@ -53,6 +53,22 @@ The `interop/baseline/` folder contains frozen, working tests that serve as a re
 
 Current baseline tests:
 - `test_brain_core_refrence_rx.ps1` - Brain Core RX with reference PCM files (12/12 modes pass)
+- `test_bc_persistent.ps1` - Persistent connection loopback (12/12 modes pass)
+
+## Server Selection
+
+**Always use `brain_tcp_server`** (the tcp_base implementation) for testing:
+
+```powershell
+.\start_brain_core.ps1 -UseTcpBase
+```
+
+The original `brain_modem_server` fails persistent connection tests (0/12).
+
+| Server | Persistent Connections |
+|--------|----------------------|
+| brain_modem_server | ❌ 0/12 FAIL |
+| brain_tcp_server | ✅ 12/12 PASS |
 
 ## Test Flow Pattern
 

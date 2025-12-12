@@ -550,5 +550,50 @@ Symbol 7: 0.707 - 0.707j  (315°)
 
 ---
 
-*Document Version: 1.0*
-*Last Updated: 2025-12-04*
+*Document Version: 1.1*
+*Last Updated: 2025-12-12*
+
+---
+
+## Appendix C: TCP Server Test Results
+
+### C.1 Server Implementations
+
+| Server | Location | Purpose |
+|--------|----------|---------|
+| brain_modem_server | d:\brain_core\ | Original Brain Core wrapper |
+| brain_tcp_server | release/bin/ | New tcp_server_base implementation |
+| m110a_server | release/bin/ | Phoenix Nest modem server |
+
+### C.2 Persistent Connection Test (2025-12-12)
+
+Tests whether server maintains connections across all 12 modes without dropping.
+
+| Server | Result | Notes |
+|--------|--------|-------|
+| brain_modem_server | **0/12 FAIL** | Returns 0 decoded bytes on reused connections |
+| brain_tcp_server | **12/12 PASS** | All modes complete on single connection |
+
+### C.3 TCP Server Base Unit Tests
+
+| Test | Result |
+|------|--------|
+| socket_init | PASS |
+| create_listener | PASS |
+| create_listener_bind_fail | PASS |
+| accept_nonblocking | PASS |
+| set_nonblocking | PASS |
+| server_start_stop | PASS |
+| server_accept_client | PASS |
+| server_command_echo | PASS |
+| recv_nonblocking | PASS |
+| **Total** | **9/9 PASS** |
+
+### C.4 Baseline Tests with brain_tcp_server
+
+| Test | Result |
+|------|--------|
+| Reference RX (all 12 modes) | 12/12 PASS |
+| Loopback TX→RX (all 12 modes) | 12/12 PASS |
+| Persistent Connection Loopback | 12/12 PASS |
+
