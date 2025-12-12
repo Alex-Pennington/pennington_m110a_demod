@@ -32,3 +32,6 @@ gpg/GnuPG/
 
 # MELPe vocoder - ETSI/TI/Microsoft licensed, not for public distribution
 src/melpe_core/
+
+# CodeQL analysis artifacts
+_codeql_detected_source_root
