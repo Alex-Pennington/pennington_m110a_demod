@@ -2,9 +2,12 @@
 
 ## Overview
 
-This document captures the de facto standard implementation of the Brain Core (m188110a) 
+This document captures the de facto standard implementation of G4GUO's Brain Core (m188110a) 
 modem interface as implemented in Qt MSDMT. Since Brain Core is a **sealed library**, 
 all interoperability must conform to how Qt MSDMT interfaces with it.
+
+**Note**: Qt MSDMT is a Qt-based wrapper for G4GUO's Brain Core library. This is separate from
+N2CKH's MS-DMT (MS-110A Demonstration & Maintenance Tool), which is a different reference implementation.
 
 **Purpose**: Sanity check our `brain_tcp_server.h` wrapper against the known-working Qt MSDMT implementation.
 
@@ -218,4 +221,5 @@ Our `brain_wrapper.h` doesn't set:
 ---
 
 *Document created: December 12, 2025*
-*Purpose: Sanity check for brain_tcp_server.h interoperability*
+*Updated: January 15, 2025*
+*Purpose: Sanity check for brain_tcp_server.h interoperability with G4GUO's Brain Core*

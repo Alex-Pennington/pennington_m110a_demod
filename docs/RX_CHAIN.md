@@ -4,7 +4,7 @@
 
 The receiver chain consists of:
 1. **Preamble Detection** - Correlates against known preamble pattern
-2. **Symbol Extraction** - Brain Modem compatible demodulation
+2. **Symbol Extraction** - G4GUO Brain Core compatible demodulation
 3. **Phase Tracking** - Corrects frequency offsets (when equalizer=NONE)
 4. **Equalization** - DFE or MLSE for multipath compensation
 5. **Viterbi Decoding** - FEC decoding with deinterleaving

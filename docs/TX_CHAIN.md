@@ -14,7 +14,7 @@ Data â†’ FEC â†’ Interleave â†’ Scramble â†’ Map â†’ In
 
 Rate 1/2 convolutional code (except M4800 uncoded):
 - Constraint length: K=7
-- Generator polynomials: G1=0x6D, G2=0x4F (Brain Modem compatible)
+- Generator polynomials: G1=0x6D, G2=0x4F (G4GUO Brain Core compatible)
 - 2 output bits per input bit
 
 ```
