@@ -62,7 +62,7 @@ public:
     
 protected:
     std::string get_ready_message() override {
-        return "READY:Paul Brain Core (tcp_base)";
+        return "READY:G4GUO Core (tcp_base)";
     }
     
     void on_command(const std::string& cmd) override {

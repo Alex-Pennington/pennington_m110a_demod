@@ -75,7 +75,7 @@ const char* HTML_TAB_INTEROP = R"HTML(
                     </div>
                 </div>
                 <div class="interop-section">
-                    <h3>🧠 Paul Brain Modem</h3>
+                    <h3>🧠 G4GUO Modem</h3>
                     <div class="interop-config">
                         <div class="form-group"><label>Host</label><input type="text" id="brain-host" value="localhost"></div>
                         <div class="form-group"><label>Control Port</label><input type="number" id="brain-ctrl-port" value="3999"></div>

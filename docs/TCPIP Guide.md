@@ -1,38 +1,46 @@
-# MS-DMT TCP Protocol Summary
+# MIL-STD-188-110A TCP Protocol Reference
 
-**Version:** MS-DMT v3.00 Beta 2.22 (M110A Implementation)  
+**Version:** tcp_server_base v1.1.0  
 **Date:** December 2025  
-**Protocol Compliance:** ✅ All 57 command tests pass
+**Servers:** Phoenix Nest, Brain Core (both use tcp_server_base)
 
 ---
 
-## Ports
+## Server Comparison
 
-| Port | Protocol | Description |
-|------|----------|-------------|
-| 4998 | TCP | **Data Port** - Binary message payload (TX/RX) |
-| 4999 | TCP | **Control Port** - ASCII commands and status |
-| 5000 | UDP | **Discovery** - Broadcasts "helo" for auto-discovery |
+| Property | Phoenix Nest | Brain Core |
+|----------|-------------|------------|
+| Control Port | 4999 | 3999 |
+| Data Port | 4998 | 3998 |
+| Sample Rate | 48000 Hz | 9600 Hz |
+| Ready Message | `MODEM READY` | `READY:G4GUO Core (tcp_base)` |
+| Executable | `m110a_server.exe` | `brain_tcp_server.exe` |
+
+**Cross-modem testing:** When feeding Phoenix Nest output to Brain Core, decimate 5:1 (48000→9600).
 
 ---
 
 ## Connection Flow
 
 ```
-1. Connect TCP to localhost:4999 (control)
-2. Connect TCP to localhost:4998 (data)
-3. Wait for "MODEM READY" on control port
-4. Send commands, receive status
+1. Connect TCP to control port (PN:4999 or BC:3999)
+2. Connect TCP to data port (PN:4998 or BC:3998)
+3. Wait for READY message (contains "READY")
+4. Send commands with CMD: prefix, receive responses
+5. Keep connections open for entire session (persistent connections)
 ```
+
+**IMPORTANT:** Both ports must be connected. Commands go to control port, binary data to data port.
 
 ---
 
 ## Control Port Commands
 
-All commands are ASCII, newline-terminated (`\n`).
+All commands are ASCII, newline-terminated (`\n`).  
+**All commands MUST start with `CMD:` prefix.**
 
 ### CMD:DATA RATE:\<mode\>
-Set modem mode before transmission.
+Set modem mode for TX/RX.
 
 | Mode | Rate | Interleave |
 |------|------|------------|
@@ -49,7 +57,8 @@ Set modem mode before transmission.
 | `2400S` | 2400 bps | Short |
 | `2400L` | 2400 bps | Long |
 
-**Response:** `OK:DATA RATE:<mode>`  
+**Example:** `CMD:DATA RATE:600S`  
+**Response:** `OK:DATA RATE:600 BPS SHORT`  
 **Error:** `ERROR:DATA RATE:INVALID MODE: <mode>`
 
 ---
@@ -73,11 +82,15 @@ OK:SENDBUFFER:<bytes> bytes FILE:<pcm_path>
 ### CMD:KILL TX
 Abort ongoing transmission immediately.
 
-**Response:**
-```
-STATUS:TX:IDLE
-OK:KILL TX
-```
+**Phoenix Nest Response:** `OK:KILL TX`  
+**Brain Core Response:** `OK:TX KILLED`
+
+---
+
+### CMD:RESET MDM
+Reset modem state, clear TX buffer.
+
+**Response:** `OK:RESET`
 
 ---
 
@@ -94,7 +107,8 @@ Enable/disable TX audio recording to PCM files.
 Set filename prefix for recorded PCM files.
 
 **Example:** `CMD:RECORD PREFIX:test_600S`  
-**Response:** `OK:RECORD PREFIX:test_600S`  
+**Phoenix Nest Response:** `OK:RECORD PREFIX:test_600S`  
+**Brain Core Response:** `OK:PREFIX:test_600S`  
 **Filename:** `./tx_pcm_out/test_600S_20251207_143022_123.pcm`
 
 ---
@@ -108,7 +122,7 @@ Inject PCM file into RX modem for decoding (testing).
 ```
 OK:RXAUDIOINJECT:STARTED:<filepath>
 STATUS:RX:<mode>           (e.g., STATUS:RX:600 BPS SHORT)
-... (decoded data on port 4998) ...
+... (decoded data on data port) ...
 STATUS:RX:NO DCD
 OK:RXAUDIOINJECT:COMPLETE:<sample_count> samples
 ```
@@ -118,7 +132,7 @@ OK:RXAUDIOINJECT:COMPLETE:<sample_count> samples
 
 ---
 
-### CMD:SET EQUALIZER:\<type\>
+### CMD:SET EQUALIZER:\<type\> (Phoenix Nest only)
 Set the equalizer type used during RX demodulation.
 
 | Type | Description |
@@ -133,28 +147,61 @@ Set the equalizer type used during RX demodulation.
 
 **Example:** `CMD:SET EQUALIZER:DFE`  
 **Response:** `OK:SET EQUALIZER:DFE`  
-**Error:** `ERROR:SET EQUALIZER:UNKNOWN: <type> (valid: NONE, DFE, DFE_RLS, MLSE_L2, MLSE_L3, MLSE_ADAPTIVE, TURBO)`
+**Error:** `ERROR:SET EQUALIZER:UNKNOWN: <type>`
+
+---
+
+## Query Commands
+
+### CMD:QUERY:STATUS
+Get current modem status.
+
+**Response:** `STATUS:IDLE TX_MODE:<mode> TX_BUF:<bytes>`
+
+### CMD:QUERY:MODES
+Get list of supported modes.
+
+**Response:** `MODES:75S,75L,150S,150L,300S,300L,600S,600L,1200S,1200L,2400S,2400L`
+
+### CMD:QUERY:VERSION
+Get server version.
+
+**Phoenix Nest Response:** `VERSION:<m110a version>`  
+**Brain Core Response:** `VERSION:v1.1.0-tcp_base`
+
+### CMD:QUERY:HELP
+Get list of available commands.
+
+**Response:** `COMMANDS:DATA RATE,SENDBUFFER,RESET MDM,KILL TX,RECORD TX:ON/OFF,RECORD PREFIX,RXAUDIOINJECT,QUERY:*`
+
+### CMD:QUERY:PCM OUTPUT (Brain Core only)
+Get PCM output directory.
+
+**Response:** `PCM OUTPUT:./tx_pcm_out/`
 
 ---
 
 ## Status Messages (Async)
 
-MS-DMT sends these asynchronously on the control port:
+Servers send these asynchronously on the control port:
 
 | Message | Meaning |
 |---------|---------|
-| `MODEM READY` | Modem initialized, ready for commands |
+| `MODEM READY` | Phoenix Nest ready |
+| `READY:G4GUO Core (tcp_base)` | Brain Core ready |
 | `STATUS:TX:TRANSMIT` | Transmission started |
 | `STATUS:TX:IDLE` | Transmission complete |
 | `STATUS:RX:<mode>` | DCD acquired, mode detected |
 | `STATUS:RX:NO DCD` | Signal lost / end of message |
+
+**Note:** To detect ready state, check if response contains "READY".
 
 **RX mode format:** `<rate> BPS <interleave>`  
 Examples: `600 BPS SHORT`, `2400 BPS LONG`, `75 BPS SHORT`
 
 ---
 
-## Data Port (4998)
+## Data Port
 
 - **Binary** - no framing, no line terminators
 - **TX:** Send raw bytes, then `CMD:SENDBUFFER` on control port
@@ -164,27 +211,35 @@ Examples: `600 BPS SHORT`, `2400 BPS LONG`, `75 BPS SHORT`
 
 ## PCM File Format
 
-| Parameter | Value |
-|-----------|-------|
-| Sample Rate | 48000 Hz |
-| Bit Depth | 16-bit signed |
-| Byte Order | Little-endian |
-| Channels | Mono |
-| Format | Raw PCM (no header) |
+| Parameter | Phoenix Nest | Brain Core |
+|-----------|-------------|------------|
+| Sample Rate | 48000 Hz | 9600 Hz |
+| Bit Depth | 16-bit signed | 16-bit signed |
+| Byte Order | Little-endian | Little-endian |
+| Channels | Mono | Mono |
+| Format | Raw PCM (no header) | Raw PCM (no header) |
 
-**Duration calculation:** `seconds = file_bytes / 96000`
+**Duration calculation:**  
+- Phoenix Nest: `seconds = file_bytes / 96000`  
+- Brain Core: `seconds = file_bytes / 19200`
 
 ---
 
 ## Command-Line Flags
 
+**Phoenix Nest (`m110a_server.exe`):**
 | Flag | Description |
 |------|-------------|
 | `--testdevices` | Mock audio/serial devices (no hardware) |
 | `--autotest` | Auto-test mode with real devices |
 | `rlba` | Bypass VOX test |
 
-**For testing:** `m110a_server.exe --testdevices`
+**Brain Core (`brain_tcp_server.exe`):**
+| Flag | Description |
+|------|-------------|
+| (none) | Starts with defaults |
+
+**For testing:** Run servers in separate terminal windows (not VS Code terminals).
 
 ---
 
@@ -257,30 +312,34 @@ Examples: `600 BPS SHORT`, `2400 BPS LONG`, `75 BPS SHORT`
 | Type | Format |
 |------|--------|
 | Success | `OK:<command>:<details>` |
-| Error | `ERROR:<command>:<details>` |
+| Error | `ERROR:<command>:<details>` or `ERROR:UNKNOWN COMMAND` |
 | Status | `STATUS:<category>:<details>` |
-| Ready | `MODEM READY` |
+| Ready (PN) | `MODEM READY` |
+| Ready (BC) | `READY:G4GUO Core (tcp_base)` |
+
+**Error handling:** Commands without `CMD:` prefix return `ERROR:INVALID:Must start with CMD:` (Phoenix Nest).
 
 ---
 
 ## Command Summary Table
 
-| Command | Description |
-|---------|-------------|
-| `CMD:DATA RATE:<mode>` | Set data rate (75S/L to 2400S/L) |
-| `CMD:SENDBUFFER` | Transmit buffered data |
-| `CMD:KILL TX` | Abort transmission |
-| `CMD:RECORD TX:ON/OFF` | Enable/disable TX recording |
-| `CMD:RECORD PREFIX:<prefix>` | Set recording filename prefix |
-| `CMD:RXAUDIOINJECT:<path>` | Inject PCM for RX decode |
-| `CMD:SET EQUALIZER:<type>` | Set equalizer (NONE/DFE/DFE_RLS/MLSE_L2/MLSE_L3/MLSE_ADAPTIVE/TURBO) |
-| `CMD:CHANNEL CONFIG` | Show channel simulation config |
-| `CMD:CHANNEL PRESET:<name>` | Apply channel preset |
-| `CMD:CHANNEL AWGN:<snr>` | Enable AWGN noise |
-| `CMD:CHANNEL MULTIPATH:<delay>[,<gain>]` | Enable multipath |
-| `CMD:CHANNEL FREQOFFSET:<hz>` | Enable frequency offset |
-| `CMD:CHANNEL OFF` | Disable all impairments |
-| `CMD:RUN BERTEST:<input>[,<output>]` | Apply channel impairments to PCM file |
+| Command | Description | PN | BC |
+|---------|-------------|:--:|:--:|
+| `CMD:DATA RATE:<mode>` | Set data rate (75S/L to 2400S/L) | ✅ | ✅ |
+| `CMD:SENDBUFFER` | Transmit buffered data | ✅ | ✅ |
+| `CMD:KILL TX` | Abort transmission | ✅ | ✅ |
+| `CMD:RESET MDM` | Reset modem state | ✅ | ✅ |
+| `CMD:RECORD TX:ON/OFF` | Enable/disable TX recording | ✅ | ✅ |
+| `CMD:RECORD PREFIX:<prefix>` | Set recording filename prefix | ✅ | ✅ |
+| `CMD:RXAUDIOINJECT:<path>` | Inject PCM for RX decode | ✅ | ✅ |
+| `CMD:SET EQUALIZER:<type>` | Set equalizer type | ✅ | ❌ |
+| `CMD:QUERY:STATUS` | Get modem status | ✅ | ✅ |
+| `CMD:QUERY:MODES` | Get supported modes | ✅ | ✅ |
+| `CMD:QUERY:VERSION` | Get version | ✅ | ✅ |
+| `CMD:QUERY:HELP` | Get command list | ✅ | ✅ |
+| `CMD:QUERY:PCM OUTPUT` | Get PCM output dir | ❌ | ✅ |
+
+**Note:** Channel simulation commands (CHANNEL CONFIG, CHANNEL PRESET, etc.) may be available in Phoenix Nest but not currently in tcp_server_base.
 
 ---
 
@@ -288,9 +347,26 @@ Examples: `600 BPS SHORT`, `2400 BPS LONG`, `75 BPS SHORT`
 
 | Program | Description |
 |---------|-------------|
-| `test_all_commands.exe` | Protocol compliance test (57 tests) |
-| `test_loopback.exe` | TX→PCM→RX loopback verification |
-| `exhaustive_test.exe` | Multi-mode/channel exhaustive test |
-| `test_channel_cmds.exe` | Channel simulation command test |
+| `test_client.exe` | Simple C++ test client for Phoenix Nest |
+| `test_pn_to_bc.exe` | Cross-modem test: PN TX → BC RX |
 
-**Run server for testing:** `m110a_server.exe --testdevices`
+**Location:** `testing/interop/`  
+**Build:** `g++ -o test_client.exe test_client.cpp -lws2_32`
+
+---
+
+## Cross-Modem Testing
+
+When testing Phoenix Nest TX → Brain Core RX:
+1. Phoenix Nest outputs 48000 Hz PCM
+2. Brain Core expects 9600 Hz PCM
+3. **Decimate 5:1** before feeding to Brain Core
+
+```cpp
+// Simple 5:1 decimation (average every 5 samples)
+for (int i = 0; i + 5 <= pn_samples.size(); i += 5) {
+    int32_t sum = 0;
+    for (int j = 0; j < 5; j++) sum += pn_samples[i + j];
+    bc_samples.push_back(sum / 5);
+}
+```

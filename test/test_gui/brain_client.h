@@ -1,7 +1,7 @@
 #pragma once
 /**
  * @file brain_client.h
- * @brief Paul Brain modem TCP client
+ * @brief G4GUO modem TCP client
  */
 
 #include "utils.h"
