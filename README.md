@@ -331,24 +331,7 @@ Browser opens to `http://localhost:8080` with:
 
 ### Command Line Testing
 
-```powershell
-# Run all tests
-.\test\exhaustive_test.exe --progressive -n 100
-
-# Specific mode and equalizer
-.\test\exhaustive_test.exe --mode 1200L --eq TURBO -n 10
-
-# Multiple configurations in parallel
-.\test\exhaustive_test.exe --modes 2400S,1200S,600S --eqs DFE,TURBO --parallel 4 -n 20
-```
-
 ### Test Backends
-
-**Direct API Backend** (default):
-- In-process modem testing
-- Supports parallel execution
-- Faster execution
-- Full control over test parameters
 
 **Server Backend**:
 - Tests via TCP/IP (MS-DMT compatible)
@@ -369,12 +352,6 @@ This implementation was developed over 22+ sessions, progressing through:
 6. MS-DMT compatibility fixes
 7. Parallel test execution framework
 8. Web-based test GUI
-
-## Version
-
-Current version: **1.2.0+build.57** (turbo branch)
-
-See [VERSION_ITERATION_INSTRUCTIONS.md](docs/VERSION_ITERATION_INSTRUCTIONS.md) for versioning details.
 
 ## Known Limitations
 
