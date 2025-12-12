@@ -232,7 +232,7 @@ if (-not $hasBrain) {
 
 $targets = @(
     # Core server - FROZEN
-    @{ Name = "m110a_server"; Cmd = "$CXX $CXXFLAGS -o release/bin/m110a_server.exe server/main.cpp server/tcp_server.cpp $MODEM_SOURCES $LDFLAGS" },
+    @{ Name = "m110a_server"; Cmd = "$CXX $CXXFLAGS -o release/bin/m110a_server.exe server/main.cpp server/tcp_server_base.cpp $MODEM_SOURCES $LDFLAGS" },
     
     # Test GUI - FROZEN  
     @{ Name = "test_gui"; Cmd = "$CXX $CXXFLAGS -o release/bin/test_gui.exe test/test_gui/main.cpp $LDFLAGS -lshell32" },

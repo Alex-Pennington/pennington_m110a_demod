@@ -18,11 +18,11 @@ constexpr int VERSION_MAJOR = 1;
 constexpr int VERSION_MINOR = 4;
 constexpr int VERSION_PATCH = 1;
 constexpr const char* VERSION_PRERELEASE = "";
-constexpr int BUILD_NUMBER = 311;
-constexpr const char* GIT_COMMIT = "ce378c8";
-constexpr const char* GIT_BRANCH = "master";
+constexpr int BUILD_NUMBER = 313;
+constexpr const char* GIT_COMMIT = "f3cdd00";
+constexpr const char* GIT_BRANCH = "feature/tcp-server-testing";
 constexpr const char* BUILD_DATE = "2025-12-12";
-constexpr const char* BUILD_TIME = "09:19:43";
+constexpr const char* BUILD_TIME = "11:56:15";
 
 inline std::string version() {
     std::string v = std::to_string(VERSION_MAJOR) + "." +
