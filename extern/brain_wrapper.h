@@ -195,19 +195,23 @@ public:
             decoded_data_.clear();
         }
         
-        // Brain API needs non-const pointer - make a copy
-        std::vector<int16_t> pcm_copy = pcm;
+        // Convert signed int16_t to offset binary (unsigned short with 0x8000 = zero)
+        // The Qt MSDMT library's twos_to_float() expects this format
+        std::vector<uint16_t> pcm_unsigned;
+        pcm_unsigned.reserve(pcm.size());
+        for (int16_t sample : pcm) {
+            pcm_unsigned.push_back(static_cast<uint16_t>(sample + 32768));
+        }
         
         // Process in blocks
         const int BLOCK_SIZE = 512;
-        for (size_t i = 0; i < pcm_copy.size(); i += BLOCK_SIZE) {
-            int len = std::min(BLOCK_SIZE, static_cast<int>(pcm_copy.size() - i));
-            modem_->rx_process_block(pcm_copy.data() + i, len);
+        for (size_t i = 0; i < pcm_unsigned.size(); i += BLOCK_SIZE) {
+            int len = std::min(BLOCK_SIZE, static_cast<int>(pcm_unsigned.size() - i));
+            modem_->rx_process_block(pcm_unsigned.data() + i, len);
         }
         
-        // Flush with silence (like brain_core server does)
-        // Need extra flush to fully drain the decoder pipeline
-        std::vector<int16_t> flush(1920 * 10, 0);  // 10 frames of silence
+        // Flush with silence - 0x8000 is zero in offset binary format
+        std::vector<uint16_t> flush(1920 * 10, 0x8000);  // 10 frames of silence
         for (size_t i = 0; i < flush.size(); i += BLOCK_SIZE) {
             int len = std::min(BLOCK_SIZE, static_cast<int>(flush.size() - i));
             modem_->rx_process_block(flush.data() + i, len);

@@ -1,7 +1,7 @@
 # Current Work
 
 **Branch:** `PhoenixNest_to_Brain_Testing`  
-**Last Updated:** 2025-12-12
+**Last Updated:** 2025-12-12 3:26 PM EDT
 
 ---
 
@@ -10,6 +10,58 @@
 Test cross-modem interoperability: **Phoenix Nest TX → Brain Core RX**
 
 This validates that both modem implementations are compatible with MIL-STD-188-110A.
+
+---
+
+## Session Progress (2025-12-12 Afternoon)
+
+### Qt MSDMT as Ground Truth
+
+User clarified: **Qt MSDMT is the ONLY ground truth**. All other code (including our existing brain_core library) is suspect until verified against the original source.
+
+**Original Source Location:**
+```
+excluded_from_git/Qt MSDMT Project/m188110a as used with Win, Linux MS-DMT/
+  └── m188110a (Original Modem Core Source (for Qt5)/
+      ├── Cm110s.cpp (24KB) - Main modem class
+      ├── pxrx110a.cpp (56KB) - RX processing
+      ├── ptx110a.cpp (24KB) - TX processing  
+      ├── t110a.cpp (31KB) - Tables and constants
+      └── (5 other source files)
+```
+
+### Constants Verification ✅
+
+Verified Phoenix Nest constants match Qt MSDMT exactly:
+- `PSYMBOL[8][8]` - Walsh-Hadamard patterns ✅
+- `PSCRAMBLE[32]` - D1/D2 scrambler ✅
+- `p_c_seq[9]` - Preamble count sequence ✅
+- `con_symbol[8]` - Constellation points ✅
+- D1/D2 mode values per Table C-VI ✅
+
+### Brain Core Rebuilt from Source ✅
+
+1. Created `testing/interop/build_brain_core_from_source.ps1`
+2. Compiled all 9 Qt MSDMT source files with `-O1 -w` flags
+3. Built `libm188110a.a` (121.8 KB) from original source
+4. Copied to `extern/brain_core/lib/win64/`
+
+### Servers Rebuilt ✅
+
+- Fixed type mismatch in `brain_wrapper.h` (int16_t → reinterpret_cast<unsigned short*>)
+- Built `brain_tcp_server.exe` (244 KB) with fresh library
+
+### Documentation Created
+
+- `docs/CURRENT_UNDERSTANDING_MSDMT.md` - Comprehensive Qt MSDMT internals
+- Timestamp: December 12, 2025, 3:15 PM EDT
+
+### Next Steps
+
+1. Start Brain Core server with fresh build
+2. Generate new reference PCM files (old ones deleted as suspect)
+3. Run cross-modem tests (PN TX → BC RX)
+4. Validate interoperability
 
 ---
 
@@ -139,9 +191,13 @@ Update `preamble_codec.h` to use standard MIL-STD-188-110A D1/D2 Walsh encoding:
 ## What's Been Done
 
 1. [x] Create `test_pn_to_bc.cpp` - Cross-modem test client ✅
-2. [ ] Start both servers
-3. [ ] Run cross-modem test
-4. [ ] Document results
+2. [x] Verify constants match Qt MSDMT ✅
+3. [x] Rebuild brain_core from Qt MSDMT source ✅
+4. [x] Rebuild brain_tcp_server.exe ✅
+5. [x] Create CURRENT_UNDERSTANDING_MSDMT.md ✅
+6. [ ] Start servers and generate reference PCM
+7. [ ] Run cross-modem test
+8. [ ] Document final results
 
 **Build:** `g++ -o test_pn_to_bc.exe test_pn_to_bc.cpp -lws2_32`
 
