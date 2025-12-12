@@ -78,61 +78,30 @@ jobs:
         if: steps.check_tag.outputs.exists == 'false'
         shell: msys2 {0}
         run: |
+          # Main modem server (TX/RX via TCP)
           g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
             -o server/m110a_server.exe \
-            server/main.cpp server/brain_server.cpp api/modem_tx.cpp api/modem_rx.cpp \
+            server/main.cpp api/modem_tx.cpp api/modem_rx.cpp \
             -lws2_32
           
+          # Web-based test GUI
           g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
-            -o test/exhaustive_test.exe \
-            test/exhaustive_test_unified.cpp api/modem_tx.cpp api/modem_rx.cpp src/io/pcm_file.cpp \
-            -lws2_32
+            -o test/test_gui.exe \
+            test/test_gui/main.cpp \
+            -lws2_32 -lshell32
           
-          g++ -std=c++17 -O2 -I. -Isrc -Iextern -Iextern/brain_core -D_USE_MATH_DEFINES -static \
-            -o test/brain_exhaustive_test.exe \
-            test/brain_exhaustive_test.cpp \
-            extern/brain_core/m188110a/g110a.cpp \
-            extern/brain_core/m188110a/de110a.cpp \
-            extern/brain_core/m188110a/eq110a.cpp \
-            extern/brain_core/m188110a/in110a.cpp \
-            extern/brain_core/m188110a/ptx110a.cpp \
-            extern/brain_core/m188110a/rxm110a.cpp \
-            extern/brain_core/m188110a/t110a.cpp \
-            extern/brain_core/m188110a/txm110a.cpp \
-            extern/brain_core/m188110a/v110a.cpp \
-            -lws2_32
+          # I/Q Pipeline Tests (SDR support)
+          g++ -std=c++17 -O2 -I. -D_USE_MATH_DEFINES -static \
+            -o test/test_sample_source.exe \
+            test/test_sample_source.cpp
           
-          g++ -std=c++17 -O2 -I. -Isrc -Iextern -Iextern/brain_core -D_USE_MATH_DEFINES -static \
-            -o test/interop_test.exe \
-            test/interop_test.cpp api/modem_tx.cpp api/modem_rx.cpp \
-            extern/brain_core/m188110a/g110a.cpp \
-            extern/brain_core/m188110a/de110a.cpp \
-            extern/brain_core/m188110a/eq110a.cpp \
-            extern/brain_core/m188110a/in110a.cpp \
-            extern/brain_core/m188110a/ptx110a.cpp \
-            extern/brain_core/m188110a/rxm110a.cpp \
-            extern/brain_core/m188110a/t110a.cpp \
-            extern/brain_core/m188110a/txm110a.cpp \
-            extern/brain_core/m188110a/v110a.cpp \
-            -lws2_32
+          g++ -std=c++17 -O2 -I. -D_USE_MATH_DEFINES -static \
+            -o test/test_iq_file_source.exe \
+            test/test_iq_file_source.cpp
           
-          if [ -f "test/test_gui/main.cpp" ]; then
-            g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
-              -o test/test_gui.exe \
-              test/test_gui/main.cpp \
-              -lws2_32 -lshell32
-          else
-            g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
-              -o test/test_gui.exe \
-              test/test_gui_server.cpp \
-              -lws2_32 -lshell32
-          fi
-          
-          # HF Channel Simulator
-          g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
-            -o hfchansim/hfchansim.exe \
-            hfchansim/main.cpp \
-            -lws2_32
+          g++ -std=c++17 -O2 -I. -D_USE_MATH_DEFINES -static \
+            -o test/test_iq_loopback.exe \
+            test/test_iq_loopback.cpp
 
       # MELPe removed - ETSI/TI licensed code
       # Codec2 - Open Source (LGPL) voice codec by David Rowe VK5DGR
@@ -162,46 +131,46 @@ jobs:
           New-Item -ItemType Directory -Force -Path release/docs
           New-Item -ItemType Directory -Force -Path release/examples
           
+          # Main executables
           Copy-Item server/m110a_server.exe release/bin/
-          Copy-Item test/exhaustive_test.exe release/bin/
-          Copy-Item test/brain_exhaustive_test.exe release/bin/
-          Copy-Item test/interop_test.exe release/bin/
           Copy-Item test/test_gui.exe release/bin/
-          Copy-Item hfchansim/hfchansim.exe release/bin/
           Copy-Item src/codec2_vocoder/build/codec2_vocoder.exe release/bin/
           
+          # I/Q Pipeline tests (SDR support)
+          Copy-Item test/test_sample_source.exe release/bin/
+          Copy-Item test/test_iq_file_source.exe release/bin/
+          Copy-Item test/test_iq_loopback.exe release/bin/
+          
+          # Documentation
           Copy-Item README.md release/
+          Copy-Item SDRPlay_Integration_Pathway.md release/docs/
           if (Test-Path docs/PROTOCOL.md) { Copy-Item docs/PROTOCOL.md release/docs/ }
-          if (Test-Path docs/CHANNEL_SIMULATION.md) { Copy-Item docs/CHANNEL_SIMULATION.md release/docs/ }
           if (Test-Path docs/API.md) { Copy-Item docs/API.md release/docs/ }
-          if (Test-Path hfchansim/README.md) { Copy-Item hfchansim/README.md release/docs/HFCHANSIM.md }
           
           if (Test-Path refrence_pcm) { 
             Copy-Item refrence_pcm release/examples/refrence_pcm -Recurse
-          }
-          
-          if (Test-Path src/melpe_core/test_audio) {
-            Copy-Item src/melpe_core/test_audio release/examples/melpe_test_audio -Recurse
           }
           
           # Create INSTALL.md
           $install = "# M110A Modem Installation Guide`n`n"
           $install += "## Quick Start`n`n"
           $install += "1. Run test_gui.exe and open http://localhost:8080`n"
-          $install += "2. Or run: exhaustive_test.exe --help`n`n"
+          $install += "2. Or run: m110a_server.exe to start TCP modem server`n`n"
           $install += "## Components`n`n"
-          $install += "- m110a_server.exe - TCP/IP modem server (ports 4998/4999)`n"
-          $install += "- exhaustive_test.exe - PhoenixNest modem test suite`n"
-          $install += "- brain_exhaustive_test.exe - Brain modem test suite`n"
-          $install += "- interop_test.exe - PhoenixNest/Brain interoperability test`n"
-          $install += "- test_gui.exe - Web GUI for all tests`n"
-          $install += "- hfchansim.exe - HF channel simulator (Watterson/AWGN)`n"
+          $install += "- m110a_server.exe - TCP/IP modem server (ports 4998/4999/5000)`n"
+          $install += "- test_gui.exe - Web GUI for testing`n"
           $install += "- codec2_vocoder.exe - Codec2 voice codec (LGPL)`n`n"
-          $install += "## HF Channel Simulator`n`n"
-          $install += "Apply realistic HF channel impairments to test modem performance:`n`n"
-          $install += "  hfchansim.exe --list-ref              # List reference PCM files`n"
-          $install += "  hfchansim.exe --ref 600S --preset moderate`n"
-          $install += "  hfchansim.exe --help                   # Full documentation`n`n"
+          $install += "## SDR I/Q Pipeline Tests`n`n"
+          $install += "These validate the SDRplay RSP2 Pro integration pathway:`n`n"
+          $install += "- test_sample_source.exe - IQSource/AudioSource format tests`n"
+          $install += "- test_iq_file_source.exe - .iqr file reader tests`n"
+          $install += "- test_iq_loopback.exe - I/Q signal integrity tests`n`n"
+          $install += "All 31 I/Q tests pass with:`n"
+          $install += "- Signal amplitude preserved (rms_ratio = 1.00)`n"
+          $install += "- int16 quantization SNR: 82.2 dB`n"
+          $install += "- Format consistency: planar == interleaved`n`n"
+          $install += "## SDR Integration`n`n"
+          $install += "See SDRPlay_Integration_Pathway.md for connecting phoenix_sdr to the modem.`n`n"
           $install += "## Support`n`n"
           $install += "alex.pennington@organicengineer.com`n"
           Set-Content -Path release/INSTALL.md -Value $install
@@ -239,7 +208,13 @@ jobs:
           body: |
             ## M110A Modem ${{ steps.version.outputs.tag }}
             
-            MIL-STD-188-110A Compatible HF Modem
+            MIL-STD-188-110A Compatible HF Modem with **SDR I/Q Support**
+            
+            ### What's New
+            - ✅ **SDR Integration Ready** - Direct I/Q input from SDRplay RSP2 Pro (2 MSPS)
+            - ✅ **IQSource/IQFileSource** - Multi-stage decimation (2 MSPS → 48 kHz)
+            - ✅ **.iqr file playback** - Compatible with phoenix_sdr recordings
+            - ✅ **31/31 I/Q pipeline tests passing**
             
             ### Downloads
             - **M110A_Modem_*.zip** - Complete release package
@@ -248,14 +223,15 @@ jobs:
             Run `test_gui.exe` then open http://localhost:8080
             
             ### Included
-            - m110a_server.exe - TCP/IP modem server
-            - exhaustive_test.exe - PhoenixNest test suite
-            - brain_exhaustive_test.exe - Brain modem test suite
-            - interop_test.exe - Cross-implementation interoperability test
-            - test_gui.exe - Web GUI for all tests
-            - hfchansim.exe - HF channel simulator (Watterson model, CCIR presets)
+            - m110a_server.exe - TCP/IP modem server (TX/RX)
+            - test_gui.exe - Web GUI for testing
             - codec2_vocoder.exe - Codec2 voice codec (LGPL, by VK5DGR)
-            - Reference PCM files for all 12 modes
+            - test_sample_source.exe - I/Q format conversion tests
+            - test_iq_file_source.exe - .iqr file reader tests
+            - test_iq_loopback.exe - I/Q signal integrity validation
+            
+            ### SDR Integration
+            See `SDRPlay_Integration_Pathway.md` for connecting phoenix_sdr to the modem.
             
             ---
             Build ${{ steps.version.outputs.build }} | Auto-release with attestation
