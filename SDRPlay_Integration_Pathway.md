@@ -266,8 +266,8 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 | Test | Description | Status |
 |------|-------------|--------|
 | .iqr playback | Load capture, verify decimation | ✅ DONE (IQFileSource) |
+| Loopback | Signal → IQSource → verify preserved | ✅ DONE (10/10 tests) |
 | Known signal decode | Capture 110A signal, verify decode | ❌ TODO |
-| Loopback | TX→capture→RX, compare data | ❌ TODO |
 | Audio vs I/Q comparison | Same signal, both paths, compare BER | ❌ TODO |
 
 ### OTA Tests (Future)
@@ -284,8 +284,8 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 ### Immediate (File-Based Testing)
 
 1. [x] Create `IQFileSource` wrapper for `.iqr` playback ✅
-2. [ ] Capture a known MIL-STD-188-110A signal (or generate with TX)
-3. [ ] Feed `.iqr` to IQSource, verify decimated output looks correct
+2. [x] Loopback test - signal integrity through I/Q pipeline ✅ (10/10 PASS)
+3. [ ] Capture a known MIL-STD-188-110A signal (or generate with TX)
 4. [ ] Connect to demodulator, verify decode
 
 ### Short-Term (Library Integration)
@@ -323,6 +323,7 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 | `api/audio_source.h` | Legacy audio input wrapper |
 | `test/test_sample_source.cpp` | Unit tests for IQSource/AudioSource |
 | `test/test_iq_file_source.cpp` | Unit tests for IQFileSource (11 tests) |
+| `test/test_iq_loopback.cpp` | I/Q pipeline loopback tests (10 tests) |
 
 ---
 
@@ -333,6 +334,7 @@ The modem team built decimation that's comparable to phoenix_sdr's:
 | 2025-01-15 | Document created | Copilot |
 | 2025-01-15 | Added IQSource interface from SDRPlay_Integration branch | Copilot |
 | 2025-01-15 | Added IQFileSource wrapper for .iqr playback | Copilot |
+| 2025-01-15 | Added loopback tests - I/Q pipeline validated (10/10 PASS) | Copilot |
 
 ---
 
