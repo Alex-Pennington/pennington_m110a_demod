@@ -264,8 +264,17 @@ private:
         }
         
         // Encode using Phoenix Nest API
-        auto result = m110a::api::encode(tx_buffer_, current_mode_, 
-                                         static_cast<float>(SAMPLE_RATE));
+        // NOTE: Disable leading symbols for Brain Core interoperability
+        // Brain Core expects standard MIL-STD preamble without extra leading symbols
+        m110a::api::TxConfig config;
+        config.mode = current_mode_;
+        config.sample_rate = static_cast<float>(SAMPLE_RATE);
+        config.include_leading_symbols = false;  // Critical for Brain Core interop!
+        config.include_preamble = true;
+        config.include_eom = true;
+        
+        m110a::api::ModemTX tx(config);
+        auto result = tx.encode(tx_buffer_);
         
         if (!result.ok()) {
             send_control("ERROR:SENDBUFFER:ENCODE FAILED");
