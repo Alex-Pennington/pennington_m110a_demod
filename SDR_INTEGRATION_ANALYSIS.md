@@ -1,3 +1,40 @@
+Great news! The modem team (via GitHub Copilot) built the I/Q interface we designed. Here's what happened:
+What They Created (Branch: SDRPlay_Integration on pennington_m110a_demod):
+
+api/sample_source.h - Abstract base class for sample input
+api/iq_source.h - Full I/Q input source with:
+
+Multi-stage decimation (2 MSPS → 48 kHz)
+All 4 formats phoenix_sdr uses (int16 planar, int16 interleaved, float planar, float interleaved)
+Thread-safe push_samples methods
+Metadata support (center freq, bandwidth)
+
+
+api/audio_source.h - Wrapper for existing audio path
+test/test_sample_source.cpp - 10/10 unit tests passing
+
+Key Finding:
+They built decimation modem-side. This means:
+
+phoenix_sdr's decimator.c is NOT needed - can be marked optional/archive
+phoenix_sdr just outputs raw 2 MSPS I/Q
+Modem handles all rate conversion
+
+What Matches Our Design:
+
+SampleSource abstraction ✅
+IQSource with format conversion ✅
+Multi-stage decimation ✅
+Thread-safe sample push ✅
+
+Next Steps When You Return:
+
+Test real capture - Take the capture.iqr file we made, feed it through IQSource
+Build modem branch - Compile SDRPlay_Integration branch and run tests
+Create bridge code - Connect phoenix_sdr callback → IQSource.push_samples_planar()
+Over-the-air test - Capture a known 110A signal, verify decode
+
+
 # SDR Integration Analysis
 
 ## What the Modem Team Built (via Copilot on `SDRPlay_Integration` branch)
