@@ -126,57 +126,86 @@ public:
     
     /**
      * Generate single preamble frame
+     * 
+     * IMPORTANT: Scrambling behavior per Qt MSDMT:
+     * - Common (288 sym): scrambler continuous 0..287 using i%32
+     * - D1 (32 sym): scrambler restarts at 0
+     * - D2 (32 sym): scrambler restarts at 0
+     * - Count (96 sym): scrambler continuous 0..95 using i%32
+     * - Zero (32 sym): scrambler restarts at 0
      */
     std::vector<complex_t> encode_frame(int mode_index, int countdown) {
         std::vector<complex_t> symbols;
         symbols.reserve(brain::P_FRAME_LENGTH);
         
-        int scram_idx = 0;
-        
         // 1. Common segment (288 symbols)
-        for (int i = 0; i < 9; i++) {
-            uint8_t d_val = brain::p_c_seq[i];
-            for (int j = 0; j < 32; j++) {
-                uint8_t base = brain::psymbol[d_val][j % 8];
-                uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
-                symbols.push_back(symbol_to_complex(scrambled));
-                scram_idx++;
+        // Qt MSDMT: create_common_preamble_sequence()
+        // Scrambler runs continuously 0..287
+        {
+            int scram_idx = 0;
+            for (int seg = 0; seg < 9; seg++) {
+                uint8_t d_val = brain::p_c_seq[seg];
+                for (int rep = 0; rep < 4; rep++) {      // 4 repeats of 8 symbols
+                    for (int k = 0; k < 8; k++) {
+                        uint8_t base = brain::psymbol[d_val][k];
+                        uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
+                        symbols.push_back(symbol_to_complex(scrambled));
+                        scram_idx++;
+                    }
+                }
             }
         }
         
         // 2. Mode segment (64 symbols) - D1 and D2
+        // Qt MSDMT: create_d_preamble_sequence(d, ...) 
         int d1 = brain::mode_d1d2[mode_index].d1;
         int d2 = brain::mode_d1d2[mode_index].d2;
         
+        // D1: 32 symbols (scrambler restarts at 0)
         for (int i = 0; i < 32; i++) {
             uint8_t base = brain::psymbol[d1][i % 8];
-            uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
+            uint8_t scrambled = (base + brain::pscramble[i % 32]) % 8;
             symbols.push_back(symbol_to_complex(scrambled));
-            scram_idx++;
-        }
-        for (int i = 0; i < 32; i++) {
-            uint8_t base = brain::psymbol[d2][i % 8];
-            uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
-            symbols.push_back(symbol_to_complex(scrambled));
-            scram_idx++;
         }
         
-        // 3. Count segment (96 symbols) - countdown value (3 x 32-symbol patterns)
-        // Use D0 pattern with phase offset based on countdown
-        for (int rep = 0; rep < 3; rep++) {
-            for (int i = 0; i < 32; i++) {
-                uint8_t base = (countdown % 8);  // Simple countdown encoding
-                uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
-                symbols.push_back(symbol_to_complex(scrambled));
-                scram_idx++;
+        // D2: 32 symbols (scrambler restarts at 0)
+        for (int i = 0; i < 32; i++) {
+            uint8_t base = brain::psymbol[d2][i % 8];
+            uint8_t scrambled = (base + brain::pscramble[i % 32]) % 8;
+            symbols.push_back(symbol_to_complex(scrambled));
+        }
+        
+        // 3. Count segment (96 symbols)
+        // Qt MSDMT: create_count_preamble_sequence(count, ...)
+        // add_count_seq encodes count into 3 D values (each 4-7)
+        // Scrambler runs continuously 0..95
+        {
+            uint8_t count_d[3];
+            int c = countdown;
+            count_d[2] = (c & 0x03) + 4;  c >>= 2;
+            count_d[1] = (c & 0x03) + 4;  c >>= 2;
+            count_d[0] = (c & 0x03) + 4;
+            
+            int scram_idx = 0;
+            for (int seg = 0; seg < 3; seg++) {
+                uint8_t d_val = count_d[seg];
+                for (int rep = 0; rep < 4; rep++) {
+                    for (int k = 0; k < 8; k++) {
+                        uint8_t base = brain::psymbol[d_val][k];
+                        uint8_t scrambled = (base + brain::pscramble[scram_idx % 32]) % 8;
+                        symbols.push_back(symbol_to_complex(scrambled));
+                        scram_idx++;
+                    }
+                }
             }
         }
         
         // 4. Zero segment (32 symbols)
+        // Qt MSDMT: create_zero_preamble_sequence() uses psymbol[0]
         for (int i = 0; i < 32; i++) {
-            uint8_t scrambled = brain::pscramble[scram_idx % 32];
+            uint8_t base = brain::psymbol[0][i % 8];
+            uint8_t scrambled = (base + brain::pscramble[i % 32]) % 8;
             symbols.push_back(symbol_to_complex(scrambled));
-            scram_idx++;
         }
         
         return symbols;
