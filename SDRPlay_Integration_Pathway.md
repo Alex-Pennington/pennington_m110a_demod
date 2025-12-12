@@ -2,7 +2,27 @@
 
 **Created:** January 15, 2025  
 **Purpose:** Integration pathway for phoenix_sdr → Phoenix Nest Modem  
-**Status:** 📋 PLANNING
+**Status:** ✅ READY FOR INTEGRATION
+
+---
+
+## 🎯 phoenix_sdr is Ready!
+
+**See:** [HANDOFF_TO_MODEM_AGENT.md](https://github.com/Alex-Pennington/phoenix_sdr/blob/main/docs/HANDOFF_TO_MODEM_AGENT.md) for full integration details.
+
+### Key Points:
+1. **phoenix_sdr callback signature matches `IQSource.push_samples_planar()` exactly**
+2. **.iqr files are interleaved int16 at 2 MSPS with 64-byte header**
+3. **Use IQSource decimation (modem-side)** - phoenix_sdr outputs raw 2 MSPS
+4. **Start with file-based testing** (.iqr playback), then live SDR
+
+### Local Development Setup
+```
+D:\claude_sandbox\
+├── phoenix_sdr\              ← SDR library (ready)
+├── pennington_m110a_demod\   ← Modem (this repo)
+└── PROGRESS.md               ← Overall tracking
+```
 
 ---
 
