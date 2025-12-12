@@ -127,6 +127,12 @@ jobs:
               test/test_gui_server.cpp \
               -lws2_32 -lshell32
           fi
+          
+          # HF Channel Simulator
+          g++ -std=c++17 -O2 -I. -Isrc -D_USE_MATH_DEFINES -static \
+            -o hfchansim/hfchansim.exe \
+            hfchansim/main.cpp \
+            -lws2_32
 
       # MELPe removed - ETSI/TI licensed code
       # Codec2 - Open Source (LGPL) voice codec by David Rowe VK5DGR
@@ -161,12 +167,14 @@ jobs:
           Copy-Item test/brain_exhaustive_test.exe release/bin/
           Copy-Item test/interop_test.exe release/bin/
           Copy-Item test/test_gui.exe release/bin/
+          Copy-Item hfchansim/hfchansim.exe release/bin/
           Copy-Item src/codec2_vocoder/build/codec2_vocoder.exe release/bin/
           
           Copy-Item README.md release/
           if (Test-Path docs/PROTOCOL.md) { Copy-Item docs/PROTOCOL.md release/docs/ }
           if (Test-Path docs/CHANNEL_SIMULATION.md) { Copy-Item docs/CHANNEL_SIMULATION.md release/docs/ }
           if (Test-Path docs/API.md) { Copy-Item docs/API.md release/docs/ }
+          if (Test-Path hfchansim/README.md) { Copy-Item hfchansim/README.md release/docs/HFCHANSIM.md }
           
           if (Test-Path refrence_pcm) { 
             Copy-Item refrence_pcm release/examples/refrence_pcm -Recurse
@@ -187,7 +195,13 @@ jobs:
           $install += "- brain_exhaustive_test.exe - Brain modem test suite`n"
           $install += "- interop_test.exe - PhoenixNest/Brain interoperability test`n"
           $install += "- test_gui.exe - Web GUI for all tests`n"
+          $install += "- hfchansim.exe - HF channel simulator (Watterson/AWGN)`n"
           $install += "- codec2_vocoder.exe - Codec2 voice codec (LGPL)`n`n"
+          $install += "## HF Channel Simulator`n`n"
+          $install += "Apply realistic HF channel impairments to test modem performance:`n`n"
+          $install += "  hfchansim.exe --list-ref              # List reference PCM files`n"
+          $install += "  hfchansim.exe --ref 600S --preset moderate`n"
+          $install += "  hfchansim.exe --help                   # Full documentation`n`n"
           $install += "## Support`n`n"
           $install += "alex.pennington@organicengineer.com`n"
           Set-Content -Path release/INSTALL.md -Value $install
@@ -239,6 +253,7 @@ jobs:
             - brain_exhaustive_test.exe - Brain modem test suite
             - interop_test.exe - Cross-implementation interoperability test
             - test_gui.exe - Web GUI for all tests
+            - hfchansim.exe - HF channel simulator (Watterson model, CCIR presets)
             - codec2_vocoder.exe - Codec2 voice codec (LGPL, by VK5DGR)
             - Reference PCM files for all 12 modes
             

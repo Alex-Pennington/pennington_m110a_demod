@@ -3,9 +3,14 @@
 # Usage: .\build.ps1 [-Increment <major|minor|patch>] [-Clean]
 #
 # All executables output to release/bin/
+#
+# ============================================================
+# FROZEN BLOCK: Parameters - DO NOT MODIFY WITHOUT PERMISSION
+# ============================================================
 
 param(
     [string]$Increment = "",
+    [string]$Target = "",
     [switch]$Clean = $false,
     [switch]$Help = $false
 )
@@ -14,6 +19,10 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $VersionFile = Join-Path $ProjectRoot "api\version.h"
 $ReleaseBin = Join-Path $ProjectRoot "release\bin"
+
+# ============================================================
+# FROZEN BLOCK: Help Text - DO NOT MODIFY WITHOUT PERMISSION
+# ============================================================
 
 if ($Help) {
     Write-Host @"
@@ -25,6 +34,7 @@ USAGE:
 
 OPTIONS:
     -Increment <type>     Version increment: major, minor, patch
+    -Target <name>        Build only specified target (m110a_server, test_gui, hfchansim)
     -Clean                Clean release/bin/ before building
     -Help                 Show this help message
 
@@ -35,7 +45,8 @@ OUTPUT:
 }
 
 # ============================================================
-# Version Management
+# FROZEN BLOCK: Version Management - DO NOT MODIFY WITHOUT PERMISSION
+# These functions read/write api/version.h which is used by ALL executables
 # ============================================================
 
 function Get-CurrentVersion {
@@ -72,6 +83,11 @@ function Update-Version {
     $Version.Build++
     return $Version
 }
+
+# ============================================================
+# FROZEN BLOCK: version.h Generation - DO NOT MODIFY WITHOUT PERMISSION
+# This header is #included by all executables for consistent versioning
+# ============================================================
 
 function Write-VersionHeader {
     param($Version)
@@ -152,7 +168,7 @@ inline std::string copyright_notice() {
 }
 
 # ============================================================
-# Build Configuration
+# FROZEN BLOCK: Build Configuration - DO NOT MODIFY WITHOUT PERMISSION
 # ============================================================
 
 $CXX = "g++"
@@ -162,12 +178,12 @@ $LDFLAGS = "-static -lws2_32"
 $MODEM_SOURCES = "api/modem_tx.cpp api/modem_rx.cpp"
 $PCM_SOURCES = "src/io/pcm_file.cpp"
 
-# brain_core now uses prebuilt static library instead of source files
+# brain_core uses prebuilt static library
 $BRAIN_INCLUDES = "-Iextern -Iextern/brain_core -Iextern/brain_core/include -Iextern/brain_core/include/m188110a"
 $BRAIN_LDFLAGS = "-Lextern/brain_core/lib/win64 -lm188110a"
 
 # ============================================================
-# Main
+# FROZEN BLOCK: Main Build Logic - DO NOT MODIFY WITHOUT PERMISSION
 # ============================================================
 
 Write-Host "============================================" -ForegroundColor Cyan
@@ -187,31 +203,49 @@ if ($Clean) {
     Get-ChildItem -Path $ReleaseBin -Filter "*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
 }
 
-# Update version
+# Update version header
 $version = Get-CurrentVersion
 $version = Update-Version -Version $version -IncrementType $Increment
+$gitCommit = (git rev-parse --short HEAD 2>$null) -replace '\s',''
+if (-not $gitCommit) { $gitCommit = "unknown" }
 Write-VersionHeader -Version $version
-Write-Host "`nVersion: $(Get-VersionString $version) (build $($version.Build))" -ForegroundColor Cyan
+
+# Display version with build number and commit (matches m110a::version_header() format)
+Write-Host "`nVersion: $(Get-VersionString $version) (build $($version.Build), commit $gitCommit)" -ForegroundColor Cyan
 
 # Kill running server
 Get-Process m110a_server -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 300
 
-# Check for brain_core (now uses prebuilt library)
+# Check for brain_core
 $hasBrain = (Test-Path "extern/brain_core/include/m188110a/Cm110s.h") -and (Test-Path "extern/brain_core/lib/win64/libm188110a.a")
 if (-not $hasBrain) {
     Write-Host "`nWARNING: brain_core submodule not found or incomplete, skipping Brain targets" -ForegroundColor Yellow
     Write-Host "  Run: git submodule update --init --recursive" -ForegroundColor DarkYellow
 }
 
-# Build all targets
+# ============================================================
+# FROZEN BLOCK: Build Targets - DO NOT MODIFY WITHOUT PERMISSION
+# To add a new target, get permission first, then add to this array
+# All targets must use api/version.h for consistent versioning
+# ============================================================
+
 $targets = @(
-    @{ Name = "m110a_server";           Cmd = "$CXX $CXXFLAGS -o release/bin/m110a_server.exe server/main.cpp server/tcp_server.cpp $MODEM_SOURCES $LDFLAGS" },
-    @{ Name = "test_gui";               Cmd = "$CXX $CXXFLAGS -o release/bin/test_gui.exe test/test_gui/main.cpp $LDFLAGS -lshell32" }
+    # Core server - FROZEN
+    @{ Name = "m110a_server"; Cmd = "$CXX $CXXFLAGS -o release/bin/m110a_server.exe server/main.cpp server/tcp_server.cpp $MODEM_SOURCES $LDFLAGS" },
+    
+    # Test GUI - FROZEN  
+    @{ Name = "test_gui"; Cmd = "$CXX $CXXFLAGS -o release/bin/test_gui.exe test/test_gui/main.cpp $LDFLAGS -lshell32" },
+    
+    # HF Channel Simulator - Added 2025-12-12
+    @{ Name = "hfchansim"; Cmd = "$CXX $CXXFLAGS -o release/bin/hfchansim.exe hfchansim/main.cpp $LDFLAGS" }
 )
 
-# Build brain_modem_server if brain_core is available
-if ($hasBrain) {
+# ============================================================
+# FROZEN BLOCK: Brain Server Build - DO NOT MODIFY WITHOUT PERMISSION
+# ============================================================
+
+if ($hasBrain -and (-not $Target -or $Target -eq "brain_modem_server")) {
     Write-Host "`n=== brain_modem_server ===" -ForegroundColor Yellow
     Push-Location "extern/brain_core"
     try {
@@ -226,6 +260,25 @@ if ($hasBrain) {
         Write-Host "  FAILED: $_" -ForegroundColor Red
     }
     Pop-Location
+}
+
+# ============================================================
+# FROZEN BLOCK: Build Execution - DO NOT MODIFY WITHOUT PERMISSION
+# ============================================================
+
+# ============================================================
+# FROZEN BLOCK: Target Filtering - DO NOT MODIFY WITHOUT PERMISSION
+# ============================================================
+
+# Filter targets if -Target specified
+if ($Target) {
+    $filtered = $targets | Where-Object { $_.Name -eq $Target }
+    if (-not $filtered) {
+        Write-Host "Unknown target: $Target" -ForegroundColor Red
+        Write-Host "Available targets: $(($targets | ForEach-Object { $_.Name }) -join ', ')" -ForegroundColor Yellow
+        exit 1
+    }
+    $targets = @($filtered)
 }
 
 $failed = @()
@@ -246,6 +299,10 @@ foreach ($t in $targets) {
 
 $buildTimer.Stop()
 
+# ============================================================
+# FROZEN BLOCK: Build Summary - DO NOT MODIFY WITHOUT PERMISSION
+# ============================================================
+
 Write-Host "`n============================================" -ForegroundColor Cyan
 if ($failed.Count -eq 0) {
     Write-Host "Build Complete - $($buildTimer.Elapsed.TotalSeconds.ToString('0.0'))s" -ForegroundColor Green
@@ -255,7 +312,6 @@ if ($failed.Count -eq 0) {
 Write-Host "Output: release/bin/" -ForegroundColor Yellow
 Write-Host "============================================" -ForegroundColor Cyan
 
-# Release instructions
 Write-Host ""
 Write-Host "TO TRIGGER GITHUB RELEASE:" -ForegroundColor Magenta
 Write-Host "  .\build.ps1 -Increment patch" -ForegroundColor White

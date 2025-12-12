@@ -1,5 +1,8 @@
 excluded_from_git/
 
+# Testing folder - temporary test work
+testing/
+
 # Generated files
 tx_pcm_out/
 rx_pcm_in/

@@ -918,9 +918,21 @@ std::string generate_pcm_filename(const std::string& prefix, const std::string& 
     std::tm* tm = std::localtime(&time);
     
     std::ostringstream ss;
-    ss << output_dir;
-    if (!prefix.empty()) {
+    
+    // If prefix contains a path separator, use it as the full path prefix
+    // Otherwise, use output_dir + prefix
+    bool prefix_has_path = (!prefix.empty() && 
+        (prefix.find('/') != std::string::npos || 
+         prefix.find('\\') != std::string::npos ||
+         (prefix.length() > 1 && prefix[1] == ':')));  // Windows drive letter
+    
+    if (prefix_has_path) {
         ss << prefix << "_";
+    } else {
+        ss << output_dir;
+        if (!prefix.empty()) {
+            ss << prefix << "_";
+        }
     }
     ss << std::put_time(tm, "%Y%m%d_%H%M%S");
     ss << "_" << std::setfill('0') << std::setw(3) << ms.count();
