@@ -70,19 +70,41 @@ inline ::Mode to_brain_mode(Mode m) {
  * 
  * NOTE: Cm110s is HUGE (~2MB+ due to tx_bit_array[400000] and other arrays)
  * Must be heap-allocated to avoid stack overflow!
+ * 
+ * IMPORTANT: Initialization parameters MUST match Qt MSDMT for interoperability.
+ * See docs/QT_MSDMT_REFERENCE.md for the de facto standard.
  */
 class Modem {
 public:
-    static constexpr int SOUNDBLOCK_SIZE = 1024;  // Must match brain_core server
+    // Qt MSDMT uses 1920 samples (200ms at 9600 Hz)
+    static constexpr int SOUNDBLOCK_SIZE = 1920;
     
     Modem() : modem_(new Cm110s()) {
-        // Initialize like brain_core server does
+        // Initialize per Qt MSDMT standard (see modemservice.cpp:158-175)
+        // These settings are CRITICAL for cross-modem interoperability!
+        
+        // Register callbacks first
         modem_->register_receive_octet_callback_function(rx_callback_static);
         modem_->register_status(status_callback_static);
+        
+        // TX initialization (per Qt MSDMT modemservice.cpp:158-167)
         modem_->tx_set_soundblock_size(SOUNDBLOCK_SIZE);
         modem_->tx_set_mode(::M600S);  // Default
-        modem_->rx_enable();
         modem_->tx_enable();
+        
+        // RX initialization
+        modem_->rx_enable();
+        
+        // Critical Qt MSDMT parameters (modemservice.cpp:164-175)
+        modem_->set_psk_carrier(1800);            // 1800 Hz PSK carrier
+        modem_->set_preamble_hunt_squelch(8);     // Value 8 = "None"
+        modem_->set_p_mode(1);                    // Preamble mode
+        modem_->set_e_mode(0);                    // EOM mode
+        modem_->set_b_mode(0);                    // B mode
+        
+        // EOM reset handling (modemservice.cpp:166-167)
+        modem_->m_eomreset = 0;
+        modem_->eom_rx_reset();
     }
     
     ~Modem() {
