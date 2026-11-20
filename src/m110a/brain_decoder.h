@@ -537,9 +537,11 @@ private:
     void detect_mode(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
         complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
         
-        // D1 starts at symbol 320, D2 at 352 (per MIL-STD-188-110A section 5.2.2)
-        int d1_start = result.start_sample + 320 * sps_;
-        int d2_start = result.start_sample + 352 * sps_;
+        // Preamble frame: common (9 x 32 = 288), D1 (32), D2 (32), count (3 x 32),
+        // zero (32). D1 starts at symbol 288 and D2 at 320, matching
+        // BrainPreambleEncoder::encode_frame and MIL-STD-188-110A.
+        int d1_start = result.start_sample + brain::P_COMMON_LENGTH * sps_;
+        int d2_start = d1_start + 32 * sps_;
         
         float best_d1_corr = 0.0f;
         float best_d2_corr = 0.0f;
