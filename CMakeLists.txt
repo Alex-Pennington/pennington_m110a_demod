@@ -59,3 +59,10 @@ foreach(t test_sample_source test_iq_file_source test_iq_loopback)
   add_test(NAME ${t} COMMAND ${t} WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
   set_tests_properties(${t} PROPERTIES LABELS "fast;unit")
 endforeach()
+
+# Data must start after the last preamble frame whichever frame is found
+add_executable(test_preamble_countdown test/test_preamble_countdown.cpp)
+target_link_libraries(test_preamble_countdown PRIVATE m110a_modem)
+add_test(NAME test_preamble_countdown
+         COMMAND test_preamble_countdown ${CMAKE_SOURCE_DIR}/release/examples/refrence_pcm)
+set_tests_properties(test_preamble_countdown PROPERTIES LABELS "rx")

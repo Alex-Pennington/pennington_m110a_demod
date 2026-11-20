@@ -67,6 +67,10 @@ struct BrainDecodeResult {
     float phase_offset = 0.0f;
     float freq_offset_hz = 0.0f;  // Detected frequency offset from nominal carrier
     
+    // Preamble countdown of the frame found (frames still to come after it),
+    // -1 when it could not be read; see decode_countdown()
+    int countdown = -1;
+    
     // Mode detection
     int d1 = -1;
     int d2 = -1;
@@ -228,6 +232,9 @@ public:
         
         // Step 4: Detect mode from D1/D2
         detect_mode(filtered, result);
+        
+        // Step 4b: Which preamble frame was found (count segment)
+        decode_countdown(filtered, result);
         
         // Step 5: Extract data symbols
         extract_data_symbols(filtered, result);
@@ -580,6 +587,46 @@ private:
     }
     
     /**
+     * Read the countdown from the count segment of the frame found.
+     *
+     * MIL-STD-188-110A preamble frame: common (288), D1 (32), D2 (32),
+     * count (3 x 32, symbols 352-447), zero (32). The count segment carries
+     * the number of frames still to come as three base-4 digits, each sent
+     * as Walsh pattern D4..D7 (BrainPreambleEncoder::encode_frame).
+     *
+     * Each digit is taken non-coherently (largest |correlation| of the four
+     * patterns), so carrier phase and a residual offset do not matter. The
+     * countdown is kept only when every digit wins clearly and it is below
+     * the configured number of preamble frames; otherwise it stays -1.
+     */
+    void decode_countdown(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        const int frames = config_.preamble_symbols / brain::P_FRAME_LENGTH;
+        const int count_start = result.start_sample +
+            (brain::P_COMMON_LENGTH + brain::P_MODE_LENGTH) * sps_;
+        int countdown = 0;
+        for (int seg = 0; seg < 3; seg++) {
+            float best = 0.0f, second = 0.0f;
+            int best_d = -1;
+            for (int d = 4; d < 8; d++) {
+                complex_t corr(0, 0);
+                for (int i = 0; i < 32; i++) {
+                    int idx = count_start + (seg * 32 + i) * sps_;
+                    if (idx < 0 || idx >= static_cast<int>(filtered.size())) return;
+                    uint8_t pattern = (brain::psymbol[d][i % 8] + brain::pscramble[i]) % 8;
+                    corr += filtered[idx] *
+                            std::conj(complex_t(brain::psk8_i[pattern], brain::psk8_q[pattern]));
+                }
+                float mag = std::abs(corr);
+                if (mag > best) { second = best; best = mag; best_d = d; }
+                else if (mag > second) { second = mag; }
+            }
+            if (best_d < 0 || best < 1.5f * second) return;  // ambiguous digit
+            countdown = (countdown << 2) | (best_d - 4);
+        }
+        if (countdown < frames) result.countdown = countdown;
+    }
+    
+    /**
      * Look up mode name from D1/D2 values
      */
     std::string lookup_mode_name(int d1, int d2) {
@@ -620,8 +667,14 @@ private:
         // which may not match the configured mode exactly
         int preamble_symbols = config_.preamble_symbols;
         
-        // Data starts after preamble
-        int data_start = result.start_sample + preamble_symbols * sps_;
+        // Data starts after the last preamble frame. find_preamble() may
+        // lock onto any frame (it takes the first correlation above 0.80 in
+        // its window, so a weak frame 0 hands it frame 1), so count from the
+        // frame actually found: its countdown says how many frames follow.
+        // Without a readable countdown, assume the found frame is frame 0.
+        int frames_after = preamble_symbols / brain::P_FRAME_LENGTH;
+        if (result.countdown >= 0) frames_after = result.countdown + 1;
+        int data_start = result.start_sample + frames_after * brain::P_FRAME_LENGTH * sps_;
         
         // Debug output for comparing modes
         std::cout << "[RX] extract_data: preamble_symbols=" << preamble_symbols
