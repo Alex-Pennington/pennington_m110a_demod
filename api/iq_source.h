@@ -18,7 +18,9 @@
 
 #include "sample_source.h"
 #include <vector>
+#ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
+#endif
 #include <cmath>
 #include <algorithm>
 #include <mutex>

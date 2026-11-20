@@ -37,10 +37,14 @@ target_link_libraries(m110a_server PRIVATE m110a_modem)
 
 add_executable(hfchansim hfchansim/main.cpp)
 
+# SDR I/Q receive path: I/Q file or stream -> decoded bytes
+add_executable(m110a_rx m110a_rx/main.cpp)
+target_link_libraries(m110a_rx PRIVATE m110a_modem)
+
 # test_gui is Windows-only (test/test_gui/brain_client.h uses winsock without a
 # POSIX fallback); build.ps1 builds it on Windows.
 
-set_target_properties(m110a_server hfchansim PROPERTIES
+set_target_properties(m110a_server hfchansim m110a_rx PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----
