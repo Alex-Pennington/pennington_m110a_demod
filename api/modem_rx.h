@@ -47,6 +47,23 @@ struct DecodeResult {
     /// Frequency offset detected (Hz)
     float freq_offset_hz = 0.0f;
     
+    /// Decode quality: SNR in dB of the known probe symbols as the codec sees
+    /// them (the DFE's output with Equalizer::DFE, otherwise the symbols handed
+    /// to the codec), over the first 1440 data symbols. Every 110A transmission
+    /// carries at least that many, so the span never reaches past the signal.
+    float quality_db = 0.0f;
+    
+    /// Minimum quality_db for the decoded mode. success is true only when the
+    /// decode produced bytes and quality_db >= quality_threshold_db; below it,
+    /// data still holds the bytes but they are not trusted.
+    ///
+    /// 110A has no CRC, so success is a confidence threshold, not a proof. It
+    /// rejects garbage (an untrained equalizer, a decoder off the signal). It
+    /// does not catch a short Viterbi error event near the threshold: on held-
+    /// out AWGN decodes of the MS-DMT reference recordings, 4 of 56 successes
+    /// at the knee had 1-2 wrong bytes, and none had more.
+    float quality_threshold_db = 0.0f;
+    
     /// Error information (if !success)
     std::optional<Error> error;
     

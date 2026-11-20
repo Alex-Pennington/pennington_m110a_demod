@@ -164,6 +164,8 @@ public:
         // so its convergence rate scales with input power: below about 2500 RMS
         // (int16) it never trained and the codec decoded garbage.
         normalize_symbol_level(brain_result);
+        dfe_probe_err_pow_ = 0.0;
+        dfe_probe_ref_pow_ = 0.0;
         
         // Step 3: Apply phase tracking if enabled
         // Phase tracking corrects frequency offsets - only useful when no equalizer
@@ -262,7 +264,12 @@ public:
                     turbo_decoded = strip_eom_padding(turbo_decoded);
                 }
                 
-                result.success = true;
+                result.quality_db = probe_snr_db(phase_corrected,
+                                                 mode_cfg.unknown_data_len,
+                                                 mode_cfg.known_data_len);
+                result.quality_threshold_db = quality_threshold_db(mode_id);
+                result.success = result.quality_db >= result.quality_threshold_db;
+                if (!result.success) result.error = low_quality_error(result);
                 result.data = turbo_decoded;
                 result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
                 result.freq_offset_hz = freq_offset_hz;
@@ -314,17 +321,31 @@ public:
             decoded = strip_eom_padding(decoded);
         }
         
-        result.success = true;
+        // Step 7: Decode quality. With the DFE, score its own output on the
+        // known probes; otherwise score the probes in the stream the codec read.
+        if (config_.equalizer == Equalizer::DFE && dfe_probe_err_pow_ > 0.0) {
+            result.quality_db = static_cast<float>(
+                10.0 * std::log10(dfe_probe_ref_pow_ / dfe_probe_err_pow_));
+        } else {
+            result.quality_db = probe_snr_db(equalized_symbols,
+                                             mode_cfg.unknown_data_len,
+                                             mode_cfg.known_data_len);
+        }
+        result.quality_threshold_db = quality_threshold_db(mode_id);
+        result.success = result.quality_db >= result.quality_threshold_db;
+        if (!result.success) result.error = low_quality_error(result);
         result.data = decoded;
         result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
         result.freq_offset_hz = freq_offset_hz;
         
         // Update stats
-        stats_.bytes_received += decoded.size();
-        stats_.frames_received++;
+        if (result.success) {
+            stats_.bytes_received += decoded.size();
+            stats_.frames_received++;
+        }
         stats_.snr_db = result.snr_db;
         
-        state_ = RxState::COMPLETE;
+        state_ = result.success ? RxState::COMPLETE : RxState::DECODE_ERROR;
         last_result_ = result;
         
         return result;
@@ -510,6 +531,15 @@ private:
     RxConfig config_;
     RxState state_;
     
+    // Probe error and reference power of the DFE's a-priori outputs over the
+    // quality span (see accumulate_probe_quality).
+    double dfe_probe_err_pow_ = 0.0;
+    double dfe_probe_ref_pow_ = 0.0;
+    
+    /// Data symbols scored for decode quality: 0.6 s at 2400 baud, one short
+    /// interleaver block, the least any 110A transmission sends.
+    static constexpr int QUALITY_SPAN_SYMBOLS = 1440;
+    
     /// Common-preamble symbol RMS of the MS-DMT reference recordings at their
     /// native level (about 7000 RMS int16): 0.5517 on all ten. The DFE step
     /// sizes were tuned at this level, so normalising to it leaves normal-level
@@ -528,6 +558,75 @@ private:
         for (auto& x : r.preamble_symbols) x *= g;
         for (auto& x : r.data_symbols) x *= g;
     }
+    
+    /// Run a DFE training pass over one frame's probes and, while the frame
+    /// lies inside the quality span, accumulate the error of the DFE's output
+    /// on each probe before it adapts to that probe.
+    void accumulate_probe_quality(DFE& dfe, const std::vector<complex_t>& probe_in,
+                                  const std::vector<complex_t>& probe_ref, size_t frame_end) {
+        float mse = dfe.train(probe_in, probe_ref);
+        if (frame_end <= static_cast<size_t>(QUALITY_SPAN_SYMBOLS) && !probe_ref.empty()) {
+            double ref_pow = 0.0;
+            for (const auto& r : probe_ref) ref_pow += std::norm(r);
+            dfe_probe_err_pow_ += static_cast<double>(mse) * probe_ref.size();
+            dfe_probe_ref_pow_ += ref_pow;
+        }
+    }
+    
+    /// SNR in dB of the probe symbols in a data+probe stream over the quality
+    /// span, after a least-squares complex gain fit to the known probe values.
+    static float probe_snr_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len) {
+        if (unknown_len <= 0 || known_len <= 0) return -99.0f;
+        int pattern_len = unknown_len + known_len;
+        int span = std::min<int>(QUALITY_SPAN_SYMBOLS, static_cast<int>(symbols.size()));
+        DataScramblerFixed scrambler;
+        std::vector<complex_t> rx, ref;
+        for (int f = 0; (f + 1) * pattern_len <= span; f++) {
+            for (int i = 0; i < unknown_len; i++) scrambler.next();
+            for (int i = 0; i < known_len; i++) {
+                int scr = scrambler.next();
+                float ph = scr * static_cast<float>(PI) / 4.0f;
+                rx.push_back(symbols[f * pattern_len + unknown_len + i]);
+                ref.push_back(complex_t(std::cos(ph), std::sin(ph)));
+            }
+        }
+        if (rx.empty()) return -99.0f;
+        complex_t num(0, 0);
+        double den = 0.0;
+        for (size_t i = 0; i < rx.size(); i++) { num += rx[i] * std::conj(ref[i]); den += std::norm(ref[i]); }
+        complex_t g = num / static_cast<float>(den);
+        double err = 0.0;
+        for (size_t i = 0; i < rx.size(); i++) err += std::norm(rx[i] - g * ref[i]);
+        err /= rx.size();
+        return static_cast<float>(10.0 * std::log10(std::norm(g) / (err + 1e-12)));
+    }
+    
+    /// Minimum decode quality per mode, in dB. Set from 952 DFE decodes of the
+    /// MS-DMT reference recordings with white noise (20 to -4 dB in 3 kHz):
+    /// each sits above the highest quality_db of any decode with wrong bytes.
+    ///   600: wrong max 2.27, exact min 3.08    1200S: wrong max 4.81
+    ///   1200L: wrong max 4.14                  2400L: wrong max 7.56
+    /// 150 and 300 never produced wrong bytes (the preamble is lost first);
+    /// their exact decodes scored 2.2 dB and up, and an untrained DFE about 0.8.
+    /// 2400S and 4800S do not decode exactly yet; they take the 2400L value.
+    static float quality_threshold_db(ModeId mode) {
+        switch (mode) {
+            case ModeId::M150S:  case ModeId::M150L:  return 1.5f;
+            case ModeId::M300S:  case ModeId::M300L:  return 1.5f;
+            case ModeId::M600S:  case ModeId::M600L:  return 2.75f;
+            case ModeId::M1200S:                      return 5.0f;
+            case ModeId::M1200L:                      return 4.5f;
+            default:                                  return 7.75f;
+        }
+    }
+    
+    static Error low_quality_error(const DecodeResult& r) {
+        char buf[128];
+        snprintf(buf, sizeof(buf), "Decode quality %.1f dB below %.1f dB for this mode; bytes not trusted",
+                 r.quality_db, r.quality_threshold_db);
+        return Error(ErrorCode::RX_DECODE_FAILED, buf);
+    }
+
     ModemStats stats_;
     DecodeResult last_result_;
     Samples streaming_samples_;
@@ -600,7 +699,12 @@ private:
         }
         
         if (!decoded.empty()) {
-            result.success = true;
+            const auto& mcfg = ModeDatabase::get(mode_id);
+            result.quality_db = probe_snr_db(brain_result.data_symbols,
+                                             mcfg.unknown_data_len, mcfg.known_data_len);
+            result.quality_threshold_db = quality_threshold_db(mode_id);
+            result.success = result.quality_db >= result.quality_threshold_db;
+            if (!result.success) result.error = low_quality_error(result);
             result.data = decoded;
             result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
         }
@@ -917,7 +1021,7 @@ private:
             } else {
                 // With preamble or subsequent frames: equalize first, then update
                 dfe.equalize(data_in, output);
-                dfe.train(probe_in, probe_ref);
+                accumulate_probe_quality(dfe, probe_in, probe_ref, idx + pattern_len);
             }
             
             // Pass through original probes
