@@ -11,7 +11,8 @@
  *   INPUT            .cs16 (int16 I/Q), .cf32 (float32 I/Q), .iqr, or - for stdin.
  *                    PREFIX.json beside PREFIX.cs16 (rsp2_stream.py --record)
  *                    supplies --rate, --offset and --dial.
- *   --mode M         75S..2400L, or AUTO (required)
+ *   --mode M         AUTO (default: the receiver reads the mode from D1/D2),
+ *                    or 75S..2400L to force a mode
  *   --rate HZ        input sample rate (default: .json/.iqr, else 2000000)
  *   --offset HZ      dial - tuner frequency (default: .json, else 100000)
  *   --dial HZ        dial frequency, used with --ppm (default: .json wwv_hz)
@@ -60,7 +61,7 @@ constexpr float TARGET_RMS = 7000.0f / 32768.0f;  // MS-DMT reference level
 constexpr long MARGIN = static_cast<long>(0.04 * FS);  // audio before frame 1
 
 struct Options {
-    std::string input, mode_s, eq_s = "DFE", format, expect, dump_audio;
+    std::string input, mode_s = "AUTO", eq_s = "DFE", format, expect, dump_audio;
     double rate = 0, offset = NAN, dial = NAN, ppm = 0;
     double threshold = 0.45, max_secs = 120;
     bool have_expect = false, verbose = false;
@@ -69,7 +70,7 @@ struct Options {
 [[noreturn]] void usage(const char* msg) {
     if (msg) fprintf(stderr, "m110a_rx: %s\n", msg);
     fprintf(stderr,
-        "usage: m110a_rx --mode M [--rate HZ] [--offset HZ] [--dial HZ] [--ppm P]\n"
+        "usage: m110a_rx [--mode AUTO|M] [--rate HZ] [--offset HZ] [--dial HZ] [--ppm P]\n"
         "                [--format cs16|cf32] [--eq E] [--threshold T] [--max-secs S]\n"
         "                [--expect TEXT] [--dump-audio FILE] [-v] INPUT|-\n");
     exit(2);
@@ -264,8 +265,10 @@ private:
         m.id = next_id_++;
         const int nf = preamble_frames(mode_);
         const long last = chain_.back().t;
-        // Data follows the LAST frame, so for a known mode count back from
-        // it: a missed first frame then costs nothing.
+        // For a known mode, count back from the last frame (data follows it),
+        // so a missed first frame costs nothing. For AUTO, start at the first
+        // frame seen: the receiver reads the countdown of whichever frame it
+        // locks onto, so any frame is a valid entry point.
         m.first_frame = nf > 0 ? last - (nf - 1) * FRAME_SCAN : chain_.front().t;
         m.preamble_end = last + FRAME_SCAN;
         m.hits = static_cast<int>(chain_.size());
@@ -373,10 +376,11 @@ private:
             hex += hx;
         }
         printf("msg=%d start_s=%.3f end_s=%.3f mode=%s preamble_hits=%d acq_metric=%.2f "
-               "acq_foff_hz=%+.2f success=%d eom=%d bytes=%zu snr_db=%.1f err=\"%s\"\n",
+               "acq_foff_hz=%+.2f success=%d quality_db=%.1f quality_threshold_db=%.1f eom=%d "
+               "bytes=%zu snr_db=%.1f err=\"%s\"\n",
                m.id, a_first / FS, a1 / FS, mode_name(r.mode).c_str(), m.hits, m.metric,
-               m.freq, r.success ? 1 : 0, eom_bit >= 0 ? 1 : 0, d.size(), r.snr_db,
-               r.error ? r.error->message.c_str() : "");
+               m.freq, r.success ? 1 : 0, r.quality_db, r.quality_threshold_db,
+               eom_bit >= 0 ? 1 : 0, d.size(), r.snr_db, r.error ? r.error->message.c_str() : "");
         printf("  text=\"%s\"\n  hex=%s\n", text.c_str(), hex.c_str());
         fflush(stdout);
         if (r.success) decoded_ok_++;
@@ -438,7 +442,6 @@ int main(int argc, char** argv) {
         else usage("more than one input");
     }
     if (o.input.empty()) usage("no input");
-    if (o.mode_s.empty()) usage("--mode is required (AUTO, 150S, 600L, ...)");
     Mode mode;
     if (!parse_mode(o.mode_s, mode)) usage(("unknown mode " + o.mode_s).c_str());
     Equalizer eq;
@@ -483,8 +486,6 @@ int main(int argc, char** argv) {
     fprintf(stderr, "m110a_rx: %s %s @ %.0f S/s, dial at %+.2f Hz (offset %.0f, ppm %.3f), mode %s, eq %s\n",
             o.input.c_str(), o.format.c_str(), o.rate, shift, o.offset, o.ppm,
             o.mode_s.c_str(), o.eq_s.c_str());
-    if (mode == Mode::AUTO)
-        fprintf(stderr, "m110a_rx: note: AUTO uses the receiver's mode detection\n");
 
     SdrFrontEnd fe(o.rate, shift);
     Receiver rx(o, mode, eq);
