@@ -372,12 +372,16 @@ private:
         
         for (int n = 0; n <= M; n++) {
             float x = n - M / 2.0f;
-            float sinc = (std::abs(x) < 1e-6f) ? 1.0f : 
+            // Ideal lowpass impulse response sin(pi*cutoff*x)/(pi*x), whose
+            // value at x = 0 is its limit, cutoff (not 1: that made the
+            // centre tap 1/cutoff times too large and floored the stopband
+            // at -6.5 dB).
+            float sinc = (std::abs(x) < 1e-6f) ? cutoff :
                          std::sin(static_cast<float>(M_PI) * cutoff * x) / (static_cast<float>(M_PI) * x);
             
             // Hamming window
             float window = 0.54f - 0.46f * std::cos(2.0f * static_cast<float>(M_PI) * n / M);
-            taps[n] = sinc * window * cutoff;
+            taps[n] = sinc * window;
             sum += taps[n];
         }
         
