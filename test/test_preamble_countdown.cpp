@@ -11,7 +11,8 @@
  *
  * Each MS-DMT reference transmission is given 0, 5, 10 and 20 ms of lead-in
  * and white Gaussian noise of the signal's RMS over 0-24 kHz (about 7 dB in
- * 3 kHz), then decoded with the mode given. The payload must come out whole.
+ * 3 kHz), then decoded with the mode given. The payload must come out whole
+ * and the decode must report success.
  *
  * usage: test_preamble_countdown REF_DIR
  */
@@ -92,10 +93,12 @@ int main(int argc, char** argv) {
             std::cerr.rdbuf(e);
 
             std::string text(r.data.begin(), r.data.end());
-            bool ok = text.rfind(PAYLOAD, 0) == 0;
+            // Whole payload AND success: a suffix must never be reported good.
+            bool ok = r.success && text.rfind(PAYLOAD, 0) == 0;
             std::string shown;
             for (char c : text.substr(0, 40)) shown += (c >= 32 && c < 127) ? c : '.';
-            printf("%-6s lead=%2d ms  %s  \"%s\"\n", m.name, lead, ok ? "PASS" : "FAIL", shown.c_str());
+            printf("%-6s lead=%2d ms  %s  success=%d quality=%.1f dB  \"%s\"\n", m.name, lead, ok ? "PASS" : "FAIL",
+                   r.success ? 1 : 0, r.quality_db, shown.c_str());
             run++;
             if (!ok) failed++;
         }

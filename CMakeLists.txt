@@ -66,3 +66,12 @@ target_link_libraries(test_preamble_countdown PRIVATE m110a_modem)
 add_test(NAME test_preamble_countdown
          COMMAND test_preamble_countdown ${CMAKE_SOURCE_DIR}/release/examples/refrence_pcm)
 set_tests_properties(test_preamble_countdown PROPERTIES LABELS "rx")
+
+# Receiver tests from fix/m110a-mode-detect; both take the reference
+# directory as argv[1]
+foreach(t test_mode_detect test_decode_quality)
+  add_executable(${t} test/${t}.cpp)
+  target_link_libraries(${t} PRIVATE m110a_modem)
+  add_test(NAME ${t} COMMAND ${t} ${CMAKE_SOURCE_DIR}/release/examples/refrence_pcm)
+  set_tests_properties(${t} PROPERTIES LABELS "rx")
+endforeach()
