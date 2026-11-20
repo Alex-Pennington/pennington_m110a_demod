@@ -126,8 +126,11 @@ if(M110A_HAVE_SCIPY)
   # long sweeps: ctest -L slow
   set(_all_modes 150S,150L,300S,300L,600S,600L,1200S,1200L,2400L)
   set(_slow
-    "iq_sweep_mistune|--modes ${_all_modes} --auto --snr 15 --foff -15,-10,-7.6,-3,0,3,7.6,10,15 --lead 0.5"
-    "iq_sweep_snr|--modes 150S,600S,1200S --auto --snr 4,6,8,10 --foff -15,0,15 --seeds 1,2"
+    "iq_sweep_mistune|--modes ${_all_modes} --auto --snr 15 --foff=-15,-10,-7.6,-3,0,3,7.6,10,15 --lead 0.5"
+    "iq_sweep_snr|--modes 150S,600S --auto --snr 4,6,8,10 --foff=-15,0,15 --seeds 1,2"
+    # 1200S fails at 4 dB at 0 Hz as well as at +/-15 Hz: the mode's noise
+    # limit, not acquisition
+    "iq_sweep_snr_1200S|--modes 1200S --auto --snr 6,8,10 --foff=-15,0,15 --seeds 1,2"
     "iq_sweep_start|--modes 600S,1200L --auto --snr 10 --foff 7.6 --lead 0,0.005,0.01,0.02,0.05,0.137,0.5,1.9,7.3"
   )
   foreach(c ${_slow})
