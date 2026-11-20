@@ -332,10 +332,11 @@ TEST(decimation_tone_1khz) {
         }
     }
     
-    // Expected output: 100ms at 48kHz = 4800 samples
+    // Expected output: 100ms at 48kHz = 4800 samples. Decimators emit one
+    // sample per factor inputs from the first sample on, so the count is
+    // exact to within a sample or two; a wrong resampler ratio is not.
     printf("[in=%zu out=%zu] ", input.size(), output.size());
-    ASSERT(output.size() > 4000);  // Allow some margin for filter transients
-    ASSERT(output.size() < 5500);
+    ASSERT_NEAR(static_cast<double>(output.size()), 4800.0, 3.0);
     
     // Skip transient and check RMS (signal amplitude preserved)
     auto output_stable = skip_transient(output, 500);
@@ -393,6 +394,85 @@ TEST(decimation_multi_tone) {
     printf("[rms=%.3f] ", rms);
     ASSERT(rms > 0.1);
     ASSERT(rms < 1.0);
+}
+
+/**
+ * Mean frequency of a complex tone from its sample-to-sample phase advance.
+ */
+static double measure_tone_hz(const std::vector<std::complex<float>>& x, double fs) {
+    std::complex<double> acc(0, 0);
+    for (size_t i = 1; i < x.size(); i++)
+        acc += std::complex<double>(x[i]) * std::conj(std::complex<double>(x[i - 1]));
+    return std::arg(acc) * fs / (2.0 * M_PI);
+}
+
+TEST(output_rate_matches_nominal) {
+    // The output must be 48000 samples per second of input, for every input
+    // rate, when fed in streaming chunks. A rate error also scales every
+    // frequency: a 1000 Hz tone would come out at 1000 * 48000 / actual_rate.
+    const double rates[] = {2000000.0, 1000000.0, 500000.0, 250000.0, 192000.0, 96000.0};
+    for (double fs_in : rates) {
+        m110a::IQSource source(fs_in, m110a::IQSource::Format::FLOAT32_INTERLEAVED, 48000.0);
+        const size_t n = static_cast<size_t>(fs_in);  // 1 s
+        auto input = generate_tone(1000.0, fs_in, n);
+        std::vector<std::complex<float>> output;
+        std::complex<float> buffer[4096];
+        const size_t chunk = 8191;  // odd chunk size: exercise state across calls
+        for (size_t i = 0; i < n; i += chunk) {
+            size_t m = std::min(chunk, n - i);
+            source.push_samples_complex(input.data() + i, m);
+            size_t got;
+            while ((got = source.read(buffer, 4096)) > 0)
+                output.insert(output.end(), buffer, buffer + got);
+        }
+        double tone = measure_tone_hz(skip_transient(output, 500), 48000.0);
+        printf("[%.0fk:out=%zu f=%.1f] ", fs_in / 1000.0, output.size(), tone);
+        ASSERT_NEAR(static_cast<double>(output.size()), 48000.0, 3.0);
+        ASSERT_NEAR(tone, 1000.0, 0.5);
+    }
+}
+
+TEST(alias_rejection) {
+    // Tones that fold onto 1 kHz at a decimation stage's output must be
+    // rejected: f = 1 kHz + k * 250 kHz (stage 1, 2 MS/s -> 250 kS/s) and
+    // 1 kHz + k * 50 kHz (stage 2, 250 kS/s -> 50 kS/s). Any leak lands in
+    // the 300-3300 Hz modem band and adds the whole 2 MHz of receiver noise
+    // to it. A 1 kHz reference tone sets 0 dB.
+    auto run = [](double f) {
+        m110a::IQSource source(2000000.0, m110a::IQSource::Format::FLOAT32_INTERLEAVED, 48000.0);
+        auto input = generate_tone(f, 2000000.0, 400000);  // 0.2 s
+        source.push_samples_complex(input.data(), input.size());
+        std::vector<std::complex<float>> out(source.samples_available());
+        source.read(out.data(), out.size());
+        return calc_rms(skip_transient(out, 1000));
+    };
+    double ref = run(1000.0);
+    const double alias[] = {251000.0, -249000.0, 501000.0, 751000.0, 999000.0,
+                            51000.0, -49000.0, 101000.0};
+    double worst = -300.0;
+    for (double f : alias) {
+        double db = 20.0 * std::log10(run(f) / ref + 1e-15);
+        worst = std::max(worst, db);
+    }
+    printf("[worst alias=%.1f dB] ", worst);
+    ASSERT(worst < -40.0);
+}
+
+TEST(passband_flat) {
+    // The 300-3300 Hz modem band (and its USB image at negative frequency)
+    // passes within 0.5 dB.
+    double lo = 1e9, hi = -1e9;
+    for (double f : {-3300.0, -300.0, 300.0, 1000.0, 1800.0, 2600.0, 3300.0}) {
+        m110a::IQSource source(2000000.0, m110a::IQSource::Format::FLOAT32_INTERLEAVED, 48000.0);
+        auto input = generate_tone(f, 2000000.0, 400000, 0.5f);
+        source.push_samples_complex(input.data(), input.size());
+        std::vector<std::complex<float>> out(source.samples_available());
+        source.read(out.data(), out.size());
+        double db = 20.0 * std::log10(calc_rms(skip_transient(out, 1000)) / 0.5);
+        lo = std::min(lo, db); hi = std::max(hi, db);
+    }
+    printf("[gain %.2f..%.2f dB] ", lo, hi);
+    ASSERT(lo > -0.5 && hi < 0.5);
 }
 
 //=============================================================================
@@ -480,9 +560,8 @@ TEST(upsampled_signal_recovery) {
     
     printf("[out=%zu] ", output.size());
     
-    // Check that output length is approximately correct
-    ASSERT(output.size() > 300);   // Should get ~480 samples out
-    ASSERT(output.size() < 700);
+    // 480 * 42 = 20160 input samples at 2 MS/s = 10.08 ms = 483.8 samples at 48 kHz
+    ASSERT_NEAR(static_cast<double>(output.size()), 20160.0 * 48000.0 / 2000000.0, 3.0);
     
     // Skip filter transients and verify signal amplitude
     auto output_stable = skip_transient(output, 100);
@@ -557,8 +636,7 @@ TEST(iqr_file_roundtrip) {
     
     // Expected: 50ms at 48kHz = 2400 samples
     printf("[in=%zu out=%zu] ", input.size(), output.size());
-    ASSERT(output.size() > 2000);
-    ASSERT(output.size() < 3000);
+    ASSERT_NEAR(static_cast<double>(output.size()), 2400.0, 3.0);
     
     // Verify signal amplitude preservation
     auto output_stable = skip_transient(output, 300);
@@ -730,6 +808,9 @@ int main(int argc, char* argv[]) {
     printf("\nLevel 2: Full Decimation (2 MSPS → 48 kHz)\n");
     RUN_TEST(decimation_tone_1khz);
     RUN_TEST(decimation_multi_tone);
+    RUN_TEST(output_rate_matches_nominal);
+    RUN_TEST(alias_rejection);
+    RUN_TEST(passband_flat);
     
     printf("\nLevel 3: PSK Signal Preservation\n");
     RUN_TEST(psk_symbols_preservation);

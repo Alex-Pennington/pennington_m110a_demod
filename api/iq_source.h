@@ -18,7 +18,9 @@
 
 #include "sample_source.h"
 #include <vector>
+#ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
+#endif
 #include <cmath>
 #include <algorithm>
 #include <mutex>
@@ -202,7 +204,8 @@ public:
         for (auto& cnt : stage_count_) {
             cnt = 0;
         }
-        resample_phase_ = 0.0f;
+        resample_phase_ = 1.0;
+        prev_sample_ = {0, 0};
     }
     
     /**
@@ -259,8 +262,8 @@ private:
     std::vector<int> stage_count_;          // Decimation counters
     
     // Final resampling (for non-integer ratios)
-    float resample_ratio_ = 1.0f;
-    float resample_phase_ = 0.0f;
+    double resample_ratio_ = 1.0;
+    double resample_phase_ = 1.0;
     std::complex<float> prev_sample_ = {0, 0};
     
     // Output buffer
@@ -293,7 +296,7 @@ private:
         
         if (total_ratio <= 1.0) {
             // No decimation needed (or interpolation required - not supported)
-            resample_ratio_ = 1.0f;
+            resample_ratio_ = 1.0;
             return;
         }
         
@@ -336,7 +339,7 @@ private:
         }
         
         // Final resampling for non-integer remainder
-        resample_ratio_ = static_cast<float>(current_rate / output_rate_hz_);
+        resample_ratio_ = current_rate / output_rate_hz_;
     }
     
     /**
@@ -371,12 +374,16 @@ private:
         
         for (int n = 0; n <= M; n++) {
             float x = n - M / 2.0f;
-            float sinc = (std::abs(x) < 1e-6f) ? 1.0f : 
+            // Ideal lowpass impulse response sin(pi*cutoff*x)/(pi*x), whose
+            // value at x = 0 is its limit, cutoff (not 1: that made the
+            // centre tap 1/cutoff times too large and floored the stopband
+            // at -6.5 dB).
+            float sinc = (std::abs(x) < 1e-6f) ? cutoff :
                          std::sin(static_cast<float>(M_PI) * cutoff * x) / (static_cast<float>(M_PI) * x);
             
             // Hamming window
             float window = 0.54f - 0.46f * std::cos(2.0f * static_cast<float>(M_PI) * n / M);
-            taps[n] = sinc * window * cutoff;
+            taps[n] = sinc * window;
             sum += taps[n];
         }
         
@@ -404,7 +411,7 @@ private:
         }
         
         // Apply final resampling if needed
-        if (std::abs(resample_ratio_ - 1.0f) > 0.001f) {
+        if (std::abs(resample_ratio_ - 1.0) > 1e-9) {
             current = resample_final(current);
         }
         
@@ -462,29 +469,25 @@ private:
     
     /**
      * Apply final linear interpolation resampling for non-integer ratios.
+     *
+     * resample_ratio_ is input rate / output rate (> 1 when decimating), so
+     * consecutive outputs are resample_ratio_ input samples apart.
+     * resample_phase_ is the position of the next output measured from
+     * prev_sample_ (0 = prev_sample_, 1 = the incoming sample).
      */
     std::vector<std::complex<float>> resample_final(
             const std::vector<std::complex<float>>& input) {
         
         std::vector<std::complex<float>> output;
+        output.reserve(static_cast<size_t>(input.size() / resample_ratio_) + 2);
         
         for (const auto& sample : input) {
-            // Advance phase by resample ratio
-            resample_phase_ += resample_ratio_;
-            
-            // Output samples while phase >= 1
-            while (resample_phase_ >= 1.0f) {
-                // Calculate interpolation fraction BEFORE decrement
-                // frac represents how far between prev_sample_ and sample we are
-                float frac = 1.0f - (resample_phase_ - 1.0f);
-                resample_phase_ -= 1.0f;
-                
-                // Linear interpolation between prev and current
-                std::complex<float> interpolated = 
-                    prev_sample_ * frac + sample * (1.0f - frac);
-                output.push_back(interpolated);
+            while (resample_phase_ <= 1.0) {
+                float frac = static_cast<float>(resample_phase_);
+                output.push_back(prev_sample_ * (1.0f - frac) + sample * frac);
+                resample_phase_ += resample_ratio_;
             }
-            
+            resample_phase_ -= 1.0;
             prev_sample_ = sample;
         }
         

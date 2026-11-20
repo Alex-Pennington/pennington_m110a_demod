@@ -25,7 +25,7 @@
 #include "modem/scrambler.h"
 #include "dsp/fir_filter.h"
 #include "dsp/nco.h"
-#include "sync/fft_afc.h"
+#include "sync/preamble_acq.h"
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -46,7 +46,7 @@ struct BrainDecoderConfig {
     float freq_search_range = 10.0f;  // Hz, search Â± this range for carrier
     float freq_search_step = 1.0f;    // Hz, step size for frequency search
     bool use_fft_coarse_afc = true;   // Enable two-stage AFC (FFT coarse + preamble fine)
-    float coarse_search_range = 12.0f; // Hz, FFT coarse AFC search range
+    float coarse_search_range = 30.0f; // Hz, largest coarse (preamble) estimate accepted
     float fine_search_range = 2.5f;    // Hz, preamble fine search range around coarse estimate
     bool verbose = false;
     
@@ -66,6 +66,10 @@ struct BrainDecodeResult {
     int start_sample = 0;
     float phase_offset = 0.0f;
     float freq_offset_hz = 0.0f;  // Detected frequency offset from nominal carrier
+    
+    // Preamble countdown of the frame found (frames still to come after it),
+    // -1 when it could not be read; see decode_countdown()
+    int countdown = -1;
     
     // Mode detection
     int d1 = -1;
@@ -113,26 +117,27 @@ public:
         std::vector<complex_t> best_filtered;
         
         if (config_.use_fft_coarse_afc && config_.coarse_search_range > 0.0f) {
-            // STAGE 1: Delay-multiply coarse frequency estimation
-            // Do initial downconversion at nominal carrier frequency
+            // STAGE 1: coarse frequency from the common preamble.
+            // The 288-symbol common segment is correlated in nine 32-symbol
+            // blocks; block magnitudes find it at any carrier offset, and
+            // the block-to-block phase step measures the offset
+            // (sync/preamble_acq.h, unambiguous over +/-37.5 Hz).
+            // This replaces a delay-multiply estimate on the data, whose
+            // product of two 8-PSK symbols carries a random multiple of 45
+            // degrees: it averaged to noise, so decoding failed beyond about
+            // +/-5 Hz.
             auto initial_filtered = downconvert_and_filter(rf_samples);
-            if (!initial_filtered.empty() && initial_filtered.size() >= 288 * sps_) {
-                // Setup delay-multiply coarse AFC
-                CoarseAFC::Config afc_config;
-                afc_config.sample_rate = config_.sample_rate;
-                afc_config.baud_rate = config_.baud_rate;
-                afc_config.search_range_hz = config_.coarse_search_range;
-                afc_config.delay_samples = 10;         // 10 symbols delay
-                afc_config.integration_symbols = 200;  // Integrate over 200 symbols
-                afc_config.min_power_db = -20.0f;
-                
-                CoarseAFC coarse_afc(afc_config);
-                
-                // Estimate coarse frequency offset (no preamble needed)
-                coarse_freq_offset = coarse_afc.estimate_frequency_offset(initial_filtered, 0);
-                
-                if (config_.verbose && coarse_freq_offset != 0.0f) {
-                    printf("Delay-Multiply Coarse AFC: %.2f Hz\n", coarse_freq_offset);
+            PreambleCorrelator coarse(sps_, config_.baud_rate);
+            if (initial_filtered.size() >= coarse.span()) {
+                const size_t window = static_cast<size_t>(config_.max_search_symbols) * sps_;
+                PreambleHit hit = coarse.search(initial_filtered, 0, window, 1);
+                if (hit.metric >= 0.3f &&
+                    std::abs(hit.freq_hz) <= config_.coarse_search_range) {
+                    coarse_freq_offset = hit.freq_hz;
+                }
+                if (config_.verbose) {
+                    printf("Preamble coarse AFC: %.2f Hz (metric %.2f at sample %zu)\n",
+                           hit.freq_hz, hit.metric, hit.index);
                 }
             }
             
@@ -227,6 +232,9 @@ public:
         
         // Step 4: Detect mode from D1/D2
         detect_mode(filtered, result);
+        
+        // Step 4b: Which preamble frame was found (count segment)
+        decode_countdown(filtered, result);
         
         // Step 5: Extract data symbols
         extract_data_symbols(filtered, result);
@@ -581,6 +589,46 @@ private:
     }
     
     /**
+     * Read the countdown from the count segment of the frame found.
+     *
+     * MIL-STD-188-110A preamble frame: common (288), D1 (32), D2 (32),
+     * count (3 x 32, symbols 352-447), zero (32). The count segment carries
+     * the number of frames still to come as three base-4 digits, each sent
+     * as Walsh pattern D4..D7 (BrainPreambleEncoder::encode_frame).
+     *
+     * Each digit is taken non-coherently (largest |correlation| of the four
+     * patterns), so carrier phase and a residual offset do not matter. The
+     * countdown is kept only when every digit wins clearly and it is below
+     * the configured number of preamble frames; otherwise it stays -1.
+     */
+    void decode_countdown(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        const int frames = config_.preamble_symbols / brain::P_FRAME_LENGTH;
+        const int count_start = result.start_sample +
+            (brain::P_COMMON_LENGTH + brain::P_MODE_LENGTH) * sps_;
+        int countdown = 0;
+        for (int seg = 0; seg < 3; seg++) {
+            float best = 0.0f, second = 0.0f;
+            int best_d = -1;
+            for (int d = 4; d < 8; d++) {
+                complex_t corr(0, 0);
+                for (int i = 0; i < 32; i++) {
+                    int idx = count_start + (seg * 32 + i) * sps_;
+                    if (idx < 0 || idx >= static_cast<int>(filtered.size())) return;
+                    uint8_t pattern = (brain::psymbol[d][i % 8] + brain::pscramble[i]) % 8;
+                    corr += filtered[idx] *
+                            std::conj(complex_t(brain::psk8_i[pattern], brain::psk8_q[pattern]));
+                }
+                float mag = std::abs(corr);
+                if (mag > best) { second = best; best = mag; best_d = d; }
+                else if (mag > second) { second = mag; }
+            }
+            if (best_d < 0 || best < 1.5f * second) return;  // ambiguous digit
+            countdown = (countdown << 2) | (best_d - 4);
+        }
+        if (countdown < frames) result.countdown = countdown;
+    }
+    
+    /**
      * Look up mode name from D1/D2 values
      */
     std::string lookup_mode_name(int d1, int d2) {
@@ -621,8 +669,14 @@ private:
         // which may not match the configured mode exactly
         int preamble_symbols = config_.preamble_symbols;
         
-        // Data starts after preamble
-        int data_start = result.start_sample + preamble_symbols * sps_;
+        // Data starts after the last preamble frame. find_preamble() may
+        // lock onto any frame (it takes the first correlation above 0.80 in
+        // its window, so a weak frame 0 hands it frame 1), so count from the
+        // frame actually found: its countdown says how many frames follow.
+        // Without a readable countdown, assume the found frame is frame 0.
+        int frames_after = preamble_symbols / brain::P_FRAME_LENGTH;
+        if (result.countdown >= 0) frames_after = result.countdown + 1;
+        int data_start = result.start_sample + frames_after * brain::P_FRAME_LENGTH * sps_;
         
         // Debug output for comparing modes
         std::cout << "[RX] extract_data: preamble_symbols=" << preamble_symbols
