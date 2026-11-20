@@ -160,6 +160,11 @@ public:
             return result;
         }
         
+        // Bring symbols to the nominal level. The LMS DFE uses fixed step sizes,
+        // so its convergence rate scales with input power: below about 2500 RMS
+        // (int16) it never trained and the codec decoded garbage.
+        normalize_symbol_level(brain_result);
+        
         // Step 3: Apply phase tracking if enabled
         // Phase tracking corrects frequency offsets - only useful when no equalizer
         // (DFE/MLSE can handle small freq offsets via their adaptation)
@@ -504,6 +509,25 @@ public:
 private:
     RxConfig config_;
     RxState state_;
+    
+    /// Common-preamble symbol RMS of the MS-DMT reference recordings at their
+    /// native level (about 7000 RMS int16): 0.5517 on all ten. The DFE step
+    /// sizes were tuned at this level, so normalising to it leaves normal-level
+    /// decodes as they were and lifts quiet ones to the same operating point.
+    static constexpr double NOMINAL_SYMBOL_RMS = 0.55;
+    
+    /// Scale preamble and data symbols so the common preamble has the nominal RMS.
+    static void normalize_symbol_level(BrainDecodeResult& r) {
+        int n = std::min<int>(brain::P_COMMON_LENGTH, static_cast<int>(r.preamble_symbols.size()));
+        if (n == 0) return;
+        double acc = 0.0;
+        for (int i = 0; i < n; i++) acc += std::norm(r.preamble_symbols[i]);
+        double rms = std::sqrt(acc / n);
+        if (rms <= 0.0) return;
+        float g = static_cast<float>(NOMINAL_SYMBOL_RMS / rms);
+        for (auto& x : r.preamble_symbols) x *= g;
+        for (auto& x : r.data_symbols) x *= g;
+    }
     ModemStats stats_;
     DecodeResult last_result_;
     Samples streaming_samples_;
@@ -558,6 +582,7 @@ private:
         
         BrainDecoder decoder(decode_cfg);
         auto brain_result = decoder.decode(samples);
+        normalize_symbol_level(brain_result);
         
         M110ACodec codec(mode_id);
         std::vector<uint8_t> decoded;
