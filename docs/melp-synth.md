@@ -21,30 +21,29 @@ an external program only.
   16 s of public Codec2 speech against the original and against the reference coder's
   2400 bit/s decode. The figures are under Measured comparison.
 
-**Tables entered: none.**
+**Tables entered:** every table STANAG 4591 [1] prints that a 1200 bit/s or 2400 bit/s
+decoder needs. They are in `src/melp_synth/stanag4591_tables.h`, and the Synthesiser section
+of `docs/harris-melpe.md` lists each one with its page. Annex C points to NATO's electronic
+copy of the codebooks. A ruling relayed by the coordinator allows that copy to be used. It
+could not be reached on 2026-11-22: `docs/harris-melpe.md`, Synthesiser, says what was
+tried.
 
-- Coordinator ruling (relayed): the quantiser tables printed in STANAG 4591 may go into the
-  repo, taken only from the STANAG 4591 PDF.
-- Measured from `pdftotext -layout` of that PDF (130 pages): the document prints none of
-  the codebooks. Section 5.3 cites "Tables C-1 to C-4" for the LSF MSVQ, and Annex C says
-  only that the codebooks "are available in electronic form" from the CNSC and NC3A
-  websites. Page C-2 is blank.
-- The only numeric tables in the PDF are Table A-2 (pulse dispersion, 65 coefficients,
-  not entered: see Choices) and the Annex E Tukey window tables (noise preprocessor, not
-  needed for synthesis).
-- So no LSF MSVQ, Fourier magnitude VQ or 1200 bit/s codebook can be entered under those
-  terms, and no table has been checked.
+**Done since:**
+
+- `melp1200` and the `melp1200_fields` CLI decode the codebook-free fields of a 1200 bit/s
+  superframe: the sync bit, the U/V pattern, the band-pass cutoffs and the aperiodic flags.
+- On the three Harris 1200H payloads, the U/V patterns and cutoffs agree with the
+  reference coder's own reading in every frame.
+- `test/melp_synth/compare1200.py` measures the decode. The measured result is in
+  `docs/harris-melpe.md`, Synthesiser.
 
 **Not done:**
 
-- The 2400 and 1200 bit/s bitstream decoder. It is blocked on the codebooks above.
-- Decoding the Harris 1200 #1–#3 payloads.
-- Decoding the reference coder's `-m A` bitstreams.
+- The 2400 and 1200 bit/s bitstream decoders: they are blocked on the codebooks.
+  Without the LSF codebooks a 1200H decode carries no spectral envelope and is not
+  intelligible by measure.
+- Decoding the reference coder's `-m A` 2400 bit/s bitstreams.
 - The vendor anchor pair (h_noise to h9).
-
-All four need the codebooks. The codebook-free fields (pitch, gains, voicing, jitter flag,
-Hamming protection, bit order) can be decoded from the printed standard. They are not
-built, because without the LSFs the output cannot be checked against anything.
 
 ## What it implements
 
@@ -120,8 +119,16 @@ An output name ending in `.raw` gives headerless s16le.
 
 ## Tests
 
-`ctest -L fast` runs two tests, `test_melp_synth` and `melp_synth_cli`. Both use only
-fixed parameter sequences defined in the repo.
+`ctest -L fast` runs three tests: `test_melp_synth`, `melp_synth_cli` and
+`test_stanag4591_tables`. All three use only data defined in the repo.
+
+`test_stanag4591_tables` checks the structure of the printed tables:
+
+- Table 1: weights, indices 0..98 once each, and spot values;
+- the uniform quantiser end points;
+- Table 3: every field bit exactly once, and the FEC positions;
+- the Table D-2 partition and the Table D-4 codes;
+- the field decoder, on superframes built by hand.
 
 `test_melp_synth` runs 30 voiced frames at pitch 80 and 50 dB, then 30 unvoiced frames at
 44 dB, then 30 aperiodic voiced frames. It runs this sequence for both excitation models
@@ -248,14 +255,14 @@ python3 -I -B test/melp_synth/validate.py --synth build/bin/melp_synth --work <s
   codebooks used by STANAG 4591 are available in electronic form from the CNSC website ...
   and from the NC3A web site". Page C-2 is blank.
 
-  The fields that need no codebook can be decoded from the standard as printed:
+  The tables for the fields that need no codebook are now in `stanag4591_tables.h`.
 
-  - pitch and voicing mode ([1] §5.3.1, Table 1);
-  - the gains (uniform quantisers, [1] A.5.2.16);
-  - band voicing;
-  - the jitter flag;
-  - the Hamming protection ([1] A.5.2.19);
-  - the bit order ([1] Table 3; [3]).
+  - **At 1200 bit/s**, `melp1200` decodes those fields: U/V, band-pass cutoff, aperiodic
+    flag and sync. Every other 1200 bit/s field is a VQ index.
+  - **At 2400 bit/s**, the pitch code (Table 1), the gains (§5.3.7), band voicing, the
+    jitter flag and the bit order (Table 3) can be decoded from the tables. No decoder
+    for them is built.
+  - **2400 bit/s Hamming protection** ([1] §5.4) is not entered.
 - The Table A-2 pulse dispersion coefficients (see Choices).
 - Frame erasure and frame repeat ([1] A.5.3.1). These belong to a bitstream decoder.
 - Bit exactness against any reference. It is not a goal, because the harmonic-model
