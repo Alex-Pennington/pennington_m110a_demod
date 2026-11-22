@@ -6,7 +6,8 @@
 // D.5.2.2 mini-probes, D.5.3.3 block interleaver, D.5.3.2.4 repetition/puncturing,
 // D.5.3.2.3 full-tail-biting K=7 code, D.5.4.3 / D.5.4.5.1 EOM).
 //
-// Not in phase 1: Walsh data (WID 0), QPSK/8PSK/QAM payloads, K=9.
+// WID 6-13 (QPSK, 8PSK, 16/32/64/256QAM) payloads are demapped by appd_qam.h through the
+// same frame, interleaver and decoder path. Not decoded: Walsh data (WID 0), K=9.
 #ifndef M110D_APPD_RX_H
 #define M110D_APPD_RX_H
 

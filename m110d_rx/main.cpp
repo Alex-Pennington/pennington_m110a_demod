@@ -112,6 +112,14 @@ int main(int argc, char** argv) {
             std::printf("bits_per_symbol=%d\n", r.bits_per_sym);
             std::printf("evm_db=%.1f\n", r.qam.evm_db());
             std::printf("qam_scale=%.4f\n", r.qam.mean_scale());
+            int unused = 0;
+            double worst = 0;
+            for (size_t i = 0; i < r.qam.hits.size(); i++) {
+                unused += r.qam.hits[i] == 0;
+                worst = std::max(worst, r.qam.max_err[i]);
+            }
+            std::printf("points_unused=%d/%zu\n", unused, r.qam.hits.size());
+            std::printf("point_max_err=%.4f\n", worst);
         }
         std::printf("boundary_probe_after_frames=");
         for (size_t i = 0; i < r.boundary_frames.size(); i++) std::printf("%s%d", i ? "," : "", r.boundary_frames[i]);

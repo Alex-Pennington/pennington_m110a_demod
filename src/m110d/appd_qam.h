@@ -27,6 +27,10 @@ struct QamStats {
     double sig2 = 0;   // sum |nearest point|^2
     double scale_sum = 0;
     int frames = 0;
+    // per transmitted constellation point (8PSK symbol number, or QAM symbol number after
+    // scrambling): times decided, and the largest |z - point| seen
+    std::vector<int> hits;
+    std::vector<double> max_err;
     double evm_db() const { return sig2 > 0 && err2 > 0 ? 10 * std::log10(err2 / sig2) : -99.0; }
     double mean_scale() const { return frames ? scale_sum / frames : 0; }
 };
@@ -65,6 +69,8 @@ inline void demap_frame(int bits, const std::vector<cplx>& z, int psk_shifts, do
             a = pc > 0 ? std::sqrt(pz / pc) : 1.0;
         }
     }
+    const int npts = psk ? 8 : M;
+    if ((int)st.hits.size() != npts) { st.hits.assign(npts, 0); st.max_err.assign(npts, 0.0); }
     st.scale_sum += a;
     st.frames++;
     DataScrambler scr;  // D.5.1.3: initialised at the start of each data frame
@@ -80,6 +86,10 @@ inline void demap_frame(int bits, const std::vector<cplx>& z, int psk_shifts, do
         st.symbols++;
         st.err2 += d[best];
         st.sig2 += std::norm(a * data_point(bits, best, s));
+        int tp = bits == 2 ? (kQpskTranscode[best] + s) % 8
+               : bits == 3 ? (k8pskTranscode[best] + s) % 8 : (best ^ s);
+        st.hits[tp]++;
+        st.max_err[tp] = std::max(st.max_err[tp], std::sqrt(d[best]) / a);
         // max-log soft bit, oldest (leftmost) bit first; positive = bit 0
         for (int b = bits - 1; b >= 0; b--) {
             double m0 = 1e300, m1 = 1e300;
