@@ -34,15 +34,34 @@ one decode of a burst, not a BER figure.
 | default (110) | 87 | 95 | 104 |
 | awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 |
 | foff (240) | 135 | 240 | 240 |
-| drift and D.6.5 sweep (105) | 60 | 105 | 105 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 105 at `2d66ba3`; **100 at `c5e4eb7` (regression)** |
 | ppm and ppm drift (270) | 144 | 270 | 270 |
-| static (45) | 6 | 6 | 36 |
-| fading, 10 seeds (400) | 70 | 93 | 310 |
+| static (45) | 6 | 6 | 36 (36 at `c5e4eb7`) |
+| fading, 10 seeds (400) | 70 | 93 | 310 (322 at `c5e4eb7`) |
 
 - The equaliser columns are from the worker's runs. The coordinator reran the default matrix
   on the merged build and got 104/110.
-- At the equaliser's final commit (`c5e4eb7`), only default and awgn were rerun in full,
-  scoring 104/110 and 116/150. foff, drift, ppm, static and fading were not.
+- The full matrix at the equaliser's final commit (`c5e4eb7`, the code on master) finished
+  after the merge. Results: default 104/110, awgn 116/150, foff 240/240, ppm 270/270, static
+  36/45 and fading 322/400, none with a worse cell.
+- **Regression on master (measured): drift is 100/105, against 105/105 at `79de273`.** These
+  cells drop from 3/3 to 2/3 (files 1/13/53/29/41):
+  - fdrift +3.5 Hz/s @30 on WID 10;
+  - fdrift -3.5 Hz/s @30 on WID 13, 7 and 10;
+  - sweep D.6.5 @30 on WID 10.
+
+  It arrives with `eb91c3d` ("score support hypotheses with tail margins, ties go to the
+  shortest span"). It still fails with `--eq probe` and passes with `--eq off`.
+  - **Repro:** `m110d_chan --seed 2 --snr 30 --fdrift -3.5` on file 41, then `m110d_rx`. With
+    the equaliser there is no EOM and the text is garbage; with `--eq off` it decodes
+    (coordinator, master `f554207`).
+  - **Mechanism** (worker, `-v` on file 41): on that single-path channel the support
+    hypothesis tie rule (2.5x, shortest span wins) picks a span that puts the strongest tap a
+    full base period (L = 16) from delay 0. The fit is 8.9 dB, against 29.1 dB at `2d66ba3`.
+  - **Proposed fix** (inferred, not built): keep the strongest tap at the delay nearest 0 when
+    choosing the support. For example, skip hypotheses with |d(kmax)| > (K-L)/2, or apply the
+    tie only among hypotheses that place kmax the same way.
+  - **Re-check after the fix:** the drift matrix at 3 seeds, plus static and fading.
 
 ### Branches and worktrees
 
@@ -87,8 +106,7 @@ pre-equaliser one-tap path.
 
 ### Unfinished
 
-- The full foff, drift, ppm, static and fading matrices at `c5e4eb7`, the equaliser's final
-  commit. That commit's default and awgn runs are done.
+- **The drift regression above.** Fix it first.
 - WID 0 has no equaliser (it has no probes). It still fails fading: 0/10 on Poor.
 - WID 12 (256QAM) fails Poor at 30 dB. Table D-LXIV sets no Poor requirement for WID 11-12.
 - static-wid2 fails on WID 7, 10 and 13. Its 9 ms spread exceeds what the K=32 probes cover.
@@ -113,7 +131,8 @@ pre-equaliser one-tap path.
 
 ### Next steps, in order
 
-1. Finish the equaliser's full matrices at master and record them in this doc.
+1. Fix the drift regression in the support selection (above) and re-run the drift, static
+   and fading matrices.
 2. Add a band-limiting condition (SSB filter shapes) to `m110d_chan` and `channel.py`, and
    measure the receiver against it.
 3. Streaming acquisition, so that `m110d_rx` can decode a live 8 kHz feed.
