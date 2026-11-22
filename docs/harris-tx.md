@@ -17,8 +17,8 @@ Labels: **read** = read from code or a standard; **measured** = measured with a 
 
 ### Verified
 
-- Baseline `ctest` on the unchanged tree: at least 18 of 19 tests passed (measured). The last
-  test, `iq_sweep_mistune`, was still running at handoff.
+- Baseline `ctest --test-dir build -j8` on the unchanged tree: "100% tests passed, 0 tests failed
+  out of 19" (measured).
 
 ### Not done
 
