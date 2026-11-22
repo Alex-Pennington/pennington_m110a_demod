@@ -98,32 +98,28 @@ public:
             output.insert(output.end(), leading_audio.begin(), leading_audio.end());
         }
         
-        // Generate preamble if requested
-        if (config_.include_preamble) {
-            auto preamble_symbols = generate_preamble(mode_id);
-            auto preamble_audio = config_.use_pulse_shaping ? 
-                                  modulate_with_rrc(preamble_symbols) :
-                                  modulate_simple(preamble_symbols);
-            output.insert(output.end(), preamble_audio.begin(), preamble_audio.end());
-        }
-        
+        // Preamble, data + probes and the EOM frames go out as ONE symbol stream,
+        // modulated once. modulate_with_rrc() appends the filter's 2*RRC_SPAN symbols of
+        // tail to whatever it is given, so shaping the parts one by one put 12 symbols of
+        // extra samples between preamble and data (and data and EOM), and the receiver,
+        // which takes the data to start on the symbol after the preamble, read the whole
+        // message 12 symbols out of step. Rectangular pulses have no tail, so for them
+        // this is the same output as before, sample for sample.
+        std::vector<complex_t> stream;
+        if (config_.include_preamble) stream = generate_preamble(mode_id);
+
         // Encode data to symbols using M110ACodec with probes integrated
         auto symbols_with_probes = codec_.encode_with_probes(data);
-        
-        // Modulate to audio (with or without RRC pulse shaping)
-        auto data_audio = config_.use_pulse_shaping ?
-                          modulate_with_rrc(symbols_with_probes) :
-                          modulate_simple(symbols_with_probes);
-        output.insert(output.end(), data_audio.begin(), data_audio.end());
-        
+        stream.insert(stream.end(), symbols_with_probes.begin(), symbols_with_probes.end());
+
         // Generate EOM (End of Message) if requested
         if (config_.include_eom) {
             auto eom_symbols = generate_eom(mode_id, symbols_with_probes.size());
-            auto eom_audio = config_.use_pulse_shaping ?
-                             modulate_with_rrc(eom_symbols) :
-                             modulate_simple(eom_symbols);
-            output.insert(output.end(), eom_audio.begin(), eom_audio.end());
+            stream.insert(stream.end(), eom_symbols.begin(), eom_symbols.end());
         }
+
+        auto audio = config_.use_pulse_shaping ? modulate_with_rrc(stream) : modulate_simple(stream);
+        output.insert(output.end(), audio.begin(), audio.end());
         
         // Apply soft ramp-up envelope if configured
         if (config_.soft_ramp_ms > 0.0f && !output.empty()) {
