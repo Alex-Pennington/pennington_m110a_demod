@@ -59,6 +59,24 @@ def bits_to_bytes(bits, order="msb"):
     return np.packbits(b, bitorder="big" if order == "msb" else "little").tobytes()
 
 
+# Measured on all 11 Harris streams (docs/harris-melpe.md, Results): every stream opens
+# with this 54-bit header (stream order, LSB-first bytes) and ends with a 108-bit trailer
+# on a vocoder-unit boundary. Neither is vocoder data.
+HARRIS_HEADER = "011111011010100110011010100100000100111110000011110010"
+HARRIS_TRAILER_BITS = 108
+
+
+def strip_header_trailer(stream_bits):
+    """Stream bits (LSB-first order) -> (vocoder bits between header and trailer, True)
+    when the stream opens with HARRIS_HEADER; else (the bits unchanged, False)."""
+    b = np.asarray(stream_bits, dtype=np.uint8)
+    h = np.frombuffer(HARRIS_HEADER.encode(), dtype=np.uint8) - ord("0")
+    n = len(h)
+    if len(b) > n + HARRIS_TRAILER_BITS and np.array_equal(b[:n], h):
+        return b[n:len(b) - HARRIS_TRAILER_BITS].copy(), True
+    return b, False
+
+
 def cut_frames(bits, rate, offset=0, reverse=False, invert=False):
     """Cut a bit stream into frames of the rate's size, starting at offset.
 
@@ -336,6 +354,31 @@ def shuffled_frames(frames, rate, seed):
 
 def read_raw(path):
     return np.fromfile(path, dtype="<i2")
+
+
+def read_wav_to_end(path):
+    """16-bit PCM WAV -> (rate, int16 samples of channel 0), reading the data chunk to the
+    end of the file rather than to the length its header declares (some test files declare
+    less than they hold)."""
+    with open(path, "rb") as f:
+        b = f.read()
+    if b[:4] != b"RIFF" or b[8:12] != b"WAVE":
+        raise ValueError(f"{path}: not a RIFF WAVE file")
+    i, rate, nch, bits = 12, None, 1, 16
+    while i + 8 <= len(b):
+        cid, size = b[i:i + 4], int.from_bytes(b[i + 4:i + 8], "little")
+        if cid == b"fmt ":
+            nch = int.from_bytes(b[i + 10:i + 12], "little")
+            rate = int.from_bytes(b[i + 12:i + 16], "little")
+            bits = int.from_bytes(b[i + 22:i + 24], "little")
+        elif cid == b"data":
+            if bits != 16 or rate is None:
+                raise ValueError(f"{path}: expected 16-bit PCM")
+            d = b[i + 8:]
+            d = d[: len(d) // (2 * nch) * 2 * nch]
+            return rate, np.frombuffer(d, dtype="<i2").reshape(-1, nch)[:, 0].copy()
+        i += 8 + size + (size & 1)
+    raise ValueError(f"{path}: no data chunk")
 
 
 def write_wav(path, x, fs=FS):

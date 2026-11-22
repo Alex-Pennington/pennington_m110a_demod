@@ -71,6 +71,20 @@ def test_streams():
     check(np.array_equal(mf.cut_frames(bits, 600, 5, invert=True)[0], f[0] ^ 1), "cut_frames: invert")
 
 
+def test_header_trailer():
+    h = np.frombuffer(mf.HARRIS_HEADER.encode(), np.uint8) - ord("0")
+    body = mf.random_frames(1200, 10, 4).ravel()
+    s = np.concatenate([h, body, np.ones(mf.HARRIS_TRAILER_BITS, np.uint8)])
+    out, found = mf.strip_header_trailer(s)
+    check(found and np.array_equal(out, body), "header and trailer removed from a Harris stream")
+    out, found = mf.strip_header_trailer(body)
+    check(not found and np.array_equal(out, body), "a stream without the header is left whole")
+    import score
+    pay = mf.bits_to_bytes(np.concatenate([s, np.zeros((-len(s)) % 8, np.uint8)]), "lsb")
+    bits, found = score.vocoder_bits(pay, "lsb")
+    check(found and np.array_equal(bits[:len(body)], body), "vocoder_bits cuts the payload bytes the same way")
+
+
 def test_sync():
     rng = np.random.default_rng(7)
     for rate in (2400, 1200):
@@ -167,7 +181,7 @@ def test_time_structure():
     def ok(x):
         b = mf.boundary_ratio(x, rate, phase=0)
         d = mf.energy_contour(x, rate)[1]
-        return b <= score.BOUNDARY_MAX and d >= score.DEPTH_MIN, b, d
+        return b <= score.BOUNDARY_MAX[rate] and d >= score.DEPTH_MIN, b, d
 
     for name, sig, want in (("syllabic signal in order", syll, True),
                             ("steady buzz", steady, False),
@@ -199,11 +213,13 @@ def test_measure():
     m = mf.speech_measure(buzz(smooth, 4))
     check(m["track"] > 0.6 and 95 < m["f0_median"] < 145,
           f"continuous pitch contour scores high (track {m['track']:.2f}, f0 {m['f0_median']:.0f})")
-    import score
+    smooth_track = m["track"]
     jumpy = np.random.default_rng(5).uniform(60, 400, hops)
     m = mf.speech_measure(buzz(jumpy, 4, seed=1))
-    check(m["track"] < score.PASS_TRACK,
-          f"pitch drawn at random per frame stays below the pass level (track {m['track']:.2f})")
+    # an audio stand-in, not a decode of random bits (those are in score.py --calibrate)
+    check(m["track"] < 0.25 * smooth_track,
+          f"pitch drawn at random per frame scores far below a continuous one "
+          f"(track {m['track']:.2f} against {smooth_track:.2f})")
     noise = (3000 * np.random.default_rng(2).standard_normal(4 * mf.FS)).astype(np.int16)
     m = mf.speech_measure(noise)
     check(m["track"] < 0.05, f"white noise scores low (track {m['track']:.2f})")
@@ -355,6 +371,7 @@ def main():
     test_packing()
     test_streams()
     test_sync()
+    test_header_trailer()
     test_period()
     test_measure()
     test_time_structure()

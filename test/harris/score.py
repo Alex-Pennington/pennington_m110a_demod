@@ -42,12 +42,17 @@ MELPe stage inputs, per file of the test set (slugs in FILES below):
                           also every rate, reversal and inversion.
 Outputs: <audio>/<slug>.wav, 8 kHz mono 16-bit, with --audio.
 
-Speech measure (melpe_frames.speech_measure): `track` is the share of 22.5 ms frames of
-the decoded audio that are voiced with pitch in 80-308 Hz and continue the previous
-frame's pitch within ~10 %. A file PASSes when track >= PASS_TRACK and beats every other decoding choice
-tried by PASS_MARGIN. --calibrate prints the
-measure for real speech coded and decoded at each rate, and for random bits decoded at
-each rate, which is where PASS_TRACK comes from.
+Speech measures (docs/harris-melpe.md): a message is speech when all three hold:
+  track (melpe_frames.speech_measure) >= PASS_TRACK[rate], the share of 22.5 ms frames
+      voiced with pitch in 80-308 Hz continuing the previous frame's pitch (rules out
+      random bits); where no sync bit fixes the alignment it must also beat every other
+      choice tried by PASS_MARGIN;
+  time test: B (boundary_ratio) <= BOUNDARY_MAX[rate] at 1200/600, or at 2400 the
+      energy-contour r1 beats shuffles of the same frames by ORDER_MARGIN (rules out
+      shuffled frames);
+  energy depth >= DEPTH_MIN dB (rules out a steady buzz or one frame repeated).
+--calibrate runs the self-check cases through the coder; --anchor checks the coder path
+against a reference decode.
 
 Exit status: 0 when every file with a payload passes, 1 otherwise, 2 on usage errors.
 """
@@ -76,18 +81,25 @@ FILES = [
     ("melp2400", "melp2400.wav", 2400),
 ]
 
-PASS_TRACK = 0.25   # coded speech >= 0.30; best wrong choice in --search 0.185 (docs/harris-melpe.md)
-PASS_MARGIN = 0.05  # and the winner must beat every other choice tried by this much
-# Time structure (docs/harris-melpe.md, Speech measures), set from the calibration of
-# coded speech, random bits, a coded buzz, one frame repeated and shuffled frames:
-# 1200 and 600 bit/s: boundary_ratio B <= BOUNDARY_MAX (speech <= 1.30, others >= 1.37)
-# 2400 bit/s: energy-contour r1 beats ORDER_N shuffles by >= ORDER_MARGIN (speech >= 0.28,
-#             others <= 0.134); B does not separate random bits there
-# all rates: energy depth >= DEPTH_MIN dB (speech >= 8.8, buzz <= 2.2, repeated <= 3.6)
-BOUNDARY_MAX = 1.33
+# Where no sync bit fixes the frame alignment (600 bit/s), the track that picked the
+# alignment must also beat every other choice tried by this much.
+PASS_MARGIN = 0.05
+# Limits from the calibration ladder (docs/harris-melpe.md, Speech measures): real coded
+# speech, clean and noisy, against random bits, shuffled frames, a coded buzz and one frame
+# repeated. Each measure is the one that rules out one class; each limit is the midpoint
+# of the gap for that class:
+# track >= PASS_TRACK[rate]: random bits (2400: random <= 0.095, speech >= 0.104;
+#     1200: <= 0.100 / >= 0.123; 600: they overlap, random <= 0.137, noisy speech 0.112)
+# 1200, 600: boundary_ratio B <= BOUNDARY_MAX[rate]: shuffled frames (1200: speech <= 1.58,
+#     shuffled >= 2.17; 600: <= 1.71 / >= 2.29)
+# 2400: r1 beats ORDER_N shuffles by >= ORDER_MARGIN: shuffled frames (shuffled <= +0.134,
+#     speech >= +0.140); B overlaps there
+# depth >= DEPTH_MIN dB: buzz and repeated frame (<= 4.0) against coded speech (>= 5.65)
+PASS_TRACK = {2400: 0.10, 1200: 0.11, 600: 0.14}
+BOUNDARY_MAX = {1200: 1.85, 600: 2.0}
 ORDER_N = 32
-ORDER_MARGIN = 0.20
-DEPTH_MIN = 5.0
+ORDER_MARGIN = 0.137
+DEPTH_MIN = 4.8
 
 
 def run_coder(melpe, rate, mode, src, dst):
@@ -157,6 +169,20 @@ def encode_audio(melpe, x, rate, work, tag):
     return frames
 
 
+def anchor_check(melpe, orig, ref, rate, work):
+    """Regression anchor for the coder path: orig through analysis and synthesis (noise
+    preprocessor on) must equal ref sample for sample. Exit status 0 when it does."""
+    _, x = mf.read_wav_to_end(orig)
+    _, r = mf.read_wav_to_end(ref)
+    y = decode_frames(melpe, encode_audio(melpe, x, rate, work, "anchor"), rate, work, "anchor")
+    n = min(len(y), len(r))
+    same = int((y[:n] == r[:n]).sum())
+    ok = len(y) == len(r) and same == n
+    print(f"anchor at {rate} bps: decoded {len(y)} samples, reference {len(r)}, identical "
+          f"{same}/{n}: {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
+
+
 def calibrate(melpe, raws, work, jobs=4):
     """Self-check of both speech measures on cases with a known answer. Speech cases must
     pass both; every other case must fail at least one."""
@@ -188,7 +214,7 @@ def calibrate(melpe, raws, work, jobs=4):
             x = decode_frames(melpe, f, rate, work, f"cal_{rate}")
             m = mf.speech_measure(x)
             t = time_test(melpe, f, rate, None, work, f"cal_{rate}", x, jobs=jobs)
-            ok = m["track"] >= PASS_TRACK and t["ok"]
+            ok = m["track"] >= PASS_TRACK[rate] and t["ok"]
             good = ok == (cls == "speech")
             rows.append((rate, name, m, t, ok, good))
             print(f"  {name:<26}{fmt(m)}  {time_text(t):<16} depth {t['depth']:4.1f} dB  "
@@ -237,12 +263,22 @@ def offsets_for(bits, rate, rev, meta, search):
     return list(range(n)) if search else [0]
 
 
+def vocoder_bits(payload, order):
+    """Payload bytes -> the bits read in `order`, without the Harris header and trailer
+    when the stream (read LSB first, as the modem writes it) opens with the header."""
+    bits = mf.bytes_to_bits(payload, order)
+    _, found = mf.strip_header_trailer(mf.bytes_to_bits(payload, "lsb"))
+    if found:
+        bits = bits[len(mf.HARRIS_HEADER):len(bits) - mf.HARRIS_TRAILER_BITS]
+    return bits, found
+
+
 def score_file(melpe, payload, meta, rate_hint, search, work, slug, jobs, wide=False):
     """Decode every choice; return (key, details, audio) of the best by the speech measure,
     with details["second"] = best track of any other choice."""
     tasks = []
     for rate, order, rev, inv in candidates(meta, rate_hint, search, wide):
-        bits = mf.bytes_to_bits(payload, order)
+        bits, stripped = vocoder_bits(payload, order)
         # coder byte packing: as measured from the coder, and at 600 bit/s, where that
         # differs from RFC 8130 Figure 4, also RFC 8130's under --search
         default = mf.RATES[rate][4]
@@ -258,7 +294,7 @@ def score_file(melpe, payload, meta, rate_hint, search, work, slug, jobs, wide=F
                 continue
             for pk in packs:
                 tasks.append((dict(rate=rate, order=order, offset=off, reverse=rev, invert=inv,
-                                   packing=pk, frames=len(frames),
+                                   packing=pk, frames=len(frames), stripped=stripped,
                                    sync=mf.sync_score(frames, rate)),
                               frames))
 
@@ -312,8 +348,9 @@ def time_test(melpe, frames, rate, packing, work, tag, x, jobs=4):
                 "depth": o["depth"], "ok": o["ok"], "detail": o}
     b = mf.boundary_ratio(x, rate)
     depth = mf.energy_contour(x, rate)[1]
-    ok = bool(b == b and b <= BOUNDARY_MAX and depth >= DEPTH_MIN)
-    return {"method": "boundary", "value": b, "limit": BOUNDARY_MAX, "depth": depth, "ok": ok}
+    ok = bool(b == b and b <= BOUNDARY_MAX[rate] and depth >= DEPTH_MIN)
+    return {"method": "boundary", "value": b, "limit": BOUNDARY_MAX[rate], "depth": depth,
+            "ok": ok}
 
 
 # ---- per-recording payloads --------------------------------------------------------
@@ -366,7 +403,7 @@ def period_checks(payload_dir, plan):
         for part, meta in parts:
             rate = int(meta.get("rate", rate_hint))
             with open(os.path.join(payload_dir, part + ".bin"), "rb") as f:
-                bits = mf.bytes_to_bits(f.read(), meta.get("bit_order", "lsb"))
+                bits, _ = vocoder_bits(f.read(), meta.get("bit_order", "lsb"))
             groups.setdefault(mode_key(meta, rate_hint), (rate, []))[1].append(bits)
     out = {}
     for mode, (rate, streams) in groups.items():
@@ -393,7 +430,9 @@ def score_part(a, part, meta, rate_hint, period=None):
     if best is None:
         return r
     _, d, x = best
-    d["track_ok"] = d["m"]["track"] >= PASS_TRACK and d["m"]["track"] - d["second"] >= PASS_MARGIN
+    sync_fixed = d["sync"] is not None and d["sync"] >= SYNC_TRUST
+    d["track_ok"] = d["m"]["track"] >= PASS_TRACK[d["rate"]] and (
+        sync_fixed or d["m"]["track"] - d["second"] >= PASS_MARGIN)
     d["ot"] = time_test(a.melpe, d["frames_"], d["rate"], d["packing"], a.work, part, x,
                         jobs=a.jobs)
     ok = d["track_ok"] and d["ot"]["ok"]
@@ -468,7 +507,8 @@ def describe(r):
                f"{'speech-like' if ot['ok'] else 'not speech-like'}; loudness range "
                f"{ot['depth']:.0f} dB")
     pack = "RFC 8130" if d["packing"] == "lsb" else "MSB-first"
-    detail = (f"payload bytes read {d['order'].upper()} first, frame offset {d['offset']} bits, "
+    detail = ((f"54-bit header and 108-bit trailer removed; " if d.get("stripped") else "")
+              + f"payload bytes read {d['order'].upper()} first, frame offset {d['offset']} bits, "
               f"coder packing {pack}"
               + (", frames reversed" if d["reverse"] else "")
               + (", bits inverted" if d["invert"] else "")
@@ -494,10 +534,10 @@ def recording_item(label, mode, results, audio, proofs_root, slug):
         decoded = texts[0][0] + "."
         return proofs.item(label, mode, status, decoded, None, audio)
     if len(results) == 1:
-        decoded = texts[0][0] + ". Speech needs both."
+        decoded = texts[0][0] + ". Speech needs all three."
         detail = (texts[0][1][0].upper() + texts[0][1][1:] + ".") if texts[0][1] else None
     else:
-        decoded = (f"{len(results)} messages, one per preamble; speech needs both measures. "
+        decoded = (f"{len(results)} messages, one per preamble; speech needs all three measures. "
                    + " ".join(f"Message {i + 1}: {t[0]}." for i, t in enumerate(texts)))
         detail = " ".join(f"Message {i + 1}: {t[1]}." for i, t in enumerate(texts) if t[1]) or None
     xs = [r["x"] for r in results if r["x"] is not None]
@@ -557,7 +597,14 @@ def main():
                     help="test-set directory holding the recordings (for the channel audio)")
     ap.add_argument("--decoder", help='proof "decoder" text, e.g. "m110a_rx master @abc1234"; '
                                       'default: the payload sidecars\' "decoder" values')
+    ap.add_argument("--anchor", nargs=2, metavar=("ORIG", "REF"),
+                    help="coder-path self-check: ORIG (8 kHz WAV) coded and decoded at "
+                         "--anchor-rate must reproduce REF sample for sample")
+    ap.add_argument("--anchor-rate", type=int, default=2400)
     a = ap.parse_args()
+    if a.anchor:
+        os.makedirs(a.work or ".", exist_ok=True)
+        return anchor_check(a.melpe, a.anchor[0], a.anchor[1], a.anchor_rate, a.work or ".")
     if not os.access(a.melpe, os.X_OK):
         print(f"--melpe {a.melpe}: not an executable", file=sys.stderr)
         return 2
@@ -642,10 +689,9 @@ def main():
         n_pass += st == "pass"
         n_partial += st == "partial"
     print("-" * len(hdr))
-    print(f"speech PASS (track >= {PASS_TRACK} and {PASS_MARGIN} over the next choice, and the "
-          f"time test: B <= {BOUNDARY_MAX} at 1200/600, order margin >= {ORDER_MARGIN} at 2400, "
-          f"depth >= {DEPTH_MIN} dB; every message): {n_pass}/{n_have} recordings with a "
-          f"payload, {len(FILES)} in the set")
+    print(f"speech PASS (track >= {PASS_TRACK}; time test B <= {BOUNDARY_MAX} or order "
+          f"margin >= {ORDER_MARGIN} at 2400; depth >= {DEPTH_MIN} dB; every message): "
+          f"{n_pass}/{n_have} recordings with a payload, {len(FILES)} in the set")
     if pdir:
         decoder = a.decoder or (" ; ".join(sorted(decoders)) if decoders else
                                 "m110a_rx: not run on these files yet")
@@ -654,8 +700,9 @@ def main():
                     "been decoded to speech yet.")
         else:
             note = (f"Payload bits for {n_have} of {len(FILES)} recordings; {n_pass} decode to "
-                    f"speech by both speech measures (a steady voiced pitch, and loudness that "
-                    f"rises and falls in the frames' own order), and {n_partial} more have "
+                    f"speech by all three speech measures (a voiced pitch that carries from "
+                    f"frame to frame, loudness that carries on in the frames' own order, and a "
+                    f"loudness that rises and falls), and {n_partial} more have "
                     f"verified bits but no speech shown yet.")
             odd = sorted(m for m, c in checks.items() if not c[3])
             if odd:
