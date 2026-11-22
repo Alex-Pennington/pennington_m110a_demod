@@ -156,8 +156,9 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
     double agree_sum = 0, qsum = 0;
     long qn = 0;
     r.walsh_alt_blocks = 0;
+    r.end_by_input = false;
     for (;;) {
-        if (pos + (long)nsym * kWalshLen > in.max_sym) break;
+        if (pos + (long)nsym * kWalshLen > in.max_sym) { r.end_by_input = true; break; }
         std::vector<double> blk(nbits);
         double bq = 0;
         int alt_wins = 0;
@@ -225,6 +226,7 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
         r.blocks_decoded++;
         if (walsh_find_eom(outbits, r)) break;
     }
+    r.end_sym = pos;  // end of the last block decoded (appd_stream.h)
     r.code_reversed = 0;
     r.reencode_agree = r.blocks_decoded ? agree_sum / r.blocks_decoded : 0;
     r.probe_quality = qn ? qsum / qn : 0;  // WID 0 has no probes: mean Walsh correlation
