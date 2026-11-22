@@ -27,6 +27,8 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <filesystem>
+#include <system_error>
 
 // Global for signal handling
 static std::atomic<bool> g_running{true};
@@ -113,6 +115,25 @@ int main(int argc, char* argv[]) {
         std::cout << m110a::copyright_notice() << "\n";
         std::cout << m110a::build_info() << "\n";
         std::cout << "================================================\n\n";
+    }
+    
+    // Create the PCM output directory (with parents). SENDBUFFER writes its
+    // PCM there and reports the path, and RXAUDIOINJECT reads it back; with
+    // no directory the write fails silently and the inject finds no file.
+    if (output_dir.empty()) {
+        output_dir = "./";
+    }
+    if (output_dir.back() != '/' && output_dir.back() != '\\') {
+        output_dir += '/';  // file names are appended to the directory as-is
+    }
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(output_dir, ec);
+        if (ec || !std::filesystem::is_directory(output_dir)) {
+            std::cerr << "Cannot create output directory " << output_dir << ": "
+                      << (ec ? ec.message() : std::string("not a directory")) << "\n";
+            return 1;
+        }
     }
     
     // Set up signal handling

@@ -178,6 +178,16 @@ else()
   message(STATUS "python3 with numpy+scipy not found: I/Q receive tests skipped")
 endif()
 
+# ---- m110a_server: creates --output-dir; SENDBUFFER -> RXAUDIOINJECT through it ----
+if(Python3_Interpreter_FOUND)
+  add_test(NAME server_output_dir
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/server/test_output_dir.py
+                   $<TARGET_FILE:m110a_server> ${CMAKE_BINARY_DIR}/server_work/output_dir)
+  set_tests_properties(server_output_dir PROPERTIES LABELS "fast;server" TIMEOUT 120)
+else()
+  message(STATUS "python3 not found: server_output_dir test skipped")
+endif()
+
 # ---- Harris MELPe scorer (test/harris): packing, sync search, speech measure, proofs ----
 # Needs no MELPe coder; the scorer's channel-audio check runs only when scipy is present.
 if(Python3_Interpreter_FOUND)
