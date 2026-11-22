@@ -51,8 +51,10 @@ inline cplx data_point(int bits, int v, int s) {
 // the RMS of the received symbols matches the RMS of the constellation. The receiver default
 // is 1: on the interop test set the table amplitudes at probe gain fit to -54 dB EVM, the
 // per-frame RMS estimate to about -35 dB (docs/110d-appd.md, measured).
+// weight: optional per-symbol reliability (inverse error variance, any common scale) that
+// multiplies each symbol's soft bits; the equaliser (appd_eq.h) supplies it.
 inline void demap_frame(int bits, const std::vector<cplx>& z, int psk_shifts, double qam_scale,
-                        std::vector<double>& out, QamStats& st) {
+                        std::vector<double>& out, QamStats& st, const std::vector<double>* weight = nullptr) {
     const int M = 1 << bits;
     const bool psk = bits <= 3;
     const int shifts = psk ? psk_shifts : bits;
@@ -75,7 +77,9 @@ inline void demap_frame(int bits, const std::vector<cplx>& z, int psk_shifts, do
     st.frames++;
     DataScrambler scr;  // D.5.1.3: initialised at the start of each data frame
     std::vector<double> d(M);
-    for (const cplx& v : z) {
+    for (size_t zi = 0; zi < z.size(); zi++) {
+        const cplx& v = z[zi];
+        const double wt = weight ? (*weight)[zi] : 1.0;
         int s = (int)(scr.reg & mask);
         scr.shift(shifts);
         int best = 0;
@@ -97,7 +101,7 @@ inline void demap_frame(int bits, const std::vector<cplx>& z, int psk_shifts, do
                 if ((k >> b) & 1) m1 = std::min(m1, d[k]);
                 else m0 = std::min(m0, d[k]);
             }
-            out.push_back((m1 - m0) / (a * a));
+            out.push_back(wt * (m1 - m0) / (a * a));
         }
     }
 }

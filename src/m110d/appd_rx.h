@@ -23,6 +23,7 @@
 
 #include "m110d/appd_tables.h"
 #include "m110d/appd_qam.h"
+#include "m110d/appd_eq.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -270,6 +271,7 @@ struct RxOptions {
     int code_reversed = 0;     // 0 Figure D-9 reading (default), 1 time-reversed (diagnostic), -1 pick best
     int psk_scr_shifts = 3;    // scrambler iterations per QPSK/8PSK symbol (D.5.1.3), see appd_qam.h
     double qam_scale = 1.0;    // QAM constellation scale vs mini-probe; 0 = per-frame RMS match (appd_qam.h)
+    int eq = 1;                // WID 1-13: 1 probe-aided block MMSE-DFE (appd_eq.h), 0 one-tap gain
     bool verbose = false;
 };
 
@@ -305,6 +307,9 @@ struct RxResult {
     int walsh_alt_blocks = -1;  // WID 0: blocks whose last symbol matched the alternate Walsh set
     int bits_per_sym = 0;
     QamStats qam;  // WID 6-13 demapper statistics (appd_qam.h)
+    bool eq_used = false;       // WID 1-13 equaliser ran (appd_eq.h)
+    std::vector<int> eq_taps;   // its CIR support, symbol delays
+    double eq_snr_db = 0;       // channel power over the probe-fit noise variance
 };
 
 }  // namespace m110d
@@ -323,8 +328,7 @@ public:
         fs_ = fs;
         if (sps_ * (int)kSymbolRate != fs) { r.payload_skip_reason = "sample rate not a multiple of 2400"; return r; }
         y_ = to_baseband(audio, fs, sps_);
-        if (!acquire(r)) return r;
-        if (!read_preamble(r)) return r;
+        if (!acquire_and_read(r)) return r;
         if (r.wid.waveform == 0) {  // WID 0: Walsh data, no frames or probes (Tables D-XI, D-XII)
             decode_walsh({[this](double n, double tau) { return sample(n, tau); }, data_start_sym_, h_last_,
                           (long)(((double)y_.size() - spos(0)) / (sps_ * rate_)), sps_, opt_.verbose}, r);
@@ -454,27 +458,82 @@ private:
         return fo_;
     }
 
-    bool acquire(RxResult& r) {
-        struct Cand { const char* shape; bool restart; std::vector<int> chips; int nfix; };
-        std::vector<Cand> cands;
+    struct Cand { const char* shape; bool restart; std::vector<int> chips; int nfix; };
+    struct Lock { const Cand* c = nullptr; double metric = 0; long t = -1; double f = 0; };
+
+    // Acquisition and preamble read. The nine-symbol fixed shape is tried first when it
+    // correlates; the single-symbol shape is tried when the nine-symbol shape is weak
+    // (metric < 0.7) and is used when it scores higher, or when the nine-symbol lock gives no
+    // valid down-count and WID. On a channel of equal-power paths the nine-symbol metric
+    // drops to about 0.6 (Table D-LXV channels, measured), where a 32-chip single-symbol
+    // correlation on the same signal can score higher by chance.
+    bool acquire_and_read(RxResult& r) {
+        Lock nine, single;
+        if (!acquire(r, nine, single)) return false;
+        std::vector<Lock> order;
+        if (single.c && single.metric > nine.metric) order = {single, nine};
+        else order = {nine, single};
+        // The first lock tried is the one the result reports unless a later one reads a valid
+        // preamble; its state is restored before returning.
+        const RxResult r0 = r;
+        int tried = 0;
+        bool first_ok = false;
+        Lock first_lk;
+        for (const Lock& lk : order) {
+            if (!lk.c || lk.metric < 0.5) continue;
+            RxResult rt = r0;
+            lock_on(lk, rt);
+            bool ok = read_preamble(rt);
+            if (ok && rt.wid.checksum_ok) { r = rt; return true; }
+            if (tried++ == 0) { r = rt; first_ok = ok; first_lk = lk; }
+        }
+        if (!tried) { r.payload_skip_reason = "no preamble found"; return false; }
+        if (tried > 1) {  // restore the first lock's state for the caller
+            RxResult rt = r0;
+            lock_on(first_lk, rt);
+            first_ok = read_preamble(rt);
+            r = rt;
+        }
+        return first_ok;
+    }
+
+    void lock_on(const Lock& lk, RxResult& r) {
+        r.acq_metric = lk.metric;
+        r.acquired = true;
+        r.preamble_shape = lk.c->shape;
+        r.pn_restart = lk.c->restart ? 1 : 0;
+        nfixed_ = lk.c->nfix;
+        sf_len_ = (nfixed_ + kCountSyms + kWidSyms) * kWalshLen;
+        t0_ = lk.t;
+        t0f_ = 0;
+        rate_ = 1;
+        fixed_chips_ = lk.c->chips;
+        restart_ = lk.c->restart;
+        r.acq_time = (double)lk.t / fs_;
+        estimate_freq(lk.t, lk.c->chips, lk.f);
+        r.freq_offset_hz = fo_;
+    }
+
+    std::vector<Cand> cands_;
+    Cand single_cand_[2];
+
+    bool acquire(RxResult& r, Lock& nine, Lock& single) {
+        std::vector<Cand>& cands = cands_;
         for (int rs = 1; rs >= 0; rs--) {
             if (opt_.pn_mode >= 0 && rs != opt_.pn_mode) continue;
             cands.push_back({"nine-fixed", rs == 1, walsh_section(kFixedPN, kFixedNine, 9, rs == 1), 9});
         }
-        double best = 0, bf = 0;
-        long bt = -1;
-        const Cand* bc = nullptr;
         for (auto& c : cands) {
             double m, f;
             long t = search(c.chips, m, f);
             if (opt_.verbose) std::fprintf(stderr, "acq %s pn=%s metric=%.3f t=%ld bin=%+.0f Hz\n", c.shape,
                                            c.restart ? "restart" : "continuous", m, t, f);
-            if (m > best) { best = m; bt = t; bc = &c; bf = f; }
+            if (m > nine.metric) { nine.metric = m; nine.t = t; nine.c = &c; nine.f = f; }
         }
-        // Single-symbol fixed subsection (D.5.2.1.3): tried when the nine-symbol shape is not
-        // present. The single fixed symbol is followed by count and WID; search on the fixed
-        // symbol plus the count of a final super-frame (count 0) is not assumed: fixed only.
-        if (best < 0.7) {
+        // Single-symbol fixed subsection (D.5.2.1.3): tried when the nine-symbol shape is weak
+        // or not present. The single fixed symbol is followed by count and WID; search on the
+        // fixed symbol plus the count of a final super-frame (count 0) is not assumed: fixed only.
+        if (nine.metric < 0.7) {
             for (int rs = 1; rs >= 0; rs--) {
                 if (opt_.pn_mode >= 0 && rs != opt_.pn_mode) continue;
                 std::vector<int> ch = walsh_section(kFixedPN, kFixedSingle, 1, rs == 1);
@@ -482,27 +541,14 @@ private:
                 long t = search(ch, m, f);
                 if (opt_.verbose) std::fprintf(stderr, "acq single-fixed pn=%s metric=%.3f t=%ld bin=%+.0f Hz\n",
                                                rs ? "restart" : "continuous", m, t, f);
-                if (m > best) {
-                    best = m; bt = t; bf = f;
-                    static Cand single[2];
-                    single[rs] = {"single-fixed", rs == 1, ch, 1};
-                    bc = &single[rs];
+                if (m > single.metric) {
+                    single_cand_[rs] = {"single-fixed", rs == 1, ch, 1};
+                    single.metric = m; single.t = t; single.f = f; single.c = &single_cand_[rs];
                 }
             }
         }
-        r.acq_metric = best;
-        if (!bc || best < 0.5) { r.payload_skip_reason = "no preamble found"; return false; }
-        r.acquired = true;
-        r.preamble_shape = bc->shape;
-        r.pn_restart = bc->restart ? 1 : 0;
-        nfixed_ = bc->nfix;
-        sf_len_ = (nfixed_ + kCountSyms + kWidSyms) * kWalshLen;
-        t0_ = bt;
-        fixed_chips_ = bc->chips;
-        restart_ = bc->restart;
-        r.acq_time = (double)bt / fs_;
-        estimate_freq(bt, bc->chips, bf);
-        r.freq_offset_hz = fo_;
+        r.acq_metric = std::max(nine.metric, single.metric);
+        if (r.acq_metric < 0.5) { r.payload_skip_reason = "no preamble found"; return false; }
         return true;
     }
 
@@ -752,88 +798,70 @@ private:
         std::vector<double> blk;
         blk.reserve(nbits);
         std::vector<int> outbits;
-        long pos = data_start_sym_;
-        double q;
-        cplx h_prev = probe_gain(pos, probe, &q);
-        double qsum = q;
-        int qn = 1;
-        pos += K;
+
+        // Pass 1: frequency and timing tracking on the mini-probes; every probe is recorded.
+        std::vector<ProbeRec> recs;
+        track_probes(U, K, probe, probe_b, recs);
+        if (opt_.verbose) {
+            std::fprintf(stderr, "probes tracked: %zu, one-tap quality:", recs.size());
+            for (const ProbeRec& p : recs) std::fprintf(stderr, " %.2f", p.q);
+            std::fprintf(stderr, "\n");
+        }
+
+        // Pass 2: channel estimate and equaliser (appd_eq.h), or the one-tap estimate. The
+        // signal ends where the equaliser's CIR fit stops explaining the probes; for the one-tap
+        // estimate, at the first probe whose correlation is below 0.5.
+        EqState eqs;
+        const bool use_eq = opt_.eq != 0 && setup_eq(*wp, K, probe, probe_b, recs, eqs, r);
+        size_t nprobes = recs.size();
+        bool lost_b = false;  // the one-tap path lists a boundary probe at the loss position too
+        if (use_eq) nprobes = (size_t)eqs.nprobes;
+        else
+            for (size_t j = 1; j < recs.size(); j++)
+                if (recs[j].q < 0.5) { nprobes = j; lost_b = recs[j].b; break; }
+        recs.resize(nprobes);
+        const int nframes = (int)recs.size() - 1;
+
         int code_rev = opt_.code_reversed;
         double agree_sum = 0;
-        // Residual frequency tracking on the mini-probes (D.5.2.2). fr is the residual in cycles
-        // per symbol after fo_, dfr its change per frame (drift). Each probe gain is referred to
-        // the probe centre; the rotation from one centre to the next is predicted from fr and
-        // the measured rotation is unwrapped about that prediction, so it may exceed pi.
-        const double Tf = (double)(U + K);  // symbols between probe centres
-        double fr = 0, dfr = 0;
-        const double kFrA = 0.5, kFrB = 0.15;
-        // Symbol timing tracking on the same probes: tau is the timing offset in samples at a
-        // probe, dtau its change per frame (residual clock error after rate_). The probe is
-        // correlated at tau_pred and +-sps/4 and |gain| is fitted with a parabola; the update
-        // is skipped on a probe below quality 0.6 (a fade), and dtau is held to +-1000 ppm.
-        double tau = 0, dtau = 0;
-        // Low gains: the preamble fit carries the clock ratio, the loop only trims it. Gains of
-        // 0.5 / 0.1 cost seeds on the fading channels, where multipath moves the probe peak
-        // (measured on files 29 and 41, ITU good, 10 seeds).
-        const double kTauA = 0.15, kTauB = 0.01;
-        const double dl = std::max(1.0, sps_ / 4.0);
-        const double dtau_max = 1e-3 * Tf * sps_;
-        for (int frame = 0;; frame++) {
-            long next_probe = pos + U;
-            if (spos((double)(next_probe + K)) >= (double)y_.size()) break;
-            const double fr_pred = fr + dfr;
-            const double th_pred = 2 * M_PI * 0.5 * (fr + fr_pred) * Tf;
-            const double tau_pred = tau + dtau;
-            double qa, qb;
-            cplx ha = probe_gain(next_probe, probe, &qa, fr_pred, tau_pred);
-            cplx hb = probe_gain(next_probe, probe_b, &qb, fr_pred, tau_pred);
-            const bool use_b = qb > qa;
-            const std::vector<cplx>& pr = use_b ? probe_b : probe;
-            double tau_next = tau_pred;
-            if (std::max(qa, qb) >= 0.6) {
-                double vl = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred - dl));
-                double vc = std::abs(use_b ? hb : ha);
-                double vr = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred + dl));
-                double den = vl - 2 * vc + vr, x = 0;
-                if (den < 0) x = std::max(-1.0, std::min(1.0, 0.5 * (vl - vr) / den)) * dl;
-                tau_next = tau_pred + kTauA * x;
-                dtau = std::max(-dtau_max, std::min(dtau_max, dtau + kTauB * x));
-                if (tau_next != tau_pred) {
-                    ha = probe_gain(next_probe, probe, &qa, fr_pred, tau_next);
-                    hb = probe_gain(next_probe, probe_b, &qb, fr_pred, tau_next);
+        double qsum = recs[0].q;
+        int qn = 1;
+        for (int frame = 0; frame < nframes; frame++) {
+            const ProbeRec& pa = recs[frame];
+            const ProbeRec& pb = recs[frame + 1];
+            if (pb.b) r.boundary_frames.push_back(frame);
+            qsum += pb.q;
+            qn++;
+            const long pos = pa.pos + K;
+            std::vector<cplx> zf;
+            std::vector<double> wf;
+            if (use_eq) {
+                equalise_frame(*wp, K, frame, recs, eqs, zf, wf);
+            } else {
+                // one complex gain per probe: magnitude and the rotation-removed gain linearly,
+                // phase ramp on top
+                const double Tf = (double)(U + K);
+                const cplx hn0 = pb.h * std::polar(1.0, -pb.th);
+                const double c_prev = -0.5 * (K + 1);  // previous probe centre, from data symbol 0
+                for (int i = 0; i < U; i++) {
+                    double a = ((double)i - c_prev) / Tf;
+                    cplx h = (pa.h * (1 - a) + hn0 * a) * std::polar(1.0, pb.th * a);
+                    zf.push_back(sample((double)(pos + i), pa.tau + (pb.tau - pa.tau) * a) * std::conj(h) /
+                                 (std::norm(h) + 1e-12));
                 }
             }
-            cplx h_next = qa >= qb ? ha : hb;
-            if (qb > qa) r.boundary_frames.push_back(frame);
-            double qn_ = std::max(qa, qb);
-            if (qn_ < 0.5) break;  // signal gone: no mini-probe where one is due
-            qsum += qn_;
-            qn++;
-            // unwrapped rotation from the previous probe centre to this one
-            double th = th_pred + std::arg(h_next * std::conj(h_prev) * std::polar(1.0, -th_pred));
-            double fr_meas = th / (2 * M_PI * Tf);
-            double ef = fr_meas - fr_pred;
-            fr = fr_pred + kFrA * ef;
-            dfr += kFrB * ef;
-            // interpolate: magnitude and the rotation-removed gain linearly, phase ramp on top
-            const cplx hn0 = h_next * std::polar(1.0, -th);
-            const double c_prev = -0.5 * (K + 1);  // previous probe centre, from data symbol 0
-            DataScrambler scr;  // D.5.1.3: initialised at the start of each data frame
-            std::vector<cplx> zf;
-            for (int i = 0; i < U; i++) {
-                double a = ((double)i - c_prev) / Tf;
-                cplx h = (h_prev * (1 - a) + hn0 * a) * std::polar(1.0, th * a);
-                cplx z = sample((double)(pos + i), tau + (tau_next - tau) * a) * std::conj(h) / (std::norm(h) + 1e-12);
-                if (wp->bits_per_sym > 1) { zf.push_back(z); continue; }
-                z *= std::conj(psk8(scr.value3()));
-                scr.shift(opt_.bpsk_scr_shifts);
-                blk.push_back(std::real(z));  // Table D-III: bit 0 -> symbol 0, bit 1 -> symbol 4
+            if (wp->bits_per_sym == 1) {
+                DataScrambler scr;  // D.5.1.3: initialised at the start of each data frame
+                for (int i = 0; i < U; i++) {
+                    cplx z = zf[i] * std::conj(psk8(scr.value3()));
+                    scr.shift(opt_.bpsk_scr_shifts);
+                    // Table D-III: bit 0 -> symbol 0, bit 1 -> symbol 4
+                    blk.push_back(wf.empty() ? std::real(z) : wf[i] * std::real(z));
+                }
+            } else {  // WID 6-13: appd_qam.h
+                demap_frame(wp->bits_per_sym, zf, opt_.psk_scr_shifts, opt_.qam_scale, blk, r.qam,
+                            wf.empty() ? nullptr : &wf);
             }
-            if (wp->bits_per_sym > 1)  // WID 6-13: appd_qam.h
-                demap_frame(wp->bits_per_sym, zf, opt_.psk_scr_shifts, opt_.qam_scale, blk, r.qam);
-            h_prev = h_next;
-            tau = tau_next;
-            pos = next_probe + K;
             if ((int)blk.size() == nbits) {
                 // D.5.3.3.2 load / D.5.3.3.3 fetch: punctured bit n sits at (n*inc) mod size
                 std::vector<double> coded(nbits);
@@ -861,6 +889,7 @@ private:
                 if (find_eom(outbits, r)) break;
             }
         }
+        if (!r.eom && lost_b) r.boundary_frames.push_back(nframes);
         r.code_reversed = code_rev;
         r.reencode_agree = r.blocks_decoded ? agree_sum / r.blocks_decoded : 0;
         r.probe_quality = qn ? qsum / qn : 0;
@@ -871,6 +900,381 @@ private:
             r.bytes.push_back((uint8_t)b);
         }
         if (r.blocks_decoded == 0) r.payload_skip_reason = "no complete interleaver block";
+    }
+
+    // One mini-probe as tracked in pass 1.
+    struct ProbeRec {
+        long pos = 0;      // symbol offset (from t0_) of the probe's first symbol
+        double tau = 0;    // timing offset, samples
+        double fr = 0;     // residual frequency removed about the probe centre, cycles/symbol
+        bool b = false;    // the cyclically shifted (interleaver boundary) probe
+        cplx h = 1.0;      // one-tap gain at the probe centre
+        double th = 0;     // unwrapped rotation from the previous probe centre to this one
+        double q = 0;      // normalised one-tap correlation
+    };
+
+    // Residual frequency tracking on the mini-probes (D.5.2.2). fr is the residual in cycles
+    // per symbol after fo_, dfr its change per frame (drift). Each probe gain is referred to
+    // the probe centre; the rotation from one centre to the next is predicted from fr and the
+    // measured rotation is unwrapped about that prediction, so it may exceed pi.
+    // Symbol timing tracking on the same probes: tau is the timing offset in samples at a
+    // probe, dtau its change per frame (residual clock error after rate_). The probe is
+    // correlated at tau_pred and +-sps/4 and |gain| is fitted with a parabola; the update is
+    // skipped on a probe below quality 0.6 (a fade), and dtau is held to +-1000 ppm.
+    // Every probe position up to the end of the input is recorded.
+    void track_probes(int U, int K, const std::vector<cplx>& probe, const std::vector<cplx>& probe_b,
+                      std::vector<ProbeRec>& recs) const {
+        ProbeRec p0;
+        p0.pos = data_start_sym_;
+        p0.h = probe_gain(p0.pos, probe, &p0.q);
+        recs.push_back(p0);
+        long pos = p0.pos + K;
+        cplx h_prev = p0.h;
+        const double Tf = (double)(U + K);  // symbols between probe centres
+        double fr = 0, dfr = 0;
+        const double kFrA = 0.5, kFrB = 0.15;
+        double tau = 0, dtau = 0;
+        // Low gains: the preamble fit carries the clock ratio, the loop only trims it. Gains of
+        // 0.5 / 0.1 cost seeds on the fading channels, where multipath moves the probe peak
+        // (measured on files 29 and 41, ITU good, 10 seeds).
+        const double kTauA = 0.15, kTauB = 0.01;
+        const double dl = std::max(1.0, sps_ / 4.0);
+        const double dtau_max = 1e-3 * Tf * sps_;
+        for (;;) {
+            long next_probe = pos + U;
+            if (spos((double)(next_probe + K)) >= (double)y_.size()) break;
+            const double fr_pred = fr + dfr;
+            const double th_pred = 2 * M_PI * 0.5 * (fr + fr_pred) * Tf;
+            const double tau_pred = tau + dtau;
+            double qa, qb;
+            cplx ha = probe_gain(next_probe, probe, &qa, fr_pred, tau_pred);
+            cplx hb = probe_gain(next_probe, probe_b, &qb, fr_pred, tau_pred);
+            const bool use_b = qb > qa;
+            const std::vector<cplx>& pr = use_b ? probe_b : probe;
+            double tau_next = tau_pred;
+            if (std::max(qa, qb) >= 0.6) {
+                double vl = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred - dl));
+                double vc = std::abs(use_b ? hb : ha);
+                double vr = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred + dl));
+                double den = vl - 2 * vc + vr, x = 0;
+                if (den < 0) x = std::max(-1.0, std::min(1.0, 0.5 * (vl - vr) / den)) * dl;
+                tau_next = tau_pred + kTauA * x;
+                dtau = std::max(-dtau_max, std::min(dtau_max, dtau + kTauB * x));
+                if (tau_next != tau_pred) {
+                    ha = probe_gain(next_probe, probe, &qa, fr_pred, tau_next);
+                    hb = probe_gain(next_probe, probe_b, &qb, fr_pred, tau_next);
+                }
+            }
+            ProbeRec pr_;
+            pr_.pos = next_probe;
+            pr_.tau = tau_next;
+            pr_.fr = fr_pred;
+            pr_.b = qb > qa;
+            pr_.h = qa >= qb ? ha : hb;
+            pr_.q = std::max(qa, qb);
+            // unwrapped rotation from the previous probe centre to this one
+            double th = th_pred + std::arg(pr_.h * std::conj(h_prev) * std::polar(1.0, -th_pred));
+            pr_.th = th;
+            recs.push_back(pr_);
+            // Below quality 0.3 (a deep fade, or no signal) the probe neither updates the
+            // frequency loop nor becomes the phase reference; the callers decide where the
+            // signal ends (decode_payload).
+            if (pr_.q < 0.3) {
+                recs.back().th = th_pred;
+                fr = fr_pred;
+                h_prev *= std::polar(1.0, th_pred);  // phase reference advanced by the prediction
+                tau = tau_next;
+                pos = next_probe + K;
+                continue;
+            }
+            double fr_meas = th / (2 * M_PI * Tf);
+            double ef = fr_meas - fr_pred;
+            fr = fr_pred + kFrA * ef;
+            dfr += kFrB * ef;
+            h_prev = pr_.h;
+            tau = tau_next;
+            pos = next_probe + K;
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Equaliser (appd_eq.h): CIR support, per-probe CIR, block MMSE-DFE per data frame.
+    // ---------------------------------------------------------------------------------------
+    struct EqState {
+        int L = 0;                         // mini-probe base length (Table D-XXI)
+        std::vector<int> taps;             // CIR support, symbol delays, ascending
+        ProbeFit fit_a, fit_b;             // least-squares fits for the two probe variants
+        std::vector<std::vector<cplx>> h;  // CIR per probe, referred to the probe centre
+        std::vector<double> th;            // rotation from the previous probe centre, from the CIRs
+        double sigma2 = 0;                 // noise variance per symbol, from the fit residuals
+        double lambda = 0;                 // MMSE regularisation: noise / symbol energy
+        int nprobes = 0;                   // probes up to the end of the signal
+    };
+
+    static int probe_base_len(int K) { return K == 24 ? 13 : K == 32 ? 16 : K == 48 ? 25 : 0; }
+
+    // Received probe-relative symbol n of probe rec, with the probe's residual frequency
+    // removed about its centre (as probe_gain does).
+    cplx probe_rx(const ProbeRec& rec, int n, int K) const {
+        const double c = 0.5 * (double)(K - 1);
+        return sample((double)(rec.pos + n), rec.tau) * std::polar(1.0, -2 * M_PI * rec.fr * ((double)n - c));
+    }
+
+    std::vector<cplx> probe_obs(const ProbeRec& rec, const ProbeFit& f, int K) const {
+        std::vector<cplx> o((size_t)f.nobs());
+        for (int n = f.n0; n <= f.n1; n++) o[(size_t)(n - f.n0)] = probe_rx(rec, n, K);
+        return o;
+    }
+
+    // Mean residual per degree of freedom of a support over every probe; +inf if unusable.
+    double support_residual(const std::vector<int>& taps, int K, int L, const std::vector<cplx>& probe,
+                            const std::vector<cplx>& probe_b, const std::vector<ProbeRec>& recs, ProbeFit& fa,
+                            ProbeFit& fb) const {
+        fa = make_probe_fit(probe, L, taps);
+        fb = make_probe_fit(probe_b, L, taps);
+        if (!fa.ok() || !fb.ok() || fa.nobs() < (int)taps.size() + 2) return 1e300;
+        double res = 0, dof = 0;
+        for (const ProbeRec& rec : recs) {
+            const ProbeFit& f = rec.b ? fb : fa;
+            double e = 0;
+            apply_probe_fit(f, rec.b ? probe_b : probe, probe_obs(rec, f, K), &e);
+            res += e;
+            dof += f.nobs() - (int)taps.size();
+        }
+        return dof > 0 ? res / dof : 1e300;
+    }
+
+    bool setup_eq(const WaveformParams& wp, int K, const std::vector<cplx>& probe, const std::vector<cplx>& probe_b,
+                  const std::vector<ProbeRec>& recs, EqState& eq, RxResult& r) const {
+        const int L = probe_base_len(K);
+        const int M = (int)recs.size();
+        if (!L || M < 2) return false;
+        eq.L = L;
+        // The support is measured on the probes up to the first two in a row whose one-tap
+        // correlation is below 0.3 (no-signal correlation is about 0.2 at K = 24 to 48; equal
+        // paths keep it near 0.6, measured).
+        int Ms = M;
+        for (int j = 1; j + 1 < M; j++)
+            if (recs[j].q < 0.3 && recs[j + 1].q < 0.3) { Ms = j; break; }
+        if (Ms < 2) return false;
+        const std::vector<ProbeRec> sub(recs.begin(), recs.begin() + Ms);
+        // Probe-averaged periodic power-delay profile over L delays (centred window).
+        const int w0 = (K - L) / 2;
+        std::vector<double> Pc(L, 0.0);
+        for (const ProbeRec& rec : sub) {
+            const std::vector<cplx>& seq = rec.b ? probe_b : probe;
+            std::vector<cplx> v(L);
+            for (int n = 0; n < L; n++) v[n] = probe_rx(rec, w0 + n, K);
+            for (int k = 0; k < L; k++) {
+                cplx c = 0;
+                for (int n = 0; n < L; n++) c += v[n] * std::conj(probe_per(seq, L, w0 + n - k));
+                Pc[k] += std::norm(c / (double)L);
+            }
+        }
+        for (double& p : Pc) p /= Ms;
+        std::vector<double> srt = Pc;
+        std::sort(srt.begin(), srt.end());
+        const int nlow = std::max(1, L / 3);
+        double floor0 = 0;
+        for (int i = 0; i < nlow; i++) floor0 += srt[i];
+        floor0 /= nlow;
+        const int kmax = (int)(std::max_element(Pc.begin(), Pc.end()) - Pc.begin());
+        const double Pmax = Pc[kmax];
+        std::vector<int> sig;
+        for (int k = 0; k < L; k++)
+            if (k == kmax || Pc[k] > std::max(4 * floor0, 1e-5 * Pmax)) sig.push_back(k);
+        // Unwrap: cut the circle in one of the gaps between significant delays, and place the
+        // resulting arc at any offset that overlaps +-(K-L); keep the lowest residual.
+        const int ns = (int)sig.size();
+        double best = 1e300;
+        std::vector<int> best_taps;
+        for (int g = 0; g < ns; g++) {
+            const int b0 = sig[(g + 1) % ns];
+            for (int m = -2; m <= 2; m++) {
+                const int ds = b0 + m * L;
+                std::vector<int> taps;
+                for (int k : sig) taps.push_back(ds + ((k - b0) % L + L) % L);
+                std::sort(taps.begin(), taps.end());
+                if (taps.front() > K - L || taps.back() < -(K - L)) continue;
+                ProbeFit fa, fb;
+                double v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
+                if (opt_.verbose) {
+                    std::fprintf(stderr, "eq hypothesis [%d..%d] %zu taps: residual %.3e\n", taps.front(), taps.back(),
+                                 taps.size(), v);
+                }
+                if (v < best) { best = v; best_taps = taps; }
+            }
+        }
+        if (best_taps.empty()) return false;
+        // Refine the support on the chosen arc (+-2 delays) with the noise level just measured:
+        // a delay is kept when its averaged power exceeds 2.5 x the periodic estimate's noise.
+        double sigma2 = best;
+        std::vector<int> taps;
+        {
+            std::vector<int> cls(L, 0);
+            const double thr = std::max(2.5 * sigma2 / L, 1e-5 * Pmax);
+            for (int d = best_taps.front(); d <= best_taps.back(); d++) {
+                int k = ((d % L) + L) % L;
+                if (!cls[k] && (Pc[k] > thr || k == kmax)) { taps.push_back(d); cls[k] = 1; }
+            }
+            for (int e = 1; e <= 2; e++) {
+                for (int d : {best_taps.front() - e, best_taps.back() + e}) {
+                    int k = ((d % L) + L) % L;
+                    if (!cls[k] && Pc[k] > thr) { taps.push_back(d); cls[k] = 1; }
+                }
+            }
+            std::sort(taps.begin(), taps.end());
+        }
+        ProbeFit fa, fb;
+        double v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
+        while (v >= 1e300 && taps.size() > 1) {  // too wide for the probe: drop the weaker end
+            const int kf = ((taps.front() % L) + L) % L, kb = ((taps.back() % L) + L) % L;
+            if (Pc[kf] < Pc[kb]) taps.erase(taps.begin());
+            else taps.pop_back();
+            v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
+        }
+        if (v >= 1e300) return false;
+        if (v > best) {  // refinement made the fit worse: keep the hypothesis as chosen
+            taps = best_taps;
+            v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
+        }
+        eq.taps = taps;
+        eq.fit_a = fa;
+        eq.fit_b = fb;
+        eq.sigma2 = v;
+        // Per-probe CIR, the fraction of probe energy it explains, and the CIR-based rotation
+        // between probe centres. The signal ends at the first two probes in a row where the
+        // explained fraction, less what a fit to noise alone explains (taps / observations),
+        // is below 0.2 of the possible: a probe correlation of about 0.45 on one path.
+        eq.h.resize(M);
+        eq.th.assign(M, 0.0);
+        std::vector<double> qfit(M, 0.0);
+        for (int j = 0; j < M; j++) {
+            const ProbeFit& f = recs[j].b ? eq.fit_b : eq.fit_a;
+            const std::vector<cplx> obs = probe_obs(recs[j], f, K);
+            double res = 0, en = 0;
+            eq.h[j] = apply_probe_fit(f, recs[j].b ? probe_b : probe, obs, &res);
+            for (const cplx& o : obs) en += std::norm(o);
+            const double base = (double)taps.size() / f.nobs();
+            qfit[j] = en > 0 ? (1.0 - res / en - base) / (1.0 - base) : 0.0;
+            if (j > 0) {
+                cplx s = 0;
+                for (size_t t = 0; t < taps.size(); t++)
+                    s += eq.h[j][t] * std::conj(eq.h[j - 1][t]) * std::polar(1.0, -recs[j].th);
+                eq.th[j] = recs[j].th + std::arg(s);
+            }
+        }
+        eq.nprobes = M;
+        for (int j = 1; j < M; j++)
+            if (qfit[j] < 0.2 && (j + 1 >= M || qfit[j + 1] < 0.2)) { eq.nprobes = j; break; }
+        if (opt_.verbose) {
+            std::fprintf(stderr, "eq fit quality:");
+            for (int j = 0; j < M; j++) std::fprintf(stderr, " %.2f", qfit[j]);
+            std::fprintf(stderr, "  -> %d probes\n", eq.nprobes);
+        }
+        if (eq.nprobes < 2) return false;
+        double ph = 0;
+        for (int j = 0; j < eq.nprobes; j++)
+            for (const cplx& t : eq.h[j]) ph += std::norm(t);
+        ph /= eq.nprobes;
+        double es = 1.0;
+        if (wp.bits_per_sym > 3) {
+            const int Mq = 1 << wp.bits_per_sym;
+            const double a = opt_.qam_scale > 0 ? opt_.qam_scale : 1.0;
+            es = 0;
+            for (int s = 0; s < Mq; s++) es += std::norm(qam_point(wp.bits_per_sym, s));
+            es *= a * a / Mq;
+        }
+        // Floor at -40 dB of the channel power: interpolation and tracking errors are not in
+        // the probe residual.
+        eq.lambda = std::max(eq.sigma2, 1e-4 * ph) / es;
+        r.eq_used = true;
+        r.eq_taps = taps;
+        r.eq_snr_db = eq.sigma2 > 0 ? 10 * std::log10(ph / eq.sigma2) : 99;
+        if (opt_.verbose) {
+            std::fprintf(stderr, "eq support:");
+            for (int d : taps) std::fprintf(stderr, " %d", d);
+            std::fprintf(stderr, "  sigma2 %.3e  channel power %.3e  (%.1f dB)\n", eq.sigma2, ph, r.eq_snr_db);
+        }
+        return true;
+    }
+
+    // Equalise data frame `frame` (between probes frame and frame+1): equalised symbols zf at
+    // unit gain, and per-symbol reliability wf (inverse error variance).
+    void equalise_frame(const WaveformParams& wp, int K, int frame, const std::vector<ProbeRec>& recs,
+                        const EqState& eq, std::vector<cplx>& zf, std::vector<double>& wf) const {
+        const int U = wp.U;
+        const ProbeRec& pa = recs[frame];
+        const ProbeRec& pb = recs[frame + 1];
+        const std::vector<cplx>& ha = eq.h[frame];
+        const std::vector<cplx>& hb = eq.h[frame + 1];
+        const double th = eq.th[frame + 1];
+        const cplx rot_b = std::polar(1.0, -th);
+        const std::vector<int>& taps = eq.taps;
+        const int T = (int)taps.size(), dlo = taps.front(), dhi = taps.back();
+        const int N = U + dhi - dlo;
+        const double Tf = (double)(U + K);
+        const double c_prev = -0.5 * (K + 1);  // previous probe centre, from data symbol 0
+        const long pos = pa.pos + K;
+        const std::vector<cplx> seq_a = mini_probe(K, pa.b), seq_b = mini_probe(K, pb.b);
+        // tap t at data-relative symbol n: linear between the probe CIRs, rotation removed
+        std::vector<cplx> hn((size_t)N * T);
+        for (int m = 0; m < N; m++) {
+            const double a = ((double)(m + dlo) - c_prev) / Tf;
+            for (int t = 0; t < T; t++) hn[(size_t)m * T + t] = ha[t] * (1 - a) + hb[t] * rot_b * a;
+        }
+        auto hrow = [&](int n, int t) { return hn[(size_t)(n - dlo) * T + t]; };
+        std::vector<cplx> rv(N);
+        for (int m = 0; m < N; m++) {
+            const int n = m + dlo;
+            const double a = ((double)n - c_prev) / Tf;
+            cplx v = sample((double)(pos + n), pa.tau + (pb.tau - pa.tau) * a) * std::polar(1.0, -th * a);
+            for (int t = 0; t < T; t++) {  // known probe symbols on either side
+                const int i = n - taps[t];
+                if (i < 0 && K + i >= 0) v -= hrow(n, t) * seq_a[(size_t)(K + i)];
+                else if (i >= U && i - U < K) v -= hrow(n, t) * seq_b[(size_t)(i - U)];
+            }
+            rv[m] = v;
+        }
+        // decision sets per symbol (D.5.1.3 scrambling, Tables D-III to D-X)
+        const int bits = wp.bits_per_sym;
+        std::vector<int> sv(U);
+        {
+            DataScrambler scr;
+            const int shifts = bits == 1 ? opt_.bpsk_scr_shifts : bits <= 3 ? opt_.psk_scr_shifts : bits;
+            const unsigned mask = bits <= 3 ? 7u : (unsigned)((1 << bits) - 1);
+            for (int i = 0; i < U; i++) {
+                sv[i] = (int)(scr.reg & mask);
+                scr.shift(shifts);
+            }
+        }
+        const double qa = opt_.qam_scale > 0 ? opt_.qam_scale : 1.0;
+        std::vector<cplx> qpts;
+        if (bits > 3)
+            for (int k = 0; k < (1 << bits); k++) qpts.push_back(qa * qam_point(bits, k));
+        auto decide = [&](int i, cplx z) -> cplx {
+            if (bits == 1) return std::real(z * std::conj(psk8(sv[i]))) >= 0 ? psk8(sv[i]) : psk8(sv[i] + 4);
+            if (bits == 2) {
+                double a = std::arg(z * std::conj(psk8(sv[i])));
+                return psk8(sv[i] + 2 * (int)std::lround(a / (M_PI / 2)));
+            }
+            if (bits == 3) return psk8((int)std::lround(std::arg(z) / (M_PI / 4)));
+            int bk = 0;
+            double bd = 1e300;
+            for (size_t k = 0; k < qpts.size(); k++) {
+                double d = std::norm(z - qpts[k]);
+                if (d < bd) { bd = d; bk = (int)k; }
+            }
+            return qpts[(size_t)bk];
+        };
+        std::vector<double> var;
+        if (!mmse_dfe_block(U, taps, rv, hrow, eq.lambda, decide, zf, var)) {
+            zf.assign(U, 0.0);
+            wf.assign(U, 0.0);
+            return;
+        }
+        wf.resize(U);
+        for (int i = 0; i < U; i++) wf[i] = 1.0 / var[i];
     }
 
     static bool find_eom(const std::vector<int>& bits, RxResult& r) {
