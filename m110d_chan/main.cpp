@@ -118,6 +118,8 @@ void usage() {
         "  --sweep A:R[:S]       triangle sweep between -A and +A Hz at R Hz/s, starting at S Hz rising (D.6.5)\n"
         "  --ppm PPM             receiver sample-clock error (positive: more samples, lower tones)\n"
         "  --ppm-drift PPM_PER_S drift of that error\n"
+        "  --bandpass LO:HI[:N]  receiver audio filter after the noise: Butterworth edges, -3 dB at LO and\n"
+        "                        HI Hz, order N per edge (even, default 8); LO or HI 0 leaves that edge out\n"
         "  --gain DB             output gain before 16-bit quantisation (default: 0, lowered to keep the\n"
         "                        peak at -1 dBFS if it would clip)\n");
 }
@@ -238,6 +240,29 @@ int selftest() {
         double f = (cyc + dph / (2 * appe::kPi)) * fs / (double)(i1 - i0);
         check("ppm +100: tone frequency offset, ppm", (f / 1800.0 - 1) * 1e6, -101, -99);
     }
+    // Receiver audio filter, 300-2700 Hz, 8th order per edge: unity in band, -3 dB at the corners,
+    // and on a tone through the chain the same gain as the design.
+    {
+        appe::Config c; c.bp_lo_hz = 300; c.bp_hi_hz = 2700; c.bp_order = 8;
+        std::vector<appe::Biquad> f = appe::audio_filter(c, fs);
+        auto db = [&](double hz) { return 20 * std::log10(appe::biquads_gain(f, hz, fs)); };
+        check("bandpass 300-2700: gain at 1500 Hz, dB", db(1500), -0.05, 0.05);
+        check("bandpass 300-2700: gain at 300 Hz, dB", db(300), -3.2, -2.8);
+        check("bandpass 300-2700: gain at 2700 Hz, dB", db(2700), -3.2, -2.8);
+        check("bandpass 300-2700: gain at 150 Hz, dB", db(150), -400, -46);
+        check("bandpass 300-2700: gain at 5400 Hz, dB", db(5400), -400, -46);
+        size_t m = (size_t)1 << 18;
+        for (double hz : {1500.0, 3000.0}) {
+            std::vector<double> t(m);
+            for (size_t i = 0; i < m; i++) t[i] = 0.25 * std::cos(2 * appe::kPi * hz * i / fs);
+            appe::Stats st;
+            std::vector<double> y = appe::apply(t, fs, c, st);
+            double pi_ = 0, po = 0;
+            for (size_t i = m / 2; i < m; i++) { pi_ += t[i] * t[i]; po += y[i] * y[i]; }
+            char lbl[64]; std::snprintf(lbl, sizeof lbl, "bandpass: tone %.0f Hz, chain minus design, dB", hz);
+            check(lbl, 10 * std::log10(po / pi_) - db(hz), -0.05, 0.05);
+        }
+    }
     std::printf("selftest: %s\n", fails ? "FAIL" : "PASS");
     return fails ? 1 : 0;
 }
@@ -292,6 +317,16 @@ int main(int argc, char** argv) {
         else if (a == "--ppm") c.ppm = num();
         else if (a == "--ppm-drift") c.ppm_per_s = num();
         else if (a == "--gain") gain_db = num();
+        else if (a == "--bandpass") {
+            std::string v = val();
+            double lo = 0, hi = 0;
+            int ord = 8;
+            if (std::sscanf(v.c_str(), "%lf:%lf:%d", &lo, &hi, &ord) < 2 || lo < 0 || hi < 0 || (hi > 0 && hi <= lo) ||
+                ord < 2 || ord % 2) {
+                std::fprintf(stderr, "--bandpass: bad value %s\n", v.c_str()); return 2;
+            }
+            c.bp_lo_hz = lo; c.bp_hi_hz = hi; c.bp_order = ord;
+        }
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else if (!a.empty() && a[0] == '-') { std::fprintf(stderr, "unknown option %s\n", a.c_str()); usage(); return 2; }
         else pos.push_back(a);
@@ -312,6 +347,7 @@ int main(int argc, char** argv) {
     std::string err;
     if (!read_wav(pos[0], x, fs, err)) { std::fprintf(stderr, "%s: %s\n", pos[0].c_str(), err.c_str()); return 1; }
     if (c.noise_bw_hz <= 0 || c.noise_bw_hz > fs / 2.0) { std::fprintf(stderr, "--noise-bw out of range\n"); return 2; }
+    if (c.bp_hi_hz >= fs / 2.0) { std::fprintf(stderr, "--bandpass: HI at or above fs/2\n"); return 2; }
 
     appe::Stats st;
     std::vector<double> y = appe::apply(x, fs, c, st);
@@ -346,6 +382,8 @@ int main(int argc, char** argv) {
     std::printf("foff_hz=%.3f\nfdrift_hz_per_s=%.4f\nsweep=%.2f:%.3f:%.2f\nfreq_range_hz=%.2f..%.2f\n", c.foff_hz,
                 c.fdrift_hz_per_s, c.sweep_amp_hz, c.sweep_rate_hz_per_s, c.sweep_start_hz, st.fmin_hz, st.fmax_hz);
     std::printf("ppm=%.3f\nppm_per_s=%.4f\n", c.ppm, c.ppm_per_s);
+    if (c.bp_lo_hz > 0 || c.bp_hi_hz > 0)
+        std::printf("bandpass_hz=%.0f-%.0f\nbandpass_order=%d\n", c.bp_lo_hz, c.bp_hi_hz, c.bp_order);
     std::printf("out_gain_db=%.2f\nclipped=%zu\n", 20 * std::log10(g), clipped);
     return 0;
 }

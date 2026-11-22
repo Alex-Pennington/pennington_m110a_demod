@@ -274,6 +274,9 @@ struct RxOptions {
     double qam_scale = 1.0;    // QAM constellation scale vs mini-probe; 0 = per-frame RMS match (appd_qam.h)
     int eq = 1;                // WID 1-13: 1 probe-aided block MMSE-DFE (appd_eq.h), 0 one-tap gain
     int eq_passes = 2;         // 2: add the data-aided pass per frame (appd_rx.h equalise_frame)
+    // Preamble search range: start positions (input samples) acq_lo .. acq_hi; acq_hi < 0 is the
+    // end of the input. The streaming front end (appd_stream.h) narrows it; files search it all.
+    long acq_lo = 0, acq_hi = -1;
     bool verbose = false;
 };
 
@@ -312,6 +315,14 @@ struct RxResult {
     bool eq_used = false;       // WID 1-13 equaliser ran (appd_eq.h)
     std::vector<int> eq_taps;   // its CIR support, symbol delays
     double eq_snr_db = 0;       // channel power over the probe-fit noise variance
+    // Where the decode stopped, in input samples (for the streaming front end, appd_stream.h).
+    // end_by_input: the input ran out inside the signal (more input may decode more blocks);
+    // false when the EOM was found or the signal was lost before the end of the input.
+    double preamble_start_sample = -1;  // first super-frame read
+    double data_start_sample = -1;      // mini-probe that ends the preamble
+    double end_sample = -1;             // end of the last probe (or Walsh block) used
+    bool end_by_input = false;
+    long end_sym = -1;                  // the same, symbols from the acquired super-frame
 };
 
 }  // namespace m110d
@@ -331,13 +342,51 @@ public:
         if (sps_ * (int)kSymbolRate != fs) { r.payload_skip_reason = "sample rate not a multiple of 2400"; return r; }
         y_ = to_baseband(audio, fs, sps_);
         if (!acquire_and_read(r)) return r;
+        r.data_start_sample = spos((double)data_start_sym_);
+        r.end_sym = data_start_sym_;
         if (r.wid.waveform == 0) {  // WID 0: Walsh data, no frames or probes (Tables D-XI, D-XII)
             decode_walsh({[this](double n, double tau) { return sample(n, tau); }, data_start_sym_, h_last_,
                           (long)(((double)y_.size() - spos(0)) / (sps_ * rate_)), sps_, opt_.verbose}, r);
-            return r;
+        } else {
+            decode_payload(r);
         }
-        decode_payload(r);
+        r.end_sample = spos((double)r.end_sym);
         return r;
+    }
+
+    // Preamble detector for the streaming front end (appd_stream.h). Searches the input as run()
+    // does, then reads the preamble at each lock: the nine-symbol shape from metric 0.5, the
+    // single-symbol shape from single_min (its 32 chips reach 0.5 on noise several times a
+    // second). Returns 1 when a lock reads a valid down-count and WID checksum, with t its
+    // sample index; 2 when a lock's super-frame is not complete in the input yet (t its index:
+    // call again with more input); 0 otherwise. metric: the best search metric.
+    int detect(const std::vector<double>& audio, int fs, long& t, double& metric, double single_min = 0.7) {
+        RxResult r;
+        t = -1;
+        metric = 0;
+        sps_ = fs / (int)kSymbolRate;
+        fs_ = fs;
+        if (sps_ * (int)kSymbolRate != fs) return 0;
+        y_ = to_baseband(audio, fs, sps_);
+        Lock nine, single;
+        bool any = acquire(r, nine, single);
+        metric = r.acq_metric;
+        if (!any) return 0;
+        std::vector<Lock> order;
+        if (single.c && single.metric > nine.metric) order = {single, nine};
+        else order = {nine, single};
+        int st = 0;
+        for (const Lock& lk : order) {
+            if (!lk.c || lk.metric < (lk.c->nfix == 1 ? single_min : 0.5)) continue;
+            RxResult rt;
+            lock_on(lk, rt);
+            if ((double)lk.t + (double)(sf_len_ + 8) * sps_ >= (double)y_.size()) {
+                if (!st) { st = 2; t = lk.t; }
+                continue;
+            }
+            if (read_preamble(rt) && rt.wid.checksum_ok) { t = lk.t; return 1; }
+        }
+        return st;
     }
 
 private:
@@ -426,7 +475,8 @@ private:
         long bt = -1;
         int bbin = kAcqBins;
         const long step = std::max(1, sps_ / 4);
-        for (long t = 0; t + span < (long)y_.size(); t += step) {
+        const long t_lo = std::max(0L, opt_.acq_lo), t_hi = opt_.acq_hi < 0 ? (long)y_.size() : opt_.acq_hi;
+        for (long t = t_lo; t + span < (long)y_.size() && t <= t_hi; t += step) {
             double m; int b;
             eval(t, 0, NB - 1, m, b);
             if (m > best) { best = m; bt = t; bbin = b; }
@@ -689,7 +739,7 @@ private:
                 for (int d = 0; d < 4; d++) wid_sc[s][d] += sc[d];
             }
             seen.push_back({sf, cnt});
-            if (first_c < 0) first_c = cnt;
+            if (first_c < 0) { first_c = cnt; r.preamble_start_sample = t; }
             last_c = cnt;
             last_sf = sf;
             h_last_ = h;
@@ -821,8 +871,10 @@ private:
         else
             for (size_t j = 1; j < recs.size(); j++)
                 if (recs[j].q < 0.5) { nprobes = j; lost_b = recs[j].b; break; }
+        r.end_by_input = nprobes == recs.size();
         recs.resize(nprobes);
         const int nframes = (int)recs.size() - 1;
+        r.end_sym = recs.back().pos + K;
 
         int code_rev = opt_.code_reversed;
         double agree_sum = 0;
@@ -888,7 +940,11 @@ private:
                 int Nin = ip->input_bits;
                 for (int i = 0; i < Nin; i++) outbits.push_back(v[((i - 6) % Nin + Nin) % Nin]);
                 r.blocks_decoded++;
-                if (find_eom(outbits, r)) break;
+                if (find_eom(outbits, r)) {
+                    r.end_by_input = false;
+                    r.end_sym = pb.pos + K;
+                    break;
+                }
             }
         }
         if (!r.eom && lost_b) r.boundary_frames.push_back(nframes);

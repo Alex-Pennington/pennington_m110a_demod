@@ -2,6 +2,9 @@
 //
 // Usage: m110d_rx [options] <file.wav | - | --stdin>
 //   -, --stdin                     read the WAV from stdin (streamed WAV with 0/0xFFFFFFFF lengths read to EOF)
+//   --stream                       decode a continuous feed on stdin: every transmission in it, each
+//                                  printed as soon as it is complete (src/m110d/appd_stream.h)
+//   --max-message S                --stream: longest transmission kept, seconds (default 120)
 //   --resampler-report FS          print the measured response of the FS -> 48000 Hz input resampler and exit
 //   --pn restart|continuous|auto   preamble PN alignment (default auto)
 //   --bpsk-scr-shifts N            data scrambler iterations per BPSK symbol (default 3)
@@ -16,9 +19,12 @@
 // Input rates: any multiple of 2400 Hz as is; any other rate from 6840 Hz (8000 Hz, 44100 Hz, ...)
 // resampled to 48000 Hz first (src/m110d/appd_input.h).
 //
-// Output is one key=value per line on stdout; test/110d/score.py parses it.
+// Output is one key=value per line on stdout; test/110d/score.py parses it. With --stream each
+// transmission is one such block, opened by message=N and closed by an empty line; acq_time_s is
+// then the time in the feed, and stream_end_s where the decoded signal ended.
 #include "m110d/appd_rx.h"
 #include "m110d/appd_input.h"
+#include "m110d/appd_stream.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -36,64 +42,7 @@ static std::string escape(const std::vector<uint8_t>& b) {
     return s;
 }
 
-int main(int argc, char** argv) {
-    RxOptions opt;
-    std::string path;
-    for (int i = 1; i < argc; i++) {
-        std::string a = argv[i];
-        auto next = [&]() -> std::string {
-            if (i + 1 >= argc) { std::fprintf(stderr, "missing value for %s\n", a.c_str()); std::exit(2); }
-            return argv[++i];
-        };
-        if (a == "--pn") {
-            std::string v = next();
-            opt.pn_mode = v == "restart" ? 1 : v == "continuous" ? 0 : -1;
-        } else if (a == "--bpsk-scr-shifts") {
-            opt.bpsk_scr_shifts = std::atoi(next().c_str());
-        } else if (a == "--code") {
-            std::string v = next();
-            opt.code_reversed = v == "d9" ? 0 : v == "alt" ? 1 : -1;
-        } else if (a == "--psk-scr-shifts") {
-            opt.psk_scr_shifts = std::atoi(next().c_str());
-        } else if (a == "--qam-scale") {
-            opt.qam_scale = std::atof(next().c_str());
-        } else if (a == "--eq") {
-            std::string v = next();
-            opt.eq = v == "off" ? 0 : 1;
-            opt.eq_passes = v == "probe" ? 1 : 2;
-        } else if (a == "--selftest") {
-            int bad = tables_selftest() + walsh_selftest() + tables_selftest_qam();
-            std::printf("selftest_mismatches=%d\n", bad);
-            return bad ? 1 : 0;
-        } else if (a == "-v") {
-            opt.verbose = true;
-        } else if (a == "-" || a == "--stdin") {
-            path = "-";
-        } else if (a == "--resampler-report") {
-            resampler_report(std::atoi(next().c_str()));
-            return 0;
-        } else if (!a.empty() && a[0] == '-') {
-            std::fprintf(stderr, "unknown option %s\n", a.c_str());
-            return 2;
-        } else {
-            path = a;
-        }
-    }
-    if (path.empty()) {
-        std::fprintf(stderr, "usage: m110d_rx [--pn restart|continuous|auto] [--bpsk-scr-shifts N] "
-                             "[--code d9|alt|auto] [-v] <file.wav | ->\n");
-        return 2;
-    }
-    std::vector<double> audio;
-    int fs = 0;
-    std::string err;
-    if (!read_wav_any(path, audio, fs, err) || !to_internal_rate(audio, fs, err, opt.verbose)) {
-        std::fprintf(stderr, "%s: %s\n", path.c_str(), err.c_str());
-        return 2;
-    }
-    AppDRx rx(opt);
-    RxResult r = rx.run(audio, fs);
-
+static void print_result(const RxResult& r, const std::string& path) {
     std::printf("file=%s\n", path.c_str());
     std::printf("acquired=%d\n", r.acquired ? 1 : 0);
     std::printf("acq_metric=%.3f\n", r.acq_metric);
@@ -154,5 +103,114 @@ int main(int argc, char** argv) {
         std::printf("text=%s\n", escape(r.bytes).c_str());
         if (r.walsh_alt_blocks >= 0) std::printf("walsh_alt_last=%d/%d\n", r.walsh_alt_blocks, r.blocks_decoded);
     }
+}
+
+static int run_stream(const RxOptions& opt, double max_message_s);
+
+int main(int argc, char** argv) {
+    RxOptions opt;
+    std::string path;
+    bool stream = false;
+    double max_message_s = 120;
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        auto next = [&]() -> std::string {
+            if (i + 1 >= argc) { std::fprintf(stderr, "missing value for %s\n", a.c_str()); std::exit(2); }
+            return argv[++i];
+        };
+        if (a == "--pn") {
+            std::string v = next();
+            opt.pn_mode = v == "restart" ? 1 : v == "continuous" ? 0 : -1;
+        } else if (a == "--bpsk-scr-shifts") {
+            opt.bpsk_scr_shifts = std::atoi(next().c_str());
+        } else if (a == "--code") {
+            std::string v = next();
+            opt.code_reversed = v == "d9" ? 0 : v == "alt" ? 1 : -1;
+        } else if (a == "--psk-scr-shifts") {
+            opt.psk_scr_shifts = std::atoi(next().c_str());
+        } else if (a == "--qam-scale") {
+            opt.qam_scale = std::atof(next().c_str());
+        } else if (a == "--eq") {
+            std::string v = next();
+            opt.eq = v == "off" ? 0 : 1;
+            opt.eq_passes = v == "probe" ? 1 : 2;
+        } else if (a == "--selftest") {
+            int bad = tables_selftest() + walsh_selftest() + tables_selftest_qam();
+            std::printf("selftest_mismatches=%d\n", bad);
+            return bad ? 1 : 0;
+        } else if (a == "-v") {
+            opt.verbose = true;
+        } else if (a == "--stream") {
+            stream = true;
+        } else if (a == "--max-message") {
+            max_message_s = std::atof(next().c_str());
+        } else if (a == "-" || a == "--stdin") {
+            path = "-";
+        } else if (a == "--resampler-report") {
+            resampler_report(std::atoi(next().c_str()));
+            return 0;
+        } else if (!a.empty() && a[0] == '-') {
+            std::fprintf(stderr, "unknown option %s\n", a.c_str());
+            return 2;
+        } else {
+            path = a;
+        }
+    }
+    if (stream) return run_stream(opt, max_message_s);
+    if (path.empty()) {
+        std::fprintf(stderr, "usage: m110d_rx [--pn restart|continuous|auto] [--bpsk-scr-shifts N] "
+                             "[--code d9|alt|auto] [-v] <file.wav | ->\n"
+                             "       m110d_rx [options] --stream [--max-message S] < feed.wav\n");
+        return 2;
+    }
+    std::vector<double> audio;
+    int fs = 0;
+    std::string err;
+    if (!read_wav_any(path, audio, fs, err) || !to_internal_rate(audio, fs, err, opt.verbose)) {
+        std::fprintf(stderr, "%s: %s\n", path.c_str(), err.c_str());
+        return 2;
+    }
+    AppDRx rx(opt);
+    RxResult r = rx.run(audio, fs);
+
+    print_result(r, path);
+    return 0;
+}
+
+static int run_stream(const RxOptions& opt, double max_message_s) {
+    WavStream ws;
+    std::string err;
+    if (!ws.open(stdin, err)) { std::fprintf(stderr, "stdin: %s\n", err.c_str()); return 2; }
+    int fs = ws.fs;
+    bool resample = !(fs > 0 && fs % 2400 == 0);
+    StreamResampler srs;
+    if (resample) {
+        if (fs < kMinInputRate) { std::fprintf(stderr, "stdin: sample rate %d Hz too low for the 110D band\n", fs); return 2; }
+        if (!srs.rs.design(fs, kInternalRate, err)) { std::fprintf(stderr, "stdin: %s\n", err.c_str()); return 2; }
+        if (opt.verbose)
+            std::fprintf(stderr, "input: %d Hz resampled to %d Hz (L=%d M=%d, %zu taps)\n", fs, kInternalRate, srs.rs.L,
+                         srs.rs.M, srs.rs.h.size());
+    }
+    const int fs_int = resample ? kInternalRate : fs;
+    int n = 0;
+    StreamRx sr(opt, fs_int, max_message_s, [&](const RxResult& r0, long long seg0, int f, const std::string& note) {
+        RxResult r = r0;
+        r.acq_time += (double)seg0 / f;
+        std::printf("message=%d\n", ++n);
+        print_result(r, "-");
+        std::printf("stream_end_s=%.4f\n", ((double)seg0 + std::max(0.0, r.end_sample)) / f);
+        if (!note.empty()) std::printf("stream_note=%s\n", note.c_str());
+        std::printf("\n");
+        std::fflush(stdout);
+    });
+    std::vector<double> in, out;
+    const size_t piece = (size_t)std::max(1, fs / 10);  // 0.1 s
+    while (ws.read(in, piece) > 0) {
+        if (resample) { out.clear(); srs.push(in.data(), in.size(), out); sr.push(out); }
+        else sr.push(in);
+    }
+    if (resample) { out.clear(); srs.finish(out); sr.push(out); }
+    sr.finish();
+    if (std::ferror(stdin)) { std::fprintf(stderr, "stdin: read error\n"); return 2; }
     return 0;
 }

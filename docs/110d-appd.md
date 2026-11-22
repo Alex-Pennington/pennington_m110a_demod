@@ -2,25 +2,32 @@
 
 ## Handoff
 
-This section describes the receiver with the equaliser and the support-placement fix
-(`fix/110d-drift`, on master `1f02930`). The sections below it hold the detail and the full
-measured tables.
+This section describes the receiver on `feat/110d-stream`, cut from master `db8329a`: the
+equaliser receiver, plus streaming input (`m110d_rx --stream`) and a band-limiting condition
+in the channel simulator (`m110d_chan --bandpass`). The sections below it hold the detail and
+the full measured tables.
 
 ### State of the receiver
 
 - **Clean interop set** (60 files from another transmitter, every 3 kHz waveform, WID 0-13,
   four interleavers, five variants). It passes 60/60 on WID and interleaver and 60/60 on text
-  with EOM as expected, at 48 kHz and at 8 kHz from a file (measured on `fix/110d-drift`), and
-  at 8 kHz through stdin (measured at `4e43f17`).
+  with EOM as expected, at 48 kHz and at 8 kHz from a file and through stdin (measured on
+  `feat/110d-stream`). As one continuous `--stream` feed with gaps it gives the 60
+  messages in order, none doubled. That holds at 48 and 8 kHz, at real-time pace and as fast
+  as the receiver reads (measured; see "Streaming input").
 - **Implemented:**
   - preamble acquisition over +-112.5 Hz;
   - WID, interleaver and constraint-length detection;
   - payload decode for Walsh, BPSK, QPSK, 8PSK and 16/32/64/256QAM, with K=7 coding;
   - frequency tracking and symbol-timing tracking;
   - a probe-aided block MMSE-DFE equaliser for WID 1-13;
-  - any input rate from 6840 Hz up, and a WAV on stdin.
-- **Not implemented:** K=9 coding, and streaming input (the whole input is read before
-  decoding).
+  - any input rate from 6840 Hz up, and a WAV on stdin;
+  - streaming: `--stream` decodes a continuous feed on stdin and prints each transmission
+    when it completes, with memory bounded by `--max-message` (default 120 s).
+- **Not implemented:** K=9 coding.
+- **Checks on this branch:** `m110d_rx --selftest` gives `selftest_mismatches=0`;
+  `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 24/24
+  (measured).
 - **STD-AMB-001:** files 56 and 57 acquire only with the PN running continuously across the
   section. The main matrix acquires only with PN restarting per Walsh symbol. The receiver
   finds whichever is in use.
@@ -30,19 +37,24 @@ measured tables.
 Default files: WID 0, 3, 13, 7 and 10, all SHORT. Seeds: 3, and 10 for fading. Each cell is
 one decode of a burst, not a BER figure.
 
-| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` |
-|---|---|---|---|---|
-| default (110) | 87 | 95 | 104 | 104 |
-| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 |
-| foff (240) | 135 | 240 | 240 | 240 |
-| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 |
-| ppm and ppm drift (270) | 144 | 270 | 270 | 270 |
-| static (45) | 6 | 6 | 36 | 36 |
-| fading, 10 seeds (400) | 70 | 93 | 322 | 322 |
+| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` | master `db8329a` | `feat/110d-stream` |
+|---|---|---|---|---|---|---|
+| default (110) | 87 | 95 | 104 | 104 | 104 | 104 |
+| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 | 116 | 116 |
+| foff (240) | 135 | 240 | 240 | 240 | 240 | 240 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 | 105 | 105 |
+| ppm and ppm drift (270) | 144 | 270 | 270 | 270 | 270 | 270 |
+| static (45) | 6 | 6 | 36 | 36 | 36 | 36 |
+| fading, 10 seeds (400) | 70 | 93 | 322 | 322 | 322 | 322 |
 
-- The last two columns are full runs of every matrix from fresh builds, side by side:
-  `--matrix default,awgn,foff,drift,ppm,static --seeds 3` and `--matrix fading --seeds 10`.
-  Five cells differ between them, all in drift, each 2/3 on master and 3/3 on the fix
+- The last two columns are full runs from fresh builds of master `db8329a` and of this
+  branch, compared cell for cell from their CSVs: every cell is equal (280 cells at 3 seeds,
+  40 at 10). On the 60 clean files the branch's file-mode output is byte-identical to
+  master's.
+
+- The `1f02930` and `fix/110d-drift` columns are full runs of every matrix from fresh
+  builds, side by side: `--matrix default,awgn,foff,drift,ppm,static --seeds 3` and
+  `--matrix fading --seeds 10`. Five cells differ between them, all in drift, each 2/3 on master and 3/3 on the fix
   (files 1/13/53/29/41): fdrift +3.5 Hz/s @30 on WID 10; fdrift -3.5 Hz/s @30 on WID 13, 7
   and 10; sweep D.6.5 @30 on WID 10. Every other cell is equal.
 - **Support placement.** Inside the periodic probe a delay d and d +- L fit alike, so the
@@ -64,6 +76,7 @@ one decode of a burst, not a BER figure.
   `feat/110d-qam`, `feat/110d-integrate`, `docs/110d-std-pdf`, `feat/110d-chan`,
   `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`. None holds anything
   that master lacks.
+- **This branch:** `feat/110d-stream`, worktree `m110a-wt-110d-stream`, not merged.
 - **Worktree left in place:** `m110a-wt-110d-proofs` (`feat/110d-proofs`, merged). It holds
   an untracked `test/110d/__pycache__/`. Deleting that folder was refused by a permission
   denial, so the worktree was not removed. Nothing in it is unmerged.
@@ -87,8 +100,17 @@ python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2
 python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --resample 8000 --workdir <scratch>/wav8k
 python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --resample 8000 --workdir <scratch>/wav8k --stdin
 
-# channel matrices: default, or awgn, foff, drift, ppm, static, fading, all
+# the 60 as one continuous --stream feed: as fast as it goes, at real-time pace, at 8 kHz; 1 h of noise
+python3 -I test/110d/stream.py --rx build-110d/bin/m110d_rx --set <set>
+python3 -I test/110d/stream.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <scratch>/wav8k --pace 1
+python3 -I test/110d/stream.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <scratch>/wav8k --noise-snr 30 --duration 3600 --every 60
+
+# channel matrices: default, or awgn, foff, drift, ppm, static, fading, band, all
 python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan --set <set> --jobs 2 --work <scratch>/chan [--matrix X] [--seeds N]
+
+# a radio's audio filter: on its own over the 60 files, and on every condition of the default matrix
+python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan --set <set> --jobs 2 --work <scratch>/chan --matrix band --seeds 1 --files 1,2,...,60
+python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan --set <set> --jobs 2 --work <scratch>/chan --matrix default --bandpass 300:2700
 
 # proofs files for the report page (t5.json, t6.json), from a verified master build
 python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --proofs <inbox> --decoder-label "m110d_rx master @<commit>"
@@ -118,27 +140,25 @@ pre-equaliser one-tap path.
 2. **ITU good at 30 dB, WID 7.** On multipath the preamble clock fit is off by tens of ppm
    (measured). After tracking this cell fell from 4/10 to 3/10. The equaliser absorbs the
    error, and the cell now passes 10/10 (measured). The fit itself is unchanged.
-3. **Streaming input.** stdin reads the whole input before decoding. A real-time feed needs
-   acquisition that runs on a sliding window. That is demod-core work.
-4. **Band-limited channel.** The waveform occupies about 180-3420 Hz. A radio SSB audio
-   filter narrower than that was not tested. It needs a band-limiting condition in
-   `m110d_chan` and `channel.py`.
-5. **STD-AMB-001 fixed symbol 8.** On the continuous-PN files, PN index 256-287 matches no
+3. **STD-AMB-001 fixed symbol 8.** On the continuous-PN files, PN index 256-287 matches no
    offset: 29/288 chips wrong (measured). This is a question for the transmitter's author.
 
 ### Next steps, in order
 
-1. Add a band-limiting condition (SSB filter shapes) to `m110d_chan` and `channel.py`, and
-   measure the receiver against it.
-2. Streaming acquisition, so that `m110d_rx` can decode a live 8 kHz feed.
-3. WID 0 in noise and fading: find the 9 dB.
-4. A BER-style measurement (long runs, LONG interleaver) to compare with Table D-LXIV
+1. 256QAM (WID 12) through a 300 Hz low edge: 300-2700 Hz takes its EVM from -53.9 to
+   -23.7 dB (measured). The cause was not investigated.
+2. WID 0 in noise and fading: find the 9 dB.
+3. A BER-style measurement (long runs, LONG interleaver) to compare with Table D-LXIV
    properly.
-5. K=9 coding.
+4. K=9 coding.
+5. Streaming: the re-run interval grows with the segment, so a long transmission's block
+   comes out up to 0.2 x its length late (3.5 s on a 19 s file, measured). An incremental
+   decoder would remove the re-runs.
 
 ## Overview
 
-`m110d_rx` decodes one 3 kHz Appendix D single-tone transmission from a WAV file [1]. It
+`m110d_rx` decodes one 3 kHz Appendix D single-tone transmission from a WAV file [1], or with
+`--stream` every transmission in a continuous feed on stdin (see "Streaming input"). It
 reports the Waveform ID (WID), the interleaver, the constraint length, acquisition and EOM
 status. It decodes the payload text for every waveform, WID 0 to 13: Walsh (WID 0), BPSK
 (WID 1-5), QPSK (WID 6 and 13), 8PSK (WID 7), 16QAM (WID 8), 32QAM (WID 9), 64QAM (WID 10,
@@ -860,6 +880,8 @@ improve through the acquisition change; the equaliser does not touch WID 0.
   field is 0 or 0xFFFFFFFF, or runs past the end of the input (a streamed WAV), is read to
   EOF; the RIFF length field is ignored. The whole input is read before decoding starts. The
   output is the same as for a file, with `file=-`.
+- **Streaming**: `m110d_rx --stream` decodes a continuous feed on stdin (see "Streaming
+  input").
 - **Rates**: a multiple of 2400 Hz (9600, 48000, 96000, ...) goes to the demodulator as is.
   Any other rate from 6840 Hz up (8000, 11025, 16000, 44100, ...) is resampled to 48000 Hz
   first. Below 6840 Hz the 110D band (180-3420 Hz) does not fit, and the file is refused.
@@ -902,6 +924,133 @@ python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resampl
 python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <dir> --stdin
 ```
 
+## Streaming input
+
+`m110d_rx --stream` reads a WAV stream on stdin and decodes every transmission in it. It
+prints each one as soon as it is complete. The design is in `src/m110d/appd_stream.h`:
+
+- **Input.** The WAV header is read once. A data length of 0 or 0xFFFFFFFF is read to EOF,
+  any other length to that length. Samples are read in 0.1 s pieces. A rate that is not a
+  multiple of 2400 Hz goes through `StreamResampler`. It gives exactly what the file-mode
+  resampler gives on the whole feed: 0 difference and equal length at 8000, 11025 and
+  44100 Hz, on 3 s of noise fed in pieces of 37 to 1500 samples (measured).
+- **Search.** `AppDRx::detect` runs the file-mode preamble search on each new second plus
+  0.5 s of overlap. A lock counts only where the preamble reads: a valid down-count and WID
+  checksum. The single-symbol fixed shape also needs metric 0.7. Its 32 chips pass 0.5 on
+  noise in every window: median 0.565 and maximum 0.647 over 267 windows of 30 dB-feed noise
+  (measured). Between transmissions 3 s of audio is kept.
+- **Decode.** From 1.5 s before the lock to the newest sample, `AppDRx::run`, the file decoder,
+  is re-run as audio arrives. It runs every 0.5 s until the preamble has passed, then every
+  max(1 s, 0.2 x segment). The preamble search is confined to the lock, and then to the
+  preamble the last run read (`RxOptions::acq_lo`, `acq_hi`). A later transmission in the
+  segment therefore cannot take the lock, and the search does not grow with the segment.
+- **Complete.** A transmission is printed when the EOM decodes. Without an EOM it is printed
+  once 1 s of input has followed the last probe or Walsh block the decoder used, where the
+  decoder found the signal lost (`RxResult::end_by_input` false). A K=9 transmission is
+  printed 1 s after its preamble. One that reaches `--max-message` seconds (default 120) is
+  printed as decoded so far, with `stream_note=cut`. Anything still open is printed at EOF.
+  Search resumes where the printed transmission ended.
+- **Output.** Each transmission is the file-mode block, opened by `message=N` and closed by
+  an empty line. `acq_time_s` is the time in the feed, and `stream_end_s` is where the decoded
+  signal ended. stdout is flushed after each block.
+- **Memory.** Between transmissions it is a few MB. During one it is about 40 bytes per
+  internal-rate sample of the segment: the input, its copy to baseband and the mixer product.
+  At 48 kHz that is 1.9 MB per second, so the 120 s cap bounds it near 230 MB.
+- **File mode is unchanged.** It searches the whole input as before. The new `RxResult`
+  fields are not printed.
+
+```sh
+# a WAV stream on stdin (lengths 0xFFFFFFFF), any rate from 6840 Hz
+producer | build-110d/bin/m110d_rx --stream [--max-message S] [-v]
+
+# the 60-file set joined with gaps, at real-time pace and as fast as it goes; and 1 h of noise
+python3 -I test/110d/stream.py --rx build-110d/bin/m110d_rx --set <set> [--resample 8000 --workdir <dir>] [--pace 1]
+python3 -I test/110d/stream.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <dir> \
+    --noise-snr 30 --duration 3600 --every 60
+```
+
+### Measured
+
+The feed is the 60 files in README order, each followed by 0.5, 1, 2 or 3 s of silence in turn
+(570 s in all). Each file keeps its own leading and trailing silence. The noise feed is 1 h of
+white Gaussian noise at 30 dB SNR in 3 kHz against each file's active power. One file is
+placed every 60 s, 12 s into the minute, cycling through the 60. "In order" means block N
+carries file N's WID, interleaver and text (score.py's prefix rule), with no block missing or
+extra. RSS is the receiver's own `VmHWM`, read from `/proc`.
+
+| feed | rate | pace | in order, correct | extra | wall | peak RSS |
+|---|---|---|---|---|---|---|
+| 60 files with gaps | 48 kHz | as fast as read | 60/60 | 0 | 134 s | 42.8 MB |
+| 60 files with gaps | 8 kHz | as fast as read | 60/60 | 0 | 140 s | 48.7 MB |
+| 60 files with gaps | 8 kHz | real time | 60/60 | 0 | 572 s | 48.5 MB |
+| 60 files, no gaps | 8 kHz | as fast as read | 60/60 | 0 | 101 s | 46.1 MB |
+| 1 h noise, a file a minute | 8 kHz | as fast as read | 60/60 | 0 | 1476 s | 49.7 MB |
+
+- **Memory over the hour** (RSS sampled every 6 min of feed): 4, 37, 37, 37, 37, 37, 37, 37,
+  18 and 22 MB. It does not grow with the feed.
+- **Noise.** Over the hour the detector searched 3279 windows that held no preamble. Their best
+  metric, always the single-symbol shape, was at most 0.697. Of 60 detections, 60 read a
+  valid preamble and none was dropped.
+- **Speed.** The hour of 8 kHz feed took 1476 s under `nice -n 10`, with two other decoders
+  running: 2.4 times faster than real time. On noise every window runs four searches,
+  because the single-symbol shape is searched whenever the nine-symbol shape scores below
+  0.7.
+- **Latency** at real-time pace: each block came out between 0.4 s before and 3.5 s after
+  the end of its file (mean 0.4 s). File end includes the file's trailing silence, which
+  is why a block can come out before it. The long ones are the long segments, where the
+  re-run interval is 0.2 x segment: file 3 (WID 0 LONG) at 3.5 s, file 59 (long preamble) at
+  2.4 s, and files 2, 7, 11 and 55 at 1.7 s.
+- The 1 h run used the build before the commit that only changed the usage text.
+
+## Band-limited channel
+
+The waveform occupies about 180-3420 Hz. A radio's SSB audio filter is narrower.
+`m110d_chan --bandpass LO:HI[:N]` adds one as step 7 of the chain (`src/channel/appe_channel.h`),
+after the noise, so it filters signal and noise alike. The SNR is still stated before it, in
+3 kHz. Its edges are Butterworth high-pass and low-pass, order N each (default 8, the
+classic 8-pole crystal filter). They are -3 dB at LO and HI, made by the bilinear transform
+with pre-warped corners. The filter is minimum-phase, so its group delay rises toward both
+edges, as an analogue filter's does. `m110d_chan --selftest` checks it: 300-2700 Hz is
+-0.0003 dB at 1500 Hz, -3.01 dB at 300 and 2700 Hz, -48.2 dB at 150 Hz and -50.4 dB at
+5400 Hz. A tone through the chain matches the design to 0.05 dB.
+
+`channel.py --matrix band` runs each filter on its own and at 30 dB. A 30 dB row with no
+filter is the reference. `channel.py --bandpass LO:HI` adds the filter to every condition of
+a matrix.
+
+**All 60 files, one seed** (`--matrix band --seeds 1 --files 1,...,60`, `feat/110d-stream`).
+Text pass out of 60, and the files that fail:
+
+| condition | pass | failing files |
+|---|---|---|
+| awgn @30, no filter | 60/60 | - |
+| 300-2700 Hz | 56/60 | 48-51 (WID 12, all four interleavers) |
+| 300-2700 Hz @30 | 55/60 | 46 (WID 11 medium), 48-51 (WID 12) |
+| 300-3000 Hz | 59/60 | 49 (WID 12 short) |
+| 300-3000 Hz @30 | 57/60 | 48, 49, 50 (WID 12 ultra-short, short, medium) |
+| 300-3300 Hz | 60/60 | - |
+| 300-3300 Hz @30 | 57/60 | 48, 49, 50 (WID 12) |
+| 200-3000 Hz | 60/60 | - |
+| 200-3000 Hz @30 | 60/60 | - |
+
+**Which waveforms survive.** WID 0-10 survive every filter tried, clean and at 30 dB: all
+of their files decode. WID 11 survives all but one cell: file 46 at 300-2700 Hz and 30 dB.
+WID 12 (256QAM) is the one that fails. The low edge matters more than the high one: 200-3000 Hz passes
+everything, 300-3300 Hz loses only WID 12 at 30 dB, and 300-2700 Hz loses all four WID 12
+(256QAM) files even with no noise. At 300-2700 Hz the 256QAM EVM is -23.7 dB, against
+-53.9 dB clean. It is -25 dB at 300-3000 and 300-3300 Hz, and -31 to -33 dB at 200-3000 Hz.
+WID 11 (64QAM, 12000 bps) is at -21.6 dB at 300-2700 Hz. It decodes without noise, and
+at 30 dB it loses file 46.
+
+**Default matrix through the filter** (`--matrix default --seeds 3 --bandpass 300:2700`, and
+the same with `300:3000`, on files 1/13/53/29/41: WID 0, 3, 13, 7 and 10, SHORT). Both give
+104/110, the same cells as with no filter (compared cell for cell against master's
+default run). The two failing cells are the same as without a filter: WID 0 at -6 dB, and WID 0
+on ITU Poor. The default files are WID 0, 3, 13, 7 and 10, and none of them uses 256QAM.
+
+Not measured: a linear-phase (FIR) radio filter, a passband ripple, other filter orders, or a
+real radio's audio path.
+
 ## Limits of what was tested
 
 - The interop test set itself is clean digital audio straight from the transmitter. Every
@@ -914,10 +1063,10 @@ python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resampl
   30 dB only.
 - The WID 6-13 soft bits are max-log distances with no noise-variance estimate. On a clean
   set that costs nothing; its effect at low SNR was not measured.
-- Acquisition searches the whole file, offline, on an sps/4 grid in nine frequency bins, then
-  refines to the sample. It does not stream.
-- 8 kHz input was measured on the clean set resampled from 48 kHz only. A radio audio path
-  whose passband is narrower than the 180-3420 Hz the waveform occupies was not tested.
+- Acquisition searches the whole file (or, with `--stream`, each new second of the feed), on
+  an sps/4 grid in nine frequency bins, then refines to the sample.
+- 8 kHz input was measured on the clean set resampled from 48 kHz only. A radio audio filter
+  was simulated (see "Band-limited channel"); no real radio's audio path was measured.
 
 ## Open questions
 
