@@ -25,6 +25,9 @@ the full measured tables.
   - streaming: `--stream` decodes a continuous feed on stdin and prints each transmission
     when it completes, with memory bounded by `--max-message` (default 120 s).
 - **Not implemented:** K=9 coding.
+- **Checks on this branch:** `m110d_rx --selftest` gives `selftest_mismatches=0`;
+  `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 24/24
+  (measured).
 - **STD-AMB-001:** files 56 and 57 acquire only with the PN running continuously across the
   section. The main matrix acquires only with PN restarting per Walsh symbol. The receiver
   finds whichever is in use.
@@ -980,6 +983,7 @@ extra. RSS is the receiver's own `VmHWM`, read from `/proc`.
 | 60 files with gaps | 48 kHz | as fast as read | 60/60 | 0 | 134 s | 42.8 MB |
 | 60 files with gaps | 8 kHz | as fast as read | 60/60 | 0 | 140 s | 48.7 MB |
 | 60 files with gaps | 8 kHz | real time | 60/60 | 0 | 572 s | 48.5 MB |
+| 60 files, no gaps | 8 kHz | as fast as read | 60/60 | 0 | 101 s | 46.1 MB |
 | 1 h noise, a file a minute | 8 kHz | as fast as read | 60/60 | 0 | 1476 s | 49.7 MB |
 
 - **Memory over the hour** (RSS sampled every 6 min of feed): 4, 37, 37, 37, 37, 37, 37, 37,
