@@ -26,7 +26,8 @@ Matrices (--matrix, comma-separated; `all` is every one):
   fading   ITU good / moderate / poor (Watterson) and the D.6.4 +-75 Hz Doppler shift test
   static   Table D-LXV 3 kHz static multipath channels at 50 dB SNR
   band     a radio's SSB audio filter (m110d_chan --bandpass, 8th-order Butterworth edges) on
-           its own and at 30 dB: 300-2700, 300-3000, 300-3300 and 200-3000 Hz
+           its own and at 30 dB: 300-2700, 300-3000, 300-3300 and 200-3000 Hz; and 30 dB with no
+           filter, the reference for the 30 dB rows
 
 --bandpass LO:HI[:N] adds that receiver audio filter to every condition of the chosen matrices
 (m110d_chan --bandpass), so `--matrix default --bandpass 300:2700` is the default matrix
@@ -115,7 +116,7 @@ def matrices():
         Cond("D.6.4 poor -75 Hz @30", ["--snr", HI_SNR, "--preset", "poor", "--foff", -75]),
     ]
     m["static"] = [Cond(f"{p} @50", ["--snr", 50, "--preset", p]) for p in ("static-wid2", "static-wid10", "static-wid12")]
-    m["band"] = []
+    m["band"] = [Cond("awgn @30, no filter", ["--snr", HI_SNR])]  # reference for the @30 rows
     for lo, hi in ((300, 2700), (300, 3000), (300, 3300), (200, 3000)):
         m["band"] += [Cond(f"bandpass {lo}-{hi} Hz", ["--bandpass", f"{lo}:{hi}"], seeds=1),
                       Cond(f"bandpass {lo}-{hi} Hz @30", ["--snr", HI_SNR, "--bandpass", f"{lo}:{hi}"])]
