@@ -744,7 +744,7 @@ All in the question dialog unless noted.
 ### Branches
 
 - Merged to master: `feat/harris-mode`, `feat/harris-2400rx`, `feat/harris-melpe`,
-  `feat/harris-600v`.
+  `feat/harris-600v`, `feat/harris-tx` (600H and 1200H transmit, `docs/harris-tx.md`).
 - Not merged:
   - `feat/harris-blind`: the LPC-10e test, the patent sources and the review of the patent
     layout against the 600H bits.
@@ -757,9 +757,9 @@ All in the question dialog unless noted.
       are missing. Getting NATO's copy of them needs a person with NATO standardization
       access.
     - See *Synthesiser*, above.
-  - `feat/harris-tx`: `docs/harris-tx.md` only. It records what TX does today and what is
-    missing: zeros where the D1/D2 known symbols belong at block boundaries, no EOM, no
-    interleaver flush, no Harris framing.
+  - `feat/harris-2400v-tx`: 2400V on the Harris transmit path, melp2400 re-made by this
+    modem (step 1), and the 2400V layout hypotheses (`docs/harris-tx.md`,
+    `docs/harris-600-format.md` s4).
 
 ### The radio play-back route (unchecked)
 
@@ -779,13 +779,14 @@ Risks:
 - it rejects our modulation;
 - the operator's audio chain colours the output.
 
-None of it is built: there is no step-1 WAV, no probe design and no audio set. It first
-needs a TX for the Harris modes, with byte-exact loopback tests.
+The TX is built: 600H, 1200H and 2400V transmit with byte-exact loopback, and step-1 WAVs
+re-make every recorded message (`docs/harris-tx.md`). No RT-1694D has been played one. There
+is no probe design and no audio set.
 
 ### Next, in order
 
-1. Build a TX for the Harris modes. Then make the step-1 WAV: one of their transmissions
-   re-made by our modem.
+1. Have a step-1 WAV played to an RT-1694D, to learn whether the radio accepts this modem's
+   transmission (`docs/harris-tx.md`, *Not proven*).
 2. Design and pilot the probe set. Prepare the fallback audio set, public-domain speech
    only.
 3. Review and merge `feat/harris-blind`.
