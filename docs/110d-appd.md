@@ -200,8 +200,6 @@ The TLC section (D.5.2.1.2) is not used. The receiver neither checks it nor coun
 
 1. What the STD-AMB-001 transmitter sends in fixed symbol 8, where the continuous index runs
    past 255 (measured above; not chased).
-2. The repo-docs citation rule asks for the cited source document to be filed in the repo's
-   docs folder; this branch does not commit the standard's PDF.
 
 ## Credits
 
