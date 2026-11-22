@@ -35,7 +35,7 @@ struct TxConfig {
     /// Add preamble to transmission
     bool include_preamble = true;
     
-    /// Add EOM (End of Message) marker
+    /// End the message with the EOM 4B65A5B2 and the 144-bit flush (false: no EOM)
     bool include_eom = true;
     
     /// Use RRC pulse shaping (improves spectrum, requires RX matched filter)

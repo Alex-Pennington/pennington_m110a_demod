@@ -228,23 +228,46 @@ public:
      * @return Complex PSK symbols with probes interleaved
      */
     std::vector<complex_t> encode_with_probes(const std::vector<uint8_t>& data) {
-        int unknown_len = config_.unknown_data_len;
-        int known_len = config_.known_data_len;
-        
         // 75 bps modes have no probes - use regular encode
-        if (unknown_len == 0 || known_len == 0) {
+        if (config_.unknown_data_len == 0 || config_.known_data_len == 0) {
             return encode(data);
         }
-        
-        // Step 1: Convert bytes to bits (LSB first!)
-        std::vector<int> bits = bytes_to_bits_lsb(data);
-        
+        return encode_bits_with_probes(bytes_to_bits_lsb(data), false);
+    }
+
+    /**
+     * Encode information bits with probes integrated, optionally ending the message.
+     *
+     * With message_end, the FEC encoder (or, at 4800 bps, the uncoded stream) takes
+     * after the bits the EOM 4B65A5B2, most significant digit first (§5.3.2.3.1), then
+     * 144 zero bits (§5.3.2.3.2), and no further tail: the 144 zeros flush the K=7
+     * encoder. The zero padding to the end of the interleaver block that follows is the
+     * rest of the §5.3.2.3.2 flush. Without message_end the stream ends as before: the
+     * bits, a 6-bit encoder tail, zero padding to the block end.
+     *
+     * @param bits         information bits, each 0 or 1, in transmit order
+     * @param message_end  append EOM and flush
+     * @return data and probe symbols, from the first data symbol after the preamble
+     */
+    std::vector<complex_t> encode_bits_with_probes(std::vector<int> bits, bool message_end) {
+        int unknown_len = config_.unknown_data_len;
+        int known_len = config_.known_data_len;
+        if (unknown_len == 0 || known_len == 0) return {};
+
+        // Step 1: EOM and flush (§5.3.2.3.1, §5.3.2.3.2)
+        if (message_end) {
+            static const uint32_t EOM = 0x4B65A5B2u;
+            for (int i = 31; i >= 0; i--) bits.push_back((EOM >> i) & 1);
+            bits.insert(bits.end(), 144, 0);
+        }
+
         // Step 2: FEC encode (rate 1/2, K=7) - except 4800 bps uncoded
         std::vector<int> coded;
         if (config_.bps == 4800) {
             coded = bits;
         } else {
             coded = fec_encode(bits);
+            if (message_end) coded.resize(bits.size() * 2);  // the 144 zeros are the flush
         }
         
         // Step 3: Apply bit repetition for low-rate modes

@@ -98,25 +98,24 @@ public:
             output.insert(output.end(), leading_audio.begin(), leading_audio.end());
         }
         
-        // Preamble, data + probes and the EOM frames go out as ONE symbol stream,
-        // modulated once. modulate_with_rrc() appends the filter's 2*RRC_SPAN symbols of
-        // tail to whatever it is given, so shaping the parts one by one put 12 symbols of
-        // extra samples between preamble and data (and data and EOM), and the receiver,
-        // which takes the data to start on the symbol after the preamble, read the whole
-        // message 12 symbols out of step. Rectangular pulses have no tail, so for them
-        // this is the same output as before, sample for sample.
+        // Preamble and data + probes go out as ONE symbol stream, modulated once.
+        // modulate_with_rrc() appends the filter's 2*RRC_SPAN symbols of tail to
+        // whatever it is given, so shaping the parts one by one would put 12 symbols of
+        // extra samples between preamble and data, and the receiver, which takes the
+        // data to start on the symbol after the preamble, would read the whole message
+        // 12 symbols out of step.
         std::vector<complex_t> stream;
         if (config_.include_preamble) stream = generate_preamble(mode_id);
 
-        // Encode data to symbols using M110ACodec with probes integrated
-        auto symbols_with_probes = codec_.encode_with_probes(data);
+        // Data, then with include_eom the 110A message end: EOM 4B65A5B2, 144 flush
+        // bits, zeros to the end of the interleaver block (M110ACodec). Without
+        // include_eom the data ends at its interleaver block, with no EOM at all.
+        std::vector<int> bits;
+        bits.reserve(data.size() * 8);
+        for (uint8_t b : data)
+            for (int i = 0; i < 8; i++) bits.push_back((b >> i) & 1);  // LSB first
+        auto symbols_with_probes = codec_.encode_bits_with_probes(std::move(bits), config_.include_eom);
         stream.insert(stream.end(), symbols_with_probes.begin(), symbols_with_probes.end());
-
-        // Generate EOM (End of Message) if requested
-        if (config_.include_eom) {
-            auto eom_symbols = generate_eom(mode_id, symbols_with_probes.size());
-            stream.insert(stream.end(), eom_symbols.begin(), eom_symbols.end());
-        }
 
         auto audio = config_.use_pulse_shaping ? modulate_with_rrc(stream) : modulate_simple(stream);
         output.insert(output.end(), audio.begin(), audio.end());
@@ -402,78 +401,6 @@ private:
             float envelope = 0.5f * (1.0f - std::cos(M_PI * t));
             samples[i] *= envelope;
         }
-    }
-    
-    /**
-     * Generate EOM (End of Message) marker
-     * 
-     * EOM consists of 4 flush frames with:
-     * - Data portion: all zeros (tribit 0 â†’ gray â†’ scramble)
-     * - Probe portion: normal scrambled probes
-     * 
-     * The scrambler continues from where data encoding left off,
-     * which is why we need data_symbol_count to sync.
-     * 
-     * @param mode_id Current mode
-     * @param data_symbol_count Number of data+probe symbols already sent
-     * @return EOM symbols (4 frames)
-     */
-    std::vector<complex_t> generate_eom(ModeId mode_id, size_t data_symbol_count) {
-        const auto& mode_cfg = ModeDatabase::get(mode_id);
-        
-        int unknown_len = mode_cfg.unknown_data_len;
-        int known_len = mode_cfg.known_data_len;
-        
-        // M75 modes have no probes/EOM structure
-        if (unknown_len == 0 || known_len == 0) {
-            return {};
-        }
-        
-        // 8-PSK constellation
-        static const std::array<complex_t, 8> PSK8 = {{
-            complex_t( 1.000f,  0.000f),
-            complex_t( 0.707f,  0.707f),
-            complex_t( 0.000f,  1.000f),
-            complex_t(-0.707f,  0.707f),
-            complex_t(-1.000f,  0.000f),
-            complex_t(-0.707f, -0.707f),
-            complex_t( 0.000f, -1.000f),
-            complex_t( 0.707f, -0.707f)
-        }};
-        
-        // MGD3[0] = 0 - zero data maps to symbol 0 before scrambling
-        static const int ZERO_GRAY = 0;
-        
-        // EOM = 4 flush frames
-        static const int EOM_FRAMES = 4;
-        
-        int pattern_len = unknown_len + known_len;
-        std::vector<complex_t> output;
-        output.reserve(EOM_FRAMES * pattern_len);
-        
-        // Continue scrambler from where data encoding left off
-        DataScramblerFixed scrambler;
-        for (size_t i = 0; i < data_symbol_count; i++) {
-            scrambler.next();
-        }
-        
-        // Generate 4 flush frames
-        for (int frame = 0; frame < EOM_FRAMES; frame++) {
-            // Data portion: all zeros (tribit 0 â†’ gray 0 â†’ scrambled)
-            for (int i = 0; i < unknown_len; i++) {
-                int scr = scrambler.next();
-                int sym_idx = (ZERO_GRAY + scr) & 7;
-                output.push_back(PSK8[sym_idx]);
-            }
-            
-            // Probe portion: scrambler only (same as normal probes)
-            for (int i = 0; i < known_len; i++) {
-                int sym_idx = scrambler.next();
-                output.push_back(PSK8[sym_idx]);
-            }
-        }
-        
-        return output;
     }
     
     /**

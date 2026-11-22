@@ -261,10 +261,12 @@ public:
                 }
                 
                 // Detect and strip EOM
-                result.eom_detected = detect_eom(turbo_decoded, mode_cfg.unknown_data_len, 
-                                                 mode_cfg.known_data_len);
-                if (result.eom_detected) {
-                    turbo_decoded = strip_eom_padding(turbo_decoded);
+                result.eom_sequence = cut_at_eom(turbo_decoded);
+                result.eom_detected = result.eom_sequence;
+                if (!result.eom_detected) {
+                    result.eom_detected = detect_eom(turbo_decoded, mode_cfg.unknown_data_len,
+                                                     mode_cfg.known_data_len);
+                    if (result.eom_detected) turbo_decoded = strip_eom_padding(turbo_decoded);
                 }
                 
                 result.quality_db = probe_snr_db(phase_corrected,
@@ -314,15 +316,15 @@ public:
             return result;
         }
         
-        // Step 6: Detect EOM (End of Message)
-        // EOM = 4 frames of zeros, which decode as zero bytes
-        // Check if trailing bytes are zeros (indicating EOM was present)
-        result.eom_detected = detect_eom(decoded, mode_cfg.unknown_data_len, 
-                                         mode_cfg.known_data_len);
-        
-        // If EOM detected, strip the zero padding from result
-        if (result.eom_detected) {
-            decoded = strip_eom_padding(decoded);
+        // Step 6: Detect EOM (End of Message). The 110A EOM word 4B65A5B2 ends the
+        // data where it is found. Without it, fall back to the older ModemTX ending
+        // of 4 frames of zero data, which decode as trailing zero bytes.
+        result.eom_sequence = cut_at_eom(decoded);
+        result.eom_detected = result.eom_sequence;
+        if (!result.eom_detected) {
+            result.eom_detected = detect_eom(decoded, mode_cfg.unknown_data_len,
+                                             mode_cfg.known_data_len);
+            if (result.eom_detected) decoded = strip_eom_padding(decoded);
         }
         
         // Step 7: Decode quality. With the DFE, score its own output on the
@@ -866,7 +868,32 @@ private:
     }
     
     /**
-     * Detect EOM (End of Message) marker in decoded data
+     * Cut decoded data at the 110A EOM 4B65A5B2 (MIL-STD-188-110 5.3.2.3.1)
+     *
+     * The EOM goes to the FEC encoder most significant digit first, so in the
+     * LSB-first bytes the decoder emits it reads D2 A6 A5 4D when byte aligned.
+     * Searched at every bit offset, as m110a_rx does.
+     *
+     * @param decoded Decoded data bytes; on a hit, cut to the whole bytes before it
+     * @return true if the EOM was found
+     */
+    static bool cut_at_eom(std::vector<uint8_t>& decoded) {
+        static const uint8_t EOM_BYTES[4] = {0xD2, 0xA6, 0xA5, 0x4D};
+        auto bit = [](const uint8_t* d, size_t i) { return (d[i / 8] >> (i % 8)) & 1; };
+        const size_t nbits = decoded.size() * 8;
+        for (size_t pos = 0; pos + 32 <= nbits; pos++) {
+            bool ok = true;
+            for (size_t i = 0; i < 32 && ok; i++) ok = bit(decoded.data(), pos + i) == bit(EOM_BYTES, i);
+            if (ok) {
+                decoded.resize(pos / 8);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Detect the older ModemTX end of message in decoded data
      * 
      * EOM consists of 4 frames of zero data. After FEC decoding,
      * this produces zero bytes at the end of the transmission.

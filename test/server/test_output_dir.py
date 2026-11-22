@@ -4,8 +4,10 @@
 Usage: test_output_dir.py <m110a_server> <work dir>
 
 1. Start the server with --output-dir <work>/out/a/b (no trailing slash, none
-   of it exists), send a payload on the data port, SENDBUFFER, inject the PCM
-   file the server reports, and require the payload back on the data port.
+   of it exists). For every mode the server and ModemTX both take (150S to
+   2400L), send a payload on the data port, SENDBUFFER, inject the PCM file the
+   server reports, and require exactly the payload back on the data port, with
+   no byte after it.
 2. Start the server with an output dir under a regular file and require it to
    exit non-zero with "Cannot create output directory".
 """
@@ -17,6 +19,7 @@ import sys
 import time
 
 PAYLOAD = b"OUTPUT DIR TEST 0123456789"
+MODES = ("150S", "150L", "300S", "300L", "600S", "600L", "1200S", "1200L", "2400S", "2400L")
 
 
 def free_port():
@@ -59,6 +62,42 @@ class Lines:
             self.buf += chunk
 
 
+def one_mode(ctrl, data, lines, out, mode):
+    ctrl.sendall(f"CMD:DATA RATE:{mode}\n".encode())
+    lines.until("OK:DATA RATE")
+    data.sendall(PAYLOAD)
+    time.sleep(0.3)  # the server polls every 10 ms; let it buffer the bytes
+    ctrl.sendall(b"CMD:SENDBUFFER\n")
+    sent = lines.until("OK:SENDBUFFER")
+    if " FILE:" not in sent:
+        sys.exit(f"FAIL {mode}: SENDBUFFER reported no file: {sent!r}")
+    pcm = sent.split(" FILE:", 1)[1]
+    if os.path.dirname(os.path.abspath(pcm)) != os.path.abspath(out):
+        sys.exit(f"FAIL {mode}: PCM {pcm!r} not inside {out!r}")
+    if not os.path.isfile(pcm) or os.path.getsize(pcm) == 0:
+        sys.exit(f"FAIL {mode}: PCM {pcm!r} missing or empty")
+
+    ctrl.sendall(f"CMD:RXAUDIOINJECT:{pcm}\n".encode())
+    lines.until("OK:RXAUDIOINJECT:STARTED")
+    lines.until("OK:RXAUDIOINJECT:COMPLETE", timeout=120)
+
+    # read until 1 s passes with nothing more, so a byte after the payload shows
+    got = b""
+    data.settimeout(1)
+    try:
+        while True:
+            chunk = data.recv(4096)
+            if not chunk:
+                break
+            got += chunk
+    except socket.timeout:
+        pass
+    if got != PAYLOAD:
+        sys.exit(f"FAIL {mode}: decoded {got!r}, sent {PAYLOAD!r}")
+    os.remove(pcm)
+    print(f"PASS {mode}: TX -> {os.path.basename(pcm)} -> inject decoded {len(got)} bytes")
+
+
 def roundtrip(server, work):
     out = os.path.join(work, "out", "a", "b")
     cport, dport = free_port(), free_port()
@@ -73,40 +112,11 @@ def roundtrip(server, work):
         if not os.path.isdir(out):
             sys.exit(f"FAIL: {out} not created at startup")
 
-        ctrl.sendall(b"CMD:DATA RATE:600S\n")
-        lines.until("OK:DATA RATE")
-        data.sendall(PAYLOAD)
-        time.sleep(0.3)  # the server polls every 10 ms; let it buffer the bytes
-        ctrl.sendall(b"CMD:SENDBUFFER\n")
-        sent = lines.until("OK:SENDBUFFER")
-        if " FILE:" not in sent:
-            sys.exit(f"FAIL: SENDBUFFER reported no file: {sent!r}")
-        pcm = sent.split(" FILE:", 1)[1]
-        if os.path.dirname(os.path.abspath(pcm)) != os.path.abspath(out):
-            sys.exit(f"FAIL: PCM {pcm!r} not inside {out!r}")
-        if not os.path.isfile(pcm) or os.path.getsize(pcm) == 0:
-            sys.exit(f"FAIL: PCM {pcm!r} missing or empty")
-
-        ctrl.sendall(f"CMD:RXAUDIOINJECT:{pcm}\n".encode())
-        lines.until("OK:RXAUDIOINJECT:STARTED")
-        lines.until("OK:RXAUDIOINJECT:COMPLETE", timeout=60)
-
-        got = b""
-        data.settimeout(2)
-        try:
-            while len(got) < len(PAYLOAD):
-                chunk = data.recv(4096)
-                if not chunk:
-                    break
-                got += chunk
-        except socket.timeout:
-            pass
-        if got != PAYLOAD:
-            sys.exit(f"FAIL: decoded {got!r}, sent {PAYLOAD!r}")
+        for mode in MODES:
+            one_mode(ctrl, data, lines, out, mode)
         ctrl.close()
         data.close()
-        print(f"PASS: created {out}, TX -> {os.path.basename(pcm)} -> inject decoded "
-              f"{len(got)} bytes")
+        print(f"PASS: created {out}; TX -> inject decoded the payload exactly in {', '.join(MODES)}")
     finally:
         proc.terminate()
         try:

@@ -58,7 +58,11 @@ add_executable(m110d_chan m110d_chan/main.cpp)
 # over the Harris MELP test set; docs/harris-melpe.md)
 add_executable(harris_score test/harris/harris_score.cpp)
 
-set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_chan harris_score PROPERTIES
+# Standard modes through ModemTX::encode to a WAV (test/tx/tx_loopback.py drives it)
+add_executable(modem_tx_wav test/tx/modem_tx_wav.cpp)
+target_link_libraries(modem_tx_wav PRIVATE m110a_modem)
+
+set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_chan harris_score modem_tx_wav PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----
@@ -154,6 +158,27 @@ if(M110A_HAVE_SCIPY)
                    --rx $<TARGET_FILE:m110a_rx> --tx $<TARGET_FILE:m110a_tx>
                    --work ${CMAKE_BINARY_DIR}/rx_work/harris_tx_loopback)
   set_tests_properties(harris_tx_loopback PROPERTIES LABELS "iq")
+
+  # Standard modes: ModemTX::encode -> WAV -> noise -> I/Q -> m110a_rx (AUTO), the exact
+  # payload with success=1 and eom=1 (test/tx/tx_loopback.py, docs/TX_CHAIN.md).
+  # 4800S is uncoded 8PSK: at 10 dB its BER is near 1e-2, so it runs clean and at
+  # 18 dB, where theory gives below 1e-5.
+  set(_txlb ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/tx/tx_loopback.py
+            --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>)
+  set(_coded 150S,150L,300S,300L,600S,600L,1200S,1200L,2400S,2400L)
+  set(_tx_cases
+    "tx_loopback_rrc|--modes ${_coded} --snr inf,10"
+    "tx_loopback_rrc_4800S|--modes 4800S --snr inf,18 --seeds 1,2,3"
+    "tx_loopback_rect|--modes ${_coded} --snr inf,10 --rect"
+  )
+  foreach(c ${_tx_cases})
+    string(REPLACE "|" ";" _p "${c}")
+    list(GET _p 0 _name)
+    list(GET _p 1 _args)
+    separate_arguments(_args UNIX_COMMAND "${_args}")
+    add_test(NAME ${_name} COMMAND ${_txlb} ${_args} --work ${CMAKE_BINARY_DIR}/rx_work/${_name})
+    set_tests_properties(${_name} PROPERTIES LABELS "iq;tx" TIMEOUT 3600)
+  endforeach()
 
   # long sweeps: ctest -L slow
   set(_all_modes 150S,150L,300S,300L,600S,600L,1200S,1200L,2400L)
