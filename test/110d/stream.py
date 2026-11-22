@@ -22,16 +22,17 @@ the receiver's stdin in 0.1 s pieces.
 The receiver must print one message block per file, in order: the same WID and interleaver
 and decoded text starting with README's text (score.py's prefix rule). Extra, missing or
 out-of-order blocks fail. Printed per message: the feed time the file ended and the time the
-block arrived (latency, at --pace 1). At the end: the receiver's peak RSS (ru_maxrss of the
-child) and its wall time.
+block arrived (latency, at --pace 1). At the end: the receiver's peak RSS (VmHWM from
+/proc/<pid>/status, read every 0.5 s until it exits), its RSS at every tenth of the feed, and
+its wall time.
 
 Exit status: 0 when every file is decoded once, in order; 1 otherwise.
 """
 import argparse
+import array
 import os
 import random
 import re
-import resource
 import struct
 import subprocess
 import sys
@@ -53,8 +54,11 @@ def load(path):
             raise ValueError(f"{path}: 16-bit PCM only")
         fs, ch = w.getframerate(), w.getnchannels()
         raw = w.readframes(w.getnframes())
-    x = list(struct.unpack("<%dh" % (len(raw) // 2), raw))[::ch]
-    return fs, x
+    x = array.array("h")
+    x.frombytes(raw[:len(raw) // 2 * 2])
+    if sys.byteorder != "little":
+        x.byteswap()
+    return fs, x[::ch]
 
 
 def header(fs):
@@ -73,7 +77,7 @@ def build_feed(clips, fs, gaps, snr, duration, every, seed):
     if snr is None:
         t = 0
         for k, (row, x) in enumerate(clips):
-            g = [0] * int(gaps[k % len(gaps)] * fs)
+            g = array.array("h", bytes(2 * int(gaps[k % len(gaps)] * fs)))
             t += len(x)
             yield x, [(row, t / fs)]
             t += len(g)
@@ -95,8 +99,7 @@ def build_feed(clips, fs, gaps, snr, duration, every, seed):
                 seg[lead + i] += v
             placed = [(row, (t + lead + len(x)) / fs)]
             k += 1
-        seg = [max(-32768, min(32767, int(round(v)))) for v in seg]
-        yield seg, placed
+        yield array.array("h", (max(-32768, min(32767, int(round(v)))) for v in seg)), placed
         t += n
 
 
@@ -172,8 +175,29 @@ def main():
 
     th = threading.Thread(target=reader, daemon=True)
     th.start()
+    mem = {"hwm": 0, "rss": 0}
+
+    def status():
+        try:
+            with open(f"/proc/{p.pid}/status") as f:
+                for line in f:
+                    k, _, v = line.partition(":")
+                    if k in ("VmHWM", "VmRSS"):
+                        mem[k[2:].lower()] = int(v.split()[0])
+        except OSError:
+            pass
+
+    def monitor():
+        while p.poll() is None:
+            status()
+            time.sleep(0.5)
+
+    tm = threading.Thread(target=monitor, daemon=True)
+    tm.start()
+    rss_log = []  # (feed seconds, RSS kB)
     expected = []  # (row, feed end time s)
     fed = 0
+    feed_s = a.duration if a.noise_snr is not None else sum(len(x) for _, x in clips) / fs
     try:
         p.stdin.write(header(fs))
         piece = fs // 10
@@ -181,8 +205,13 @@ def main():
             expected += placed
             for i in range(0, len(samples), piece):
                 part = samples[i:i + piece]
-                p.stdin.write(struct.pack("<%dh" % len(part), *part))
+                if sys.byteorder != "little":
+                    part.byteswap()
+                p.stdin.write(part.tobytes())
                 fed += len(part)
+                if not rss_log or fed / fs >= rss_log[-1][0] + feed_s / 10:
+                    status()
+                    rss_log.append((fed / fs, mem["rss"]))
                 if a.pace > 0:
                     due = fed / fs / a.pace
                     lag = due - (time.monotonic() - t_start)
@@ -191,10 +220,14 @@ def main():
         p.stdin.close()
     except BrokenPipeError:
         pass
+    while p.poll() is None:
+        status()
+        time.sleep(0.2)
     rc = p.wait()
     th.join()
+    tm.join()
     wall = time.monotonic() - t_start
-    rss_kb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    rss_kb = mem["hwm"]
 
     blocks = parse_blocks(lines)
     ok = 0
@@ -212,6 +245,7 @@ def main():
     extra = len(blocks) - len(expected)
     print(f"messages: {len(blocks)} out, {len(expected)} in; in order and correct: {ok}/{len(expected)}; "
           f"extra: {max(0, extra)}")
+    print("receiver RSS over the feed (s:kB): " + " ".join(f"{t:.0f}:{r}" for t, r in rss_log))
     print(f"receiver: rc={rc} wall={wall:.1f} s peak_rss={rss_kb} kB")
     return 0 if ok == len(expected) and extra == 0 and rc == 0 else 1
 
