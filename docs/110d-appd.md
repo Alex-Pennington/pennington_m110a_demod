@@ -2,15 +2,16 @@
 
 ## Handoff
 
-This section describes the receiver as merged at master `0914cb4`, the equaliser merge. The
-sections below it hold the detail and the full measured tables.
+This section describes the receiver with the equaliser and the support-placement fix
+(`fix/110d-drift`, on master `1f02930`). The sections below it hold the detail and the full
+measured tables.
 
 ### State of the receiver
 
 - **Clean interop set** (60 files from another transmitter, every 3 kHz waveform, WID 0-13,
   four interleavers, five variants). It passes 60/60 on WID and interleaver and 60/60 on text
-  with EOM as expected. It passes at 48 kHz, at 8 kHz from a file, and at 8 kHz through stdin
-  (measured on a fresh build of `0914cb4`, and through stdin at `4e43f17`).
+  with EOM as expected, at 48 kHz and at 8 kHz from a file (measured on `fix/110d-drift`), and
+  at 8 kHz through stdin (measured at `4e43f17`).
 - **Implemented:**
   - preamble acquisition over +-112.5 Hz;
   - WID, interleaver and constraint-length detection;
@@ -29,39 +30,33 @@ sections below it hold the detail and the full measured tables.
 Default files: WID 0, 3, 13, 7 and 10, all SHORT. Seeds: 3, and 10 for fading. Each cell is
 one decode of a burst, not a BER figure.
 
-| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser (`2d66ba3`; default at `c5e4eb7`) |
-|---|---|---|---|
-| default (110) | 87 | 95 | 104 |
-| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 |
-| foff (240) | 135 | 240 | 240 |
-| drift and D.6.5 sweep (105) | 60 | 105 | 105 at `2d66ba3`; **100 at `c5e4eb7` (regression)** |
-| ppm and ppm drift (270) | 144 | 270 | 270 |
-| static (45) | 6 | 6 | 36 (36 at `c5e4eb7`) |
-| fading, 10 seeds (400) | 70 | 93 | 310 (322 at `c5e4eb7`) |
+| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` |
+|---|---|---|---|---|
+| default (110) | 87 | 95 | 104 | 104 |
+| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 |
+| foff (240) | 135 | 240 | 240 | 240 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 |
+| ppm and ppm drift (270) | 144 | 270 | 270 | 270 |
+| static (45) | 6 | 6 | 36 | 36 |
+| fading, 10 seeds (400) | 70 | 93 | 322 | 322 |
 
-- The equaliser columns are from the worker's runs. The coordinator reran the default matrix
-  on the merged build and got 104/110.
-- The full matrix at the equaliser's final commit (`c5e4eb7`, the code on master) finished
-  after the merge. Results: default 104/110, awgn 116/150, foff 240/240, ppm 270/270, static
-  36/45 and fading 322/400, none with a worse cell.
-- **Regression on master (measured): drift is 100/105, against 105/105 at `79de273`.** These
-  cells drop from 3/3 to 2/3 (files 1/13/53/29/41):
-  - fdrift +3.5 Hz/s @30 on WID 10;
-  - fdrift -3.5 Hz/s @30 on WID 13, 7 and 10;
-  - sweep D.6.5 @30 on WID 10.
-
-  It arrives with `eb91c3d` ("score support hypotheses with tail margins, ties go to the
-  shortest span"). It still fails with `--eq probe` and passes with `--eq off`.
-  - **Repro:** `m110d_chan --seed 2 --snr 30 --fdrift -3.5` on file 41, then `m110d_rx`. With
-    the equaliser there is no EOM and the text is garbage; with `--eq off` it decodes
-    (coordinator, master `f554207`).
-  - **Mechanism** (worker, `-v` on file 41): on that single-path channel the support
-    hypothesis tie rule (2.5x, shortest span wins) picks a span that puts the strongest tap a
-    full base period (L = 16) from delay 0. The fit is 8.9 dB, against 29.1 dB at `2d66ba3`.
-  - **Proposed fix** (inferred, not built): keep the strongest tap at the delay nearest 0 when
-    choosing the support. For example, skip hypotheses with |d(kmax)| > (K-L)/2, or apply the
-    tie only among hypotheses that place kmax the same way.
-  - **Re-check after the fix:** the drift matrix at 3 seeds, plus static and fading.
+- The last two columns are full runs of every matrix from fresh builds, side by side:
+  `--matrix default,awgn,foff,drift,ppm,static --seeds 3` and `--matrix fading --seeds 10`.
+  Five cells differ between them, all in drift, each 2/3 on master and 3/3 on the fix
+  (files 1/13/53/29/41): fdrift +3.5 Hz/s @30 on WID 10; fdrift -3.5 Hz/s @30 on WID 13, 7
+  and 10; sweep D.6.5 @30 on WID 10. Every other cell is equal.
+- **Support placement.** Inside the periodic probe a delay d and d +- L fit alike, so the
+  support search scores each unwrapping of the delay profile on the probe samples it leaves
+  free of data. On a single path with linear drift the tracked frequency on the first probes
+  lags by 1 to 3 Hz (measured with `-v`, file 41, `--seed 2 --snr 30 --fdrift -3.5`). The phase
+  ramp raises the residual of the true support, scored over the whole probe, about 3x above
+  two aliased supports scored on short windows at the probe edges. One alias places the main
+  path at delay -16 (fit 8.9 dB, no EOM). The timing loop centres the probe on the strongest
+  one-tap path, so the search now admits only hypotheses that place the strongest delay at
+  |d| <= L/2. The repro decodes with EOM, support 0 and 15, fit 29.1 dB.
+- The weak tail on that channel still lands at +15 instead of -1: the same window bias
+  decides between those two. It costs nothing measured; the residual comparison across
+  hypotheses of different window length is still biased by residual frequency error.
 
 ### Branches and worktrees
 
@@ -106,7 +101,9 @@ pre-equaliser one-tap path.
 
 ### Unfinished
 
-- **The drift regression above.** Fix it first.
+- The support residual comparison is biased toward short observation windows when the
+  probe carries a residual frequency error (above). Placement of the strongest delay is
+  constrained; weak taps are not.
 - WID 0 has no equaliser (it has no probes). It still fails fading: 0/10 on Poor.
 - WID 12 (256QAM) fails Poor at 30 dB. Table D-LXIV sets no Poor requirement for WID 11-12.
 - static-wid2 fails on WID 7, 10 and 13. Its 9 ms spread exceeds what the K=32 probes cover.
@@ -131,15 +128,13 @@ pre-equaliser one-tap path.
 
 ### Next steps, in order
 
-1. Fix the drift regression in the support selection (above) and re-run the drift, static
-   and fading matrices.
-2. Add a band-limiting condition (SSB filter shapes) to `m110d_chan` and `channel.py`, and
+1. Add a band-limiting condition (SSB filter shapes) to `m110d_chan` and `channel.py`, and
    measure the receiver against it.
-3. Streaming acquisition, so that `m110d_rx` can decode a live 8 kHz feed.
-4. WID 0 in noise and fading: find the 9 dB.
-5. A BER-style measurement (long runs, LONG interleaver) to compare with Table D-LXIV
+2. Streaming acquisition, so that `m110d_rx` can decode a live 8 kHz feed.
+3. WID 0 in noise and fading: find the 9 dB.
+4. A BER-style measurement (long runs, LONG interleaver) to compare with Table D-LXIV
    properly.
-6. K=9 coding.
+5. K=9 coding.
 
 ## Overview
 
