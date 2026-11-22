@@ -123,17 +123,17 @@ deinterleaver and the Viterbi decoder.
 
 | Message | Mode | Bytes | EOM | Disagreement, EQ | Disagreement, tracked | Probe SER | m110a_rx (DFE) |
 |---|---|---|---|---|---|---|---|
-| 600_1 | 600H | 442 | yes | 0.00 % | 0.00 % | 0.93 % | same bytes, 9.6 dB |
-| 600_2 | 600H | 418 | yes | 0.00 % | 0.00 % | 1.26 % | same bytes, 9.7 dB |
-| 600_3_multiples_m1 | 600H | 314 | yes | 0.00 % | 0.00 % | 3.01 % | same bytes, 9.7 dB |
-| 600_3_multiples_m2 | 600H | 224 | yes | 0.00 % | 0.00 % | 3.04 % | same bytes, 9.6 dB |
-| 600_3_multiples_m3 | 600H | 142 | yes | 0.00 % | 0.00 % | 6.50 % | same bytes, 9.7 dB |
-| 600_3_multiples_m4 | 600H | 82 | yes | 0.00 % | 0.00 % | 3.97 % | same bytes, 9.9 dB |
-| 1200_1 | 1200H | 1156 | yes | 0.00 % | 0.00 % | 0.85 % | same bytes, 9.4 dB |
-| 1200_2 | 1200H | 740 | yes | 0.00 % | 0.00 % | 0.29 % | same bytes, 9.7 dB |
-| 1200_3 | 1200H | 760 | yes | 0.00 % | 0.00 % | 1.16 % | same bytes, 9.6 dB |
-| melp600 | 600H | 628 | yes | 0.00 % | 0.00 % | 10.70 % | same bytes, 8.3 dB |
-| melp2400 | 2400V | 1911 | yes | 0.04 % | 2.26 % | 9.64 % | 43 bytes differ, 6.8 dB, success=0 |
+| 600_1 | 600H | 442 | yes | 0.00 % | 0.00 % | 0.93 % | same bytes, 16.4 dB |
+| 600_2 | 600H | 418 | yes | 0.00 % | 0.00 % | 1.26 % | same bytes, 15.8 dB |
+| 600_3_multiples_m1 | 600H | 314 | yes | 0.00 % | 0.00 % | 3.01 % | same bytes, 16.2 dB |
+| 600_3_multiples_m2 | 600H | 224 | yes | 0.00 % | 0.00 % | 3.04 % | same bytes, 15.8 dB |
+| 600_3_multiples_m3 | 600H | 142 | yes | 0.00 % | 0.00 % | 6.50 % | same bytes, 16.3 dB |
+| 600_3_multiples_m4 | 600H | 82 | yes | 0.00 % | 0.00 % | 3.97 % | same bytes, 16.9 dB |
+| 1200_1 | 1200H | 1156 | yes | 0.00 % | 0.00 % | 0.85 % | same bytes, 15.7 dB |
+| 1200_2 | 1200H | 740 | yes | 0.00 % | 0.00 % | 0.29 % | same bytes, 16.1 dB |
+| 1200_3 | 1200H | 760 | yes | 0.00 % | 0.00 % | 1.16 % | same bytes, 15.7 dB |
+| melp600 | 600H | 628 | yes | 0.00 % | 0.00 % | 10.70 % | same bytes, 11.9 dB |
+| melp2400 | 2400V | 1911 | yes | 0.04 % | 2.26 % | 9.64 % | same bytes, 10.8 dB |
 
 The columns:
 
@@ -141,7 +141,7 @@ The columns:
 - *Probe SER* is the share of zero-valued known symbols whose 8PSK position is wrong, with
   phase tracked and no equalizer. It is an 8-ary decision, so it runs higher than the BPSK and
   QPSK data decisions.
-- *m110a_rx* is its own decode, with its `quality_db`.
+- *m110a_rx* is its own decode, with its `quality_db`. All 11 succeed (`success=1`, `eom=1`).
 
 `600 #3 multiples` holds four messages. `m110a_rx` finds each preamble, at 0.763, 7.557, 13.216
 and 17.495 s.
@@ -149,12 +149,51 @@ and 17.495 s.
 melp2400 is the weak file. Its audio passband is 703 to 2918 Hz, which cuts into the 2400-baud
 spectrum. Without an equalizer, 2.3 % of its coded bits disagree. The Viterbi decoder corrects
 them: the equalized decode (0.04 % disagreement) is byte-identical to the tracked-only one, and
-to the equalized decode at four other equalizer settings, from 9 to 21 taps. `m110a_rx`'s own
-DFE decode of it differs from all of these in 43 bytes, and scores 6.8 dB against its 7.75 dB
-2400 threshold, so it reports `success=0`. The other equalizers in `m110a_rx` (`--eq NONE`,
-`DFE_RLS`, `MLSE_*`, `TURBO`) differ from it in 21 to 218 bytes. The same receiver returns 53 of 54
-bytes on noiseless own-TX 2400S, with the last byte wrong, so the defect is in its 2400 receive
-chain and not in the 2400V mode. The melp2400 payload is the `harris_score` decode.
+to the equalized decode at four other equalizer settings, from 9 to 21 taps. `m110a_rx` decodes
+it to the same bytes. See *The 2400 receive chain* below.
+
+### The 2400 receive chain
+
+Two receiver defects made `m110a_rx` lose 2400 bps payloads. Both are fixed.
+
+- **Carrier from the preamble.** The fine AFC search scores correlation magnitude over 72-symbol
+  segments, which hardly changes within ±1 Hz. On a clean own-TX 2400S signal at 0 Hz it settled
+  at −0.50 Hz, and the data phase drifted about 100° over one 0.6 s block. All 1440 data
+  symbols were then off by at least one 8PSK position before the phase tracker. The tracker
+  recovered all but the last byte. `BrainDecoder::refine_carrier` now fits a line through the
+  phases of the 32-symbol blocks of every common segment from the frame found to the last. It
+  derotates the preamble and data symbols along that line. On the same signal: 0.00 Hz, and
+  0 of 1440 symbols wrong.
+- **Block-boundary probes.** A 110C transmitter sends D1 and D2 in the two known segments before
+  each new interleaver block [1, 5.3.2.3.7.1.2]. The Harris radio does. The receiver took every
+  known segment as zeros, so in two of every 30 (36 at 150 to 1200 bps) segments the phase
+  tracker and the DFE trained on the wrong reference. On melp2400 the tracker's frequency
+  estimate went from −3.7 to −6.7 Hz and 45 bytes came out wrong. Those two segments per block
+  are now left out of probe training and of `quality_db`, so a transmitter that sends them and
+  one that sends zeros (this modem's TX) are read the same way. With both changes, the quality of every Harris file
+  rises, by 3.6 dB (melp600) to 7.0 dB.
+
+Measured on the MS-DMT reference recordings (150S to 2400L) and this modem's own TX (150S to
+2400L, and 2400V). Each was decoded with the mode given and with AUTO, using DFE, clean and with
+white noise at noise/signal 0.5, 1.0 and 1.5 (0 to 24 kHz, three seeds): 420 decodes. Neither
+fix changes a threshold.
+
+| Mode | Exact, before | Exact, after | Exact with `success=1`, before → after | `success=1` with wrong bytes, before → after |
+|---|---|---|---|---|
+| 150S to 600L (each) | 20 / 40 | 20 / 40 | 20 → 20 | 0 → 0 |
+| 1200S | 18 / 40 | 20 / 40 | 16 → 18 | 0 → 0 |
+| 1200L | 18 / 40 | 20 / 40 | 16 → 20 | 2 → 0 |
+| 2400S | 0 / 40 | 12 / 40 | 0 → 10 | 2 → 0 |
+| 2400L | 10 / 40 | 14 / 40 | 8 → 10 | 0 → 0 |
+| 2400V | 0 / 20 | 2 / 20 | 0 → 2 | 2 → 0 |
+
+No decode returned fewer correct bytes after the change than before. MS-DMT 2400S clean went
+from 51 / 54 bytes at 6.3 dB to 54 / 54 at 11.9 dB with `success=1`. Own-TX 2400S and 2400V
+clean went from 53 / 54 (the last byte wrong) with `success=1` to 54 / 54. Own-TX with added
+noise finds no preamble in this measurement, before and after. Its leading symbols plus the 0.1 s
+noise lead-in put the preamble outside `BrainDecoder`'s 500-symbol search window; `m110a_rx`
+cuts 40 ms before each preamble, so it does not meet this. The 150 to 600 bps failures are those
+own-TX noise cases.
 
 **Bit order.** Bit *k* of the stream, in the order bits leave the K=7 Viterbi decoder (after
 descrambling and deinterleaving), is bit *k* mod 8 of byte ⌊*k* / 8⌋, LSB first. That is the
@@ -174,14 +213,13 @@ modem.
   carry, and `m110a_rx` finds three frames (`preamble_hits=3`). Under Table XII as printed it
   would be 1. NOT
   DETERMINABLE from the standard alone which one Table XII intends. The readings fit value + 4.
-- **The 2400 receive chain.** 2400S and 2400V lose the last byte of a noiseless own-TX message,
-  and decode melp2400 with 43 wrong bytes. The 2400 quality threshold (7.75 dB) was set on 2400L.
-  This needs its own receive-chain work.
 - **TX known symbols.** This modem's TX sends every known segment as zeros. 110C puts D1 and D2
-  in the two before each new interleaver block [1, 5.3.2.3.7.1.2]. The Harris radio does.
-  The receiver also treats every known segment as zeros, so its DFE trains on the wrong
-  reference in two of every 36 (or 30) segments of a Harris signal. The 600H and 1200H files
-  decode regardless.
+  in the two before each new interleaver block [1, 5.3.2.3.7.1.2]. The Harris radio does. The
+  receiver skips those two segments, so it reads either kind.
+- **Quality thresholds.** `quality_db` no longer counts the block-boundary probes, so it reads
+  higher than before wherever a transmitter sends D1 and D2 there. The thresholds were set on
+  the old figure (`api/modem_rx.cpp`, `quality_threshold_db`). They were not re-derived. On the
+  420 decodes above, no wrong payload passes them.
 - **TX end of message.** This modem's TX ends a message with four frames of zero data. It does
   not send the EOM 4B65A5B2 [1, 5.3.2.3.1] or the interleaver flush [1, 5.3.2.3.2]. So
   `eom=1` on own-TX loopback is not tested.
