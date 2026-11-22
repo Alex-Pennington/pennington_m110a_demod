@@ -129,6 +129,52 @@ def find_sync(bits, rate, min_frames=8, index=None):
     return best if best[0] is not None else (None, None)
 
 
+def period_z(bits, period):
+    """How strongly a bit stream repeats with the given period, whatever the phase.
+
+    Cut into rows of `period` bits, a framed stream's column means stray from the stream's
+    own share of ones at biased positions (codebook MSBs, voicing, sync). Returns
+    z = (sum_c n(m_c - p)^2 / (p(1-p)) - (period-1)) / sqrt(2(period-1)), about N(0, 1)
+    for a stream with no structure at that period; NaN below 4 rows."""
+    b = np.asarray(bits, dtype=np.float64)
+    n = len(b) // period
+    if n < 4 or period < 2:
+        return float("nan")
+    x = b[: n * period]
+    p = x.mean()
+    if p <= 0 or p >= 1:
+        return float("nan")
+    m = x.reshape(n, period).mean(axis=0)
+    s = (n * (m - p) ** 2 / (p * (1 - p))).sum()
+    return float((s - (period - 1)) / np.sqrt(2 * (period - 1)))
+
+
+PERIOD_MIN, PERIOD_MAX = 4, 130
+
+
+def period_check(streams, rate, skip=0):
+    """Pooled frame-period evidence over streams of one mode.
+
+    Returns (best period, its pooled z, pooled z at the rate's frame size, matches). It does
+    not match when the rate's frame size shows no structure (z < 3) while another period,
+    not a multiple of it, shows strong structure (z >= 6)."""
+    n = frame_bits(rate)
+
+    def pooled(P):
+        v = [period_z(np.asarray(s)[skip:], P) for s in streams]
+        v = [t for t in v if t == t]
+        return sum(v) / np.sqrt(len(v)) if v else float("nan")
+
+    zs = {P: pooled(P) for P in range(PERIOD_MIN, PERIOD_MAX + 1)}
+    zs = {P: v for P, v in zs.items() if v == v}
+    if not zs:
+        return None, float("nan"), float("nan"), True
+    best = max(zs, key=zs.get)
+    zn = zs.get(n, float("nan"))
+    mismatch = (zn < 3) and zs[best] >= 6 and best % n != 0
+    return best, zs[best], zn, not mismatch
+
+
 def random_frames(rate, n, seed=1):
     rng = np.random.default_rng(seed)
     return rng.integers(0, 2, size=(n, frame_bits(rate)), dtype=np.uint8)

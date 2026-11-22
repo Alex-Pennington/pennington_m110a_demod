@@ -276,11 +276,40 @@ def combine_status(statuses):
     return "fail"
 
 
-def score_part(a, part, meta, rate_hint):
-    """Score one payload file. Returns a dict with bytes, d (best choice or None), x, status."""
+def mode_key(meta, rate_hint):
+    return str(meta.get("mode") or f"{rate_hint} bps")
+
+
+def period_checks(payload_dir, plan):
+    """Frame-period check per mode, pooled over every message of that mode.
+    plan: [(slug, name, rate_hint, [(part, meta)])]. Returns {mode: (best, zbest, zn, ok, rate)}."""
+    groups = {}
+    for _, _, rate_hint, parts in plan:
+        for part, meta in parts:
+            rate = int(meta.get("rate", rate_hint))
+            with open(os.path.join(payload_dir, part + ".bin"), "rb") as f:
+                bits = mf.bytes_to_bits(f.read(), meta.get("bit_order", "lsb"))
+            groups.setdefault(mode_key(meta, rate_hint), (rate, []))[1].append(bits)
+    out = {}
+    for mode, (rate, streams) in groups.items():
+        best, zb, zn, ok = mf.period_check(streams, rate)
+        out[mode] = (best, zb, zn, ok, rate)
+    return out
+
+
+def score_part(a, part, meta, rate_hint, period=None):
+    """Score one payload file. Returns a dict with bytes, d (best choice or None), x, status.
+
+    period: this mode's period check; when the stream does not repeat at the rate's frame
+    size, it is not decoded (the MELPe program would turn it into noise)."""
     with open(os.path.join(a.payload, part + ".bin"), "rb") as f:
         payload = f.read()
-    r = {"part": part, "bytes": len(payload), "d": None, "x": None, "status": "fail"}
+    r = {"part": part, "bytes": len(payload), "d": None, "x": None, "status": "fail",
+         "period": period}
+    if period is not None and not period[3]:
+        verified = bool(meta.get("verified"))
+        r.update(ok=False, status="partial" if verified else "fail")
+        return r
     best = score_file(a.melpe, payload, meta, rate_hint, a.search, a.work, part, a.jobs,
                       a.search_all)
     if best is None:
@@ -308,6 +337,12 @@ def print_row(part, meta, r=None):
         print(f"{head} {'-':>5}  NO PAYLOAD")
         return
     d = r["d"]
+    pc = r.get("period")
+    if d is None and pc is not None and not pc[3]:
+        print(f"{head} {r['bytes']:>5}  {pc[4]:>4}  not decoded: the mode's bits repeat every "
+              f"{pc[0]} bits (z {pc[1]:.1f}), not {mf.frame_bits(pc[4])} (z {pc[2]:.1f})  "
+              f"NOT 4591")
+        return
     if d is None:
         print(f"{head} {r['bytes']:>5}  too short for one frame")
         return
@@ -321,6 +356,12 @@ def print_row(part, meta, r=None):
 def describe(r):
     """(decoded, detail) text for one message."""
     d = r["d"]
+    pc = r.get("period")
+    if d is None and pc is not None and not pc[3]:
+        ms = 1000 * pc[0] / pc[4]
+        return (f"{r['bytes']} payload bytes, not decoded: the bits repeat every {pc[0]} bits "
+                f"({ms:.0f} ms at {pc[4]} bps), not every {mf.frame_bits(pc[4])} as STANAG 4591 "
+                f"{pc[4]} bps MELPe frames do"), None
     if d is None:
         return f"{r['bytes']} payload bytes, too short for one MELPe frame", None
     decoded = (f"{r['bytes']} payload bytes, {d['frames']} MELPe {d['rate']} bps frames, "
@@ -436,15 +477,27 @@ def main():
         os.makedirs(pdir, exist_ok=True)
     items = []
     decoders = set()
+    plan = []
+    for slug, name, rate_hint in FILES:
+        parts = payload_parts(a.payload, slug)
+        plan.append((slug, name, rate_hint,
+                     [(p, load_meta(a.payload, p)) for p, _ in parts]))
+    checks = period_checks(a.payload, plan)
+    print("frame period per mode (pooled over its messages)")
+    for mode, (best, zb, zn, ok, rate) in sorted(checks.items()):
+        print(f"  {mode:<8} {rate} bps: strongest period {best} bits (z {zb:.1f}); "
+              f"at the {mf.frame_bits(rate)}-bit frame size z {zn:.1f}; "
+              f"{'STANAG 4591 frames' if ok else 'NOT STANAG 4591 frames: not decoded'}")
+    print()
     hdr = HDR
     print("MELPe stage")
     print(hdr)
     print("-" * len(hdr))
-    n_have = n_pass = 0
-    for slug, name, rate_hint in FILES:
-        parts = payload_parts(a.payload, slug)
+    n_have = n_pass = n_partial = 0
+    for slug, name, rate_hint, pmetas in plan:
+        parts = [(p, None) for p, _ in pmetas]
         # the recording's sidecar, else its first message's, gives the preamble reading
-        meta = load_meta(a.payload, slug) or (load_meta(a.payload, parts[0][0]) if parts else {})
+        meta = load_meta(a.payload, slug) or (pmetas[0][1] if pmetas else {})
         label = name[:-4]
         audio = []
         if pdir and a.set:
@@ -463,7 +516,7 @@ def main():
             pmeta = load_meta(a.payload, part) if part != slug else meta
             if pmeta.get("decoder"):
                 decoders.add(str(pmeta["decoder"]))
-            r = score_part(a, part, pmeta, rate_hint)
+            r = score_part(a, part, pmeta, rate_hint, checks.get(mode_key(pmeta, rate_hint)))
             print_row(part, pmeta, r)
             if r["x"] is not None and a.audio:
                 mf.write_wav(os.path.join(a.audio, part + ".wav"), r["x"])
@@ -472,7 +525,9 @@ def main():
                               a.proofs, slug) if pdir else None
         if item:
             items.append(item)
-        n_pass += combine_status([r["status"] for r in results]) == "pass"
+        st = combine_status([r["status"] for r in results])
+        n_pass += st == "pass"
+        n_partial += st == "partial"
     print("-" * len(hdr))
     print(f"speech PASS (track >= {PASS_TRACK}, {PASS_MARGIN} over the next choice, every "
           f"message): {n_pass}/{n_have} recordings with a payload, {len(FILES)} in the set")
@@ -483,8 +538,14 @@ def main():
             note = ("The preamble and mode code are read on all eight; no payload bits have "
                     "been decoded to speech yet.")
         else:
-            note = (f"Payload bits for {n_have} of {len(FILES)} files; {n_pass} decode to "
-                    f"speech by the speech measure.")
+            note = (f"Payload bits for {n_have} of {len(FILES)} recordings; {n_pass} decode to "
+                    f"speech by the speech measure, and {n_partial} more have verified bits "
+                    f"but no speech yet.")
+            odd = sorted(m for m, c in checks.items() if not c[3])
+            if odd:
+                note += (f" The {', '.join(odd)} payloads are not STANAG 4591 frames: their bits "
+                         f"repeat every {checks[odd[0]][0]} bits, so the STANAG coder cannot "
+                         f"decode them.")
         proofs.write(a.proofs, proofs.document(decoder, note, items))
         print(f"proofs: t7.json with {len(items)} items")
     return 0 if n_have and n_pass == n_have else 1

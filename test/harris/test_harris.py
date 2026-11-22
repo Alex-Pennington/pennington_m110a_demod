@@ -90,6 +90,30 @@ def test_sync():
     check(mf.find_sync(np.zeros(1000, np.uint8), 600) == (None, None), "600: no sync bit")
 
 
+def framed(period, n_frames, seed):
+    """A stream whose bits at a few positions of each `period`-bit frame are biased."""
+    rng = np.random.default_rng(seed)
+    f = rng.integers(0, 2, size=(n_frames, period), dtype=np.uint8)
+    for c, p1 in ((0, 0.9), (7, 0.15), (19, 0.85), (33, 0.2)):
+        f[:, c] = rng.random(n_frames) < p1
+    return np.concatenate([rng.integers(0, 2, 13, dtype=np.uint8), f.ravel()])
+
+
+def test_period():
+    s60 = [framed(60, 80, k) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(s60, 600)
+    check(best == 60 and zb > 6 and not ok, f"60-bit frames fail the 600 bit/s check (best {best}, z {zb:.1f}, z54 {zn:.1f})")
+    s54 = [framed(54, 80, k) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(s54, 600)
+    check(ok and zn > 6, f"54-bit frames pass the 600 bit/s check (best {best}, z54 {zn:.1f})")
+    rnd = [np.random.default_rng(k).integers(0, 2, 4000, dtype=np.uint8) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(rnd, 600)
+    check(ok and zb < 6, f"random bits show no period (best z {zb:.1f})")
+    biased = [(np.random.default_rng(k).random(4000) < 0.3).astype(np.uint8) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(biased, 600)
+    check(zb < 6, f"a global imbalance alone shows no period (best z {zb:.1f})")
+
+
 def buzz(f0_per_hop, seconds, seed=0):
     """Pulse train through a two-pole resonance, pitch per 22.5 ms hop, syllable envelope."""
     rng = np.random.default_rng(seed)
@@ -269,6 +293,7 @@ def main():
     test_packing()
     test_streams()
     test_sync()
+    test_period()
     test_measure()
     test_proofs(work)
     test_multiples(work)
