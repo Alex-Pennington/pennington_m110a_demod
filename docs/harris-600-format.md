@@ -1,20 +1,21 @@
-# Harris 600 bps MELP (600H): what the bitstreams show
+# Harris 600 bps MELP (600H): format
 
 The Harris RT-1694D sends 600 bps voice under D1, D2 = 5, 7, which this repo's receiver
 calls `600H` (`docs/harris-melpe.md`, Modem). The payload is not STANAG 4591 600 bps MELPe.
-The engineers and source code that made it are gone, so this document recovers what it
-can from the published papers and the decoded bits alone.
+The engineers and source code that made it are gone. This document states what the
+published sources say, Harris's MILCOM 2001 paper [1] and two Harris patents [8], [9], and
+what the decoded bits show.
 
 Every statement carries one label:
 
-- **[paper]**: read from a cited paper or standard.
-- **[measured]**: measured on the payloads by a script in `test/harris/harris600/`
-  (commands at the end).
+- **[paper]**: read from a cited paper, patent or standard.
+- **[measured]**: measured on the payloads by a script in `test/harris/harris600/` or
+  `test/harris/blind/` (commands at the end).
 - **[inferred]**: a reading of measurements or papers that no measurement here settles.
 - **NOT DETERMINABLE**: cannot be settled from what is at hand. The text says what would
   settle it.
 
-## 1. What the papers say
+## 1. What the sources say
 
 ### Harris, MILCOM 2001 [1]
 
@@ -38,7 +39,7 @@ Every statement carries one label:
 | **Total** | **60** | |
 
 - [paper] The paper gives no bit transmission order, no codebook contents, and no index
-  ordering.
+  ordering. US 6,917,914 B2 gives the bit order [8]. Section 3 sets it out and tests it.
 - [paper] The coder runs on a TI TMS320VC5416 in the RF-5800H/PRC-150. The 2400 bps MELP
   source code is TI 54x assembly combined with Harris's MELP 600 vocoder.
 
@@ -142,100 +143,125 @@ DETERMINABLE whether bit 54 is a flag or chance.
 - [measured] The 20-bit "sub-period" is not a separate unit. Every period-20 bias is also
   a period-60 bias. In the 600_x streams the three 20-bit thirds of the block profile do not
   correlate (r = -0.13, 0.23, -0.02). In melp600 they do (0.39, 0.24, 0.60), which is why
-  its z at 20 is high. Section 3 measures the structure that drives it.
+  its z at 20 is high.
 
-## 3. Block layout hypothesis
+## 3. Block layout
 
-Block columns are numbered 0 to 59 in stream order, from the block start. The evidence uses
-the 199 whole blocks of the six 600_x messages, and melp600 (81 blocks) checks it.
+Block columns are numbered 0 to 59 in stream order, from the block start at stream bit
+54 + 60k. The measurements use the 199 whole blocks of the six 600_x messages ("600_x") and
+the 81 of melp600, reported apart.
 
-### The hypothesis (L1)
+### The layout
 
-| Columns | Bits | Field [inferred] | Evidence [measured] |
+[paper] US 6,917,914 B2 prints the 60-bit block [8, col. 7, ll. 19-45; col. 11, Block 110;
+cols. 11-13, Block 203]. Column k is the patent's `bitbuf[k]` (claim P2 below tests this).
+Each index is read LSB first: the field's first column has weight 1.
+
+| Columns | Bits | Field [8] | Codebook [8] |
 |---|---|---|---|
-| 0-18 | 19 | Spectrum, part A | Same bias profile as cols 41-59 (below). Weakly tied to the excitation fields (mean \|r\| 0.105 with 19-22, 0.107 with 30-40). |
-| 19-22 | 4 | Band-pass voicing | Internally dependent (mean \|r\| 0.204, null 0.057). Holds from block to block more than chance: 36 against 24 over all blocks, 21 against 15.7 over non-pause blocks only. Leans to 0000 in pauses (18 of 34). Tied to cols 30-40 (0.160) and to cols 23-29 (MI 0.27 bit). |
-| 23-29 | 7 | Pitch | The slowest, most repeating field: same value as the previous block 48 times against 13 by chance. 28 of those 48 are the pause value; over non-pause blocks only, 20 against 7.4. Mean \|r\| 0.209. Only 39 of 128 values seen (entropy 4.5 bits). One fixed value in pause blocks (partly circular: pause blocks are defined by that value). |
-| 30-40 | 11 | Energy (both gains, four frames) | Internally dependent (0.142). Leans toward zeros in pauses (cols 31-40: z -0.6 to -3.0, nine of ten below -1.2). Holds 5 against 1.7 (non-pause only: 3 against 1.2, too few to carry weight). Most common pause value is all zeros (5 of 34). |
-| 41-59 | 19 | Spectrum, part B | Bias profile matches cols 0-18 at r = 0.91 (melp600: 0.86), best at an offset of exactly 41. |
+| 0-9 | 10 | Spectrum, frames 0-1, stage 1 | LSF_CB1, 1024 × 20 |
+| 10-18 | 9 | Spectrum, frames 0-1, stage 2 | LSF_CB2, 512 × 20 |
+| 19-22 | 4 | Band-pass voicing, four frames | BPV_CB, 16 × 4 |
+| 23-29 | 7 | Pitch, four frames | PITCH_CB, 128 × 4 |
+| 30-40 | 11 | Gain G1 and G2, four frames | GAIN_CB, 2048 × 8 |
+| 41-50 | 10 | Spectrum, frames 2-3, stage 1 | LSF_CB1 |
+| 51-59 | 9 | Spectrum, frames 2-3, stage 2 | LSF_CB2 |
 
-[inferred] The widths 4, 7 and 11 are exactly [1]'s band-pass voicing, pitch and energy,
-and 19 + 19 = 38 is its spectrum. Naming each field by its width is the main inference.
+[paper] What the decoder does with the fields [8, col. 13, Blocks 204-210]:
 
-[measured] Limits of the evidence for the three middle fields:
+- **Spectrum.** Each frame pair's 20-value vector is LSF_CB1 + LSF_CB2 + MEAN. Values 0-9
+  are the first frame's ten LSFs, values 10-19 the second's. Both frame pairs use the same
+  two codebooks.
+- **Gain.** G1 of frames 0-3 comes from entries 0, 2, 4 and 6 of the gain vector, and G2
+  from entries 1, 3, 5 and 7.
+- **Voicing.** A frame is unvoiced when its BPV_CB value is 0.
+- **Fourier magnitudes.** They are not sent. The decoder uses one fixed vector for unvoiced
+  frames (FS_MAG_UV) and one for voiced frames (FS_MAG_V).
+- **Jitter.** It is set to 0.
 
-- **Voicing and gain rest mostly on pauses.** Their hold excess and their zero lean come
-  largely from pause blocks. The gain counts are too small to carry weight.
-- **The pause definition is partly circular.** Pause blocks are defined by the value of
-  cols 22-29, so "one fixed pitch value in pauses" holds by construction. Only the
-  behaviour of the other columns in those blocks is independent evidence.
-- **The pitch start at 23 is not pinned.** Over non-pause blocks, 7-bit windows starting at
-  20, 21, 22 and 23 hold 14, 14, 15 and 20 times, against 4.3, 4.0, 5.5 and 7.4 by chance.
-  That is nearly the same excess for each start.
-- **The voicing window is not confirmed either.** The best 4-bit hold window starts at 23,
-  inside the pitch candidate, not at 19 (`windows.py 4`). The 19-22 boundary rests on
-  internal dependence and the 41-column offset of the outer chunks, not on the repeat test.
+[paper] How the encoder fills the fields [8]:
 
-[inferred] Inside the two 19-bit chunks the stage boundaries are not resolved:
+- **Voicing.** Each frame's five band decisions are mapped to a 2-bit class (BPV_STAGE1).
+  The four classes are then matched to a 16-entry codebook of the most probable four-frame
+  sequences (BPV_STAGE2) [8, col. 5, ll. 9-22; col. 11, Block 107].
+- **Pitch.** Median-filtered (order 3), then vector-quantised over four frames with a
+  128-entry codebook. The search minimises "mean squared error of voiced frames of pitch"
+  [8, col. 6, ll. 13-21; col. 11, Block 108].
+- **Gain.** A 2048-entry codebook searched by L1 distance, trained by K-means on speech
+  scaled to several levels [8, col. 5, ll. 24-41; col. 11, Block 109].
+- **Spectrum.** Two frames are quantised at a time with a two-stage VQ of 10 and 9 bits,
+  using M-best search with perceptual weighting. It is trained by K-means and then
+  generalised Lloyd [8, col. 6, ll. 55-67].
 
-- In chunk B, the dependence measure peaks at a 10 | 9 split (cols 41-50 | 51-59; ratio
-  1.36).
-- In chunk A, it peaks at 15, not at 10. This measure is weak on trained-VQ indices.
-- [1] says the stages are 10, 10, 9 and 9 bits. The data are consistent with each chunk
-  holding one 10-bit and one 9-bit stage.
-- Two readings fit. Either chunk A is stages 1 and 3 and chunk B is stages 2 and 4, or
-  each chunk codes a frame pair, as STANAG 600 does ([4] Table 3).
-- NOT DETERMINABLE which.
+[paper] None of the codebook values is printed in [8] or [9]. Nor are BPV_STAGE1, MEAN,
+FS_MAG_V or FS_MAG_UV.
 
-[measured] Cols 10-18 and 51-59 sit at the null for dependence on everything else
-(0.051-0.070). That is what fine-detail later MSVQ stages look like. Cols 0-9 and 41-50 are
-mildly tied to the excitation fields, as a first spectral stage would be (voiced and
-unvoiced spectra differ).
+[paper] US 8,589,151 B2 restates the bit budget [9]. It adds three things:
 
-[inferred] Bit significance inside each field is not known. Column 26 behaves as the top
-bit of a slowly moving number: the smoothness ratio is 0.66-0.70, against a shuffled
-baseline of 0.85-0.90, read MSB-first from 26 or LSB-first ending at 26. That suggests the
-pitch codebook's order follows pitch at least roughly. NOT DETERMINABLE: MSB-first or
-LSB-first inside fields.
+- Table 3, "MELP 600 BPV MAP" [9, col. 19]. It gives the probability of five-band voicing
+  patterns per frame: (u,u,u,u,u) 0.15, (v,u,u,u,u) 0.15, (v,v,v,u,u) 0.11, (v,v,v,v,v)
+  0.41, remaining 0.18 (u = unvoiced band, v = voiced).
+- The 25 ms to 22.5 ms interpolation weights for transcoding [9, cols. 11-14].
+- A description of the spectrum quantiser as "a four-stage vector quantization process",
+  stages of 10, 10, 9 and 9 bits over four frames [9, col. 20, ll. 33-40]. This disagrees
+  with [8]'s two frame-pair VQs. Claim P5 tests it.
 
-### The layout read straight off [1] Table 1 (L2) does not fit
+[inferred] The four patterns Table 3 names cover 0.82 of frames. That fits [8]'s 2-bit frame
+classes being uuuuu, vuuuu, vvvuu and vvvvv. Neither patent says so.
 
-[measured] L2 is band-pass voicing 0-3, energy 4-14, pitch 15-21, spectrum 22-59. Under it:
+### Each claim against the recovered bits
 
-- the 4-bit voicing field holds less often than chance (10 against 14);
-- the 7-bit pitch field holds 1 against 3.6;
-- the steady 7-bit field lands inside the first spectrum stage.
+The commands are under *Reproducing*. `claims600.py` prints the tests T1 to T9 that the table
+names. Unless the table says otherwise, z compares the data with 200 shuffles of block
+order inside each message.
 
-`fields.py L2` prints the comparison.
+| # | Claim [source] | Verdict | Evidence [measured] |
+|---|---|---|---|
+| P1 | 60 bits per 100 ms block, with no sync bit or header inside the block [1], [8] | **Supported** | Period 60, z 16.0 pooled (`period.py`). At the 600 bps air rate, 60 bits take 100 ms. No column alternates from block to block: the lowest lag-1 correlation is -0.11 in 600_x and -0.23 in melp600 (T9). |
+| P2 | `bitbuf[0]` goes out first, so the layout reads in stream order [8, Block 110] | **Supported** | The 7-bit field at cols 23-29 holds from block to block 48 times against 13.2 shuffled (z +10.6). In the mirrored block, pitch would sit at cols 30-36, which give z +4.8. melp600: +3.9 against +0.9 (T1). Reading the payload bytes reversed drops the period-60 z from 11.6 to 3.8 (`period.py`). |
+| P3 | Cols 19-40 hold voicing 4, then pitch 7, then gain 11 [8] | **Supported** | Of the six orders of the widths 4, 7 and 11, (4, 7, 11) gives the largest within-field dependence over cross-field dependence: 600_x +0.054 (next +0.035), melp600 +0.081 (next +0.069) (T2). The voicing field's own hold is weak: z +3.4 in 600_x, +0.1 in melp600 (T1). |
+| P4 | Cols 0-18 code frames 0-1 and cols 41-59 code frames 2-3, through the same two codebooks and the same bit order [8, Blocks 110, 206] | **Supported** | The share-of-ones profiles of cols 0-18 and 41-59 correlate +0.91 in the same orientation and -0.14 reversed (melp600: +0.86 / -0.18). Equal stage-1 values against the null of a random other block: cols 41-50 of block n against cols 0-9 of block n+1 (adjacent frame pairs) 0.036 against 0.005, z +6.9. Within one block, 0.025, z +4.5. Cols 0-9 of block n against block n+1 (100 ms apart): 0.000, z -1.1. 52 stage-1 values occur in both chunks, against 16 for a control window (T3). |
+| P5 | Spectrum is one four-stage VQ of 10, 10, 9, 9 bits over four frames [9, col. 20] | **Contradicted** | Separate stage codebooks would share no index values between cols 0-9 and cols 41-50 beyond chance. Under P4 they do, most often between adjacent frame pairs. [8]'s printed decoder (Block 206) agrees with the data. |
+| P6 | Each spectrum chunk is stage 1 of 10 bits, then stage 2 of 9 bits [8, col. 6] | **Supported, weakly** | Equality excess of the first s bits of the two chunks, s = 8 to 12: 600_x z +3.3, +4.6, +4.6, +3.9, +2.3; melp600 +2.9, +3.2, +3.0, +3.0, +1.7 (T5). `fields600.py`, with a different statistic, peaks at 10 in both groups (+6.8 and +5.5). A boundary at 9 is not excluded. The stage-2 fields do not repeat (z +0.9), as residual stages should not. |
+| P7 | Every index is LSB first [8, Block 203] | **NOT DETERMINABLE directly; consistent** | The bit order inside a field relabels the codebook. Without the codebook it cannot be read off the bits. Indirect evidence: index distance between consecutive blocks is below chance only in the LSB-first reading. Gain: z -3.9 LSB-first against -0.8 MSB-first. Stage 1, cols 0-9: -2.9 against +0.4 in 600_x, and -2.4 against +0.7 in melp600. Pitch: -2.2 against -1.7 (T6). That means similar entries sit at nearby LSB-first indices; [8] does not say the codebooks are ordered. |
+| P8 | Voicing is a 16-entry codebook of four-frame class sequences, with a frame unvoiced when its class is 0 [8, Blocks 107, 204, 209] | **Positions supported; entries NOT DETERMINABLE** | All 16 indices occur. In 600_x index 0 is the commonest (56 of 199 blocks) and has the lowest gain popcount (3.79 of 11; other indices 4.0-9.3). It takes 18 of the 37 blocks with the pause pitch code (T7). In melp600, index 0 takes only 3 of 81 blocks. Which index codes which pattern cannot be read off the bits. [inferred] Index 0 is the quietest pattern and likely the all-unvoiced one. |
+| P9 | The pitch search scores voiced frames only [8, col. 6, l. 20] | **Contradicted in combination with P8's reading of index 0** | If bpv index 0 were all four frames unvoiced, every pitch entry would score zero in those blocks, and one fixed pitch index would follow. The 56 bpv-0 blocks carry 18 different pitch indices, 35 in 18 of them (T8). So either index 0 is not all-unvoiced, or the encoder scores unvoiced frames too. NOT DETERMINABLE which. |
+| P10 | Pitch is a 128-entry trained vector codebook over four frames [8, col. 6] | **Supported** | 39 of 128 indices occur. It is the slowest field (P2). No index order maps to pitch: \|z\| ≤ 1.8 for LSB-first, MSB-first, binary and Gray (`fields600.py`). Pitch values: NOT DETERMINABLE. |
+| P11 | Gain is a 2048-entry codebook of G1/G2 over four frames [8, Blocks 109, 208] | **Position supported; values NOT DETERMINABLE** | Popcount lag-1 correlation over non-pause blocks 0.535 (shuffled 0.065, z +6.0). Mean popcount 3.91 in pause blocks against 5.77 elsewhere, and index 0 is the commonest pause value (`fields600.py`). The G1/G2 interleave cannot be tested without the codebook. |
+| P12 | Fourier magnitudes and jitter are not sent [1], [8] | **Consistent** | The fields of P1-P4 account for all 60 bits. There is nothing further to test. |
+| P13 | Four 25 ms frames per block [1], [8] | **NOT DETERMINABLE** | The block is 100 ms by the air rate. How it splits into frames happens inside the decoder and leaves no trace in the bits. |
+| P14 | 25 ms ↔ 22.5 ms interpolation [9, cols. 11-14] | **NOT DETERMINABLE** | A transcoder or receiver process. The recordings carry only the 600H bits. |
+| P15 | Stream framing | **Not addressed** | Neither patent describes the 54-bit header or the 108-bit trailer (s2). [inferred] They sit outside the vocoder. |
 
-### Pauses
+### What the fields show
 
-[measured] The value 01100010 in cols 22-29 runs at the starts of messages: the first 10
-blocks of 600_2, 4 of m3, 3 of m4. It also runs inside 600_1 (blocks 3-8 and 44-49). It
-holds in 34 of 199 blocks. melp600 uses the same value in 7 of its 81 blocks.
+- **[measured] The pause code.** Pitch index 35 (cols 23-29 = 1100010 in stream order)
+  marks 37 of the 199 600_x blocks. It runs at the starts of messages: the first 10 blocks
+  of 600_2, 4 of m3 and 3 of m4. It also runs inside 600_1, at blocks 3-8 and 44-49.
+  melp600 uses it in 7 of its 81 blocks. m1 never shows it in 3.9 s, so not every pause gets
+  it. [inferred] It is the pitch codebook entry the encoder picks for silence.
+- **[measured] Shared values across messages.** Values of cols 22-29 recur as runs across
+  messages. At the best lags, message pairs match 3 to 7 blocks against 0.5 to 1.7 by
+  chance (`align.py`). Blocks matched that way agree on the other 52 columns barely more
+  than random pairs do. [inferred] So the recurring values are pitch codebook entries of a
+  narrow-pitched talker. They do not show that the same phrases were spoken.
+- **[measured] Pitch popcount.** The number of ones in the pitch index has a lag-1
+  correlation of 0.706 over non-pause blocks (shuffled 0.027, z +8.0). In melp600 it is
+  0.136 (z +1.5) (`fields600.py`). [inferred] An LBG splitting tree leaves this behind, so
+  popcount is a coarse proxy for pitch with unknown sign and scale.
+- **[measured] The two sessions differ in the voicing field.** In 600_x, bpv index 0 leads.
+  In melp600, indices 5, 10 and 9 lead and index 0 is rare (T7). The trailer also differs
+  (s2). Why: NOT DETERMINABLE.
 
-[inferred] That is the code for "four unvoiced frames" or "pause". Under L1 it is col 22
-(the voicing LSB) = 0 plus pitch = 1100010.
+Corrections to the first write-up of this review, on `feat/harris-blind`
+(`docs/harris-blind.md`), which this section replaces:
 
-[measured] Not every pause gets it. m1 never shows it in 3.9 s.
-
-### Shared values across messages
-
-[measured] Values of cols 22-29 recur as runs across messages. Examples:
-
-- `00111010 00111001` appears in five messages, melp600 included;
-- `11101101 01110110 01001011 01001110` appears in m1 and in m2;
-- `00011101 01101001 01010110` appears in 600_1 and 600_2, and its last two values in m3
-  and melp600.
-
-At the best lags, message pairs match 3 to 7 blocks against 0.5 to 1.7 by chance
-(`align.py`).
-
-[measured] Blocks matched that way agree on the other 52 columns barely more than random
-pairs do (best cols 20-21, z 2.0-2.5). melp600 shares the same frequent values.
-
-[inferred] So the recurring values belong to the pitch codebook and a narrow-pitched
-talker. They do not show that the same phrases were spoken.
+- [8] does not say that bpv index 0 is all-unvoiced. Its rule is per frame: a frame is
+  unvoiced when its BPV_CB value is 0 (Block 209). P9 puts the index-0 reading in doubt.
+- The 10-bit stage-1 boundary is weakly supported, not confirmed (P6).
+- LSB-first is the patent's statement, not a finding (P7).
+- `fields600.py` counts 82 melp600 blocks. The 82nd holds the start of the trailer. The
+  melp600 figures above use 81.
 
 ## 4. Are 1200H and 2400V standard STANAG 4591 after the header?
 
@@ -375,14 +401,24 @@ Each one should go through the radio, recorded as these were, with the source au
 
 ## 7. What a decoder needs
 
-- **The codebooks.** This blocks everything. The layout alone gives indices, not
-  parameters. Harris's four codebooks are trained and not published: pitch 128, voicing 16,
-  gain 2048, LSF 1024 / 1024 / 512 / 512 [1]. They are lost with the firmware source.
+- **The codebooks.** This blocks everything. The layout (s3) gives indices, not
+  parameters. The tables are trained and printed in no source [1], [8], [9]: PITCH_CB
+  128 × 4, BPV_CB 16 × 4, GAIN_CB 2048 × 8, LSF_CB1 1024 × 20, LSF_CB2 512 × 20, MEAN 20,
+  FS_MAG_V and FS_MAG_UV. They are lost with the firmware source. [8] and [9] say only that
+  they were trained, on TIMIT for the spectrum. The STANAG 4591 codebooks, which Alex
+  allowed from NATO's distribution (`docs/harris-melpe.md`, *Alex's rulings*), are a
+  different coder's tables. No source says Harris's 600 bps tables derive from them, so
+  they do not stand in.
   [inferred] Recording 1 above can recover them by estimation. Nothing in this set can,
-  because no 600H message has its source audio.
-- **The frame rate.** Harris frames are 25 ms [1]. STANAG MELPe frames are 22.5 ms. Each
-  100 ms block decodes to four 25 ms parameter sets, which a 22.5 ms synthesiser must
-  resample: 40 frames per second in, 44.4 out.
+  because no 600H message has its source audio. So no intelligible 600H audio can be made
+  from this set. A synthesis from the fields alone would carry pause timing and a loudness
+  proxy (s3, P8 and P11), with no spectrum and no pitch values. It would not be speech, and
+  none is built.
+- **The frame rate.** Harris frames are 25 ms [1], [8]. STANAG MELPe frames are 22.5 ms.
+  Each 100 ms block decodes to four 25 ms parameter sets, which a 22.5 ms synthesiser must
+  resample: 40 frames per second in, 44.4 out. [9] prints Harris's own weights for this: a
+  linear blend of the previous and current 25 ms parameters in steps of 0.1, with nine
+  25 ms frames to ten 22.5 ms frames [9, cols. 11-14].
 - **Synthesis.** There are two routes, and choosing between them is Alex's licence call:
   - **Transcode to standard 2400 frames and run the private coder externally with `-m S`.**
     The coder has no parameter-input mode, so standard 2400 frames would have to be built
@@ -395,7 +431,7 @@ Each one should go through the radio, recorded as these were, with the source au
   - **A MELP synthesiser in the repo, written from the published description** (MIL-STD-3005
     / STANAG 4591 [3]: mixed excitation, pulse dispersion, adaptive spectral enhancement).
     It takes the recovered parameters directly, needs no STANAG codebook (600H sends no
-    Fourier magnitudes [1]; a flat or fixed vector stands in), and skips the
+    Fourier magnitudes [1], [8]; a flat or fixed vector stands in), and skips the
     re-quantisation.
 
   [inferred] Either way the in-repo pieces are the same: the block parser (section 3), the
@@ -403,7 +439,7 @@ Each one should go through the radio, recorded as these were, with the source au
 
 ## Reproducing
 
-All scripts are under `test/harris/harris600/`. They read the modem stage's `<slug>.bits`,
+The scripts are under `test/harris/harris600/` and `test/harris/blind/`. They read the modem stage's `<slug>.bits`,
 are pure Python and numpy, and call the reference coder only as an external program.
 
 ```sh
@@ -416,7 +452,8 @@ python3 -I -B test/harris/harris600/values.py    $P 22 8     # cols 22-29 value 
 python3 -I -B test/harris/harris600/contrast.py  $P          # pause against speech, per column
 python3 -I -B test/harris/harris600/pausewin.py  $P 3 4 5 7  # windows constant in pauses
 python3 -I -B test/harris/harris600/smooth.py    $P 4 7 9 11 # ordered-codebook smoothness
-python3 -I -B test/harris/harris600/fields.py    $P          # layouts L1, L2
+python3 -I -B test/harris/blind/claims600.py     $P          # section 3: claims P1-P11 (T1-T9)
+python3 -I -B test/harris/blind/fields600.py     $P          # section 3: popcounts, orderings, stage split
 python3 -I -B test/harris/harris600/splits.py    $P          # chunk boundaries, group |r|
 python3 -I -B test/harris/harris600/align.py     $P          # cross-message alignment
 python3 -I -B test/harris/harris600/melp600.py   $P          # melp600 phase and layout
@@ -454,3 +491,12 @@ The calibration speech was the Codec2 samples hts1a, hts2a and ve9qrp_10s [7]
 
 [7] D. Rowe, codec2, GitHub repository drowe67/codec2, LGPL-2.1,
     https://github.com/drowe67/codec2 (speech samples under `raw/`).
+
+[8] M. W. Chamberlain, "Voice over bandwidth constrained lines with mixed excitation linear
+    prediction transcoding," U.S. Patent 6 917 914 B2, Harris Corporation. Filed in this
+    repo at `docs/standards/US6917914B2.pdf`.
+
+[9] M. W. Chamberlain, "Vocoder and associated method that transcodes between mixed
+    excitation linear prediction (MELP) vocoders with different speech frame rates," U.S.
+    Patent 8 589 151 B2, Harris Corporation. Filed in this repo at
+    `docs/standards/US8589151B2.pdf`.
