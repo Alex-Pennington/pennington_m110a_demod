@@ -64,6 +64,9 @@ set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_ch
 # ---- tests ----
 enable_testing()
 
+# MELP parameter-domain synthesiser, its CLI and its fast tests (docs/melp-synth.md)
+add_subdirectory(src/melp_synth)
+
 foreach(t test_sample_source test_iq_file_source test_iq_loopback)
   add_executable(${t} test/${t}.cpp)
   target_link_libraries(${t} PRIVATE Threads::Threads)

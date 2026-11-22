@@ -558,6 +558,126 @@ frames is 0.18, against about 0.55 for 1200_1 and 1200_2. Whether melp2400 uses 
 standard 2400 bps layout at all is under separate review. NOT DETERMINABLE here; listening
 to the decoded audio would add evidence.
 
+## Synthesiser
+
+`src/melp_synth` is a MELP synthesiser written from the published standard [S1], plus the
+tables that standard prints. `docs/melp-synth.md` describes it in full. It is the start of
+a decoder that does not depend on the reference coder. It cannot decode 1200H to speech
+yet, because the codebooks are missing.
+
+### Tables in the repo
+
+`src/melp_synth/stanag4591_tables.h` holds, as data, every table in [S1] that a
+1200 bit/s or 2400 bit/s decoder needs and that [S1] prints:
+
+| Table | What it is | Page in [S1] (PDF page) |
+|---|---|---|
+| Table 1 | 7-bit pitch and voicing code to pitch index, unvoiced or erasure | 7 (10) |
+| §5.3, §5.3.7 | pitch, G1 and G2 uniform quantisers | 6-9 (9-12) |
+| Table 3 | 2400 bit/s bit order, with the unvoiced FEC positions | 11 (14) |
+| Table D-2 | 1200 bit/s band-pass voicing codebook | D-6 (61) |
+| Table D-4 | 3-bit code of the joint pitch and U/V field | D-10 (65) |
+| Table D-8 | aperiodic flag, 1 bit per superframe | D-13 to D-14 (68-69) |
+| Table D-9 | mode protection bits | D-14 to D-15 (69-70) |
+| Tables D-9a, D-9b | 1200 bit/s bit order | D-15 to D-16 (70-71) |
+
+[S1] prints none of the codebooks the decoder needs:
+
+- the 2400 bit/s LSF MSVQ (Tables C-1 to C-4);
+- the Fourier magnitude VQ (Table C-5), which 1200 bit/s shares;
+- for 1200 bit/s: the four 512-entry pitch VQ codebooks of the VVV patterns (A to D)
+  and the one the VVU, VUV and UVV patterns share;
+- the 9-bit map of pitch and U/V pattern for superframes with at most one voiced frame;
+- the 9-bit LSF codebook for unvoiced frames, the LSF interpolation codebook and the
+  residual MSVQ;
+- the 10-bit gain VQ.
+
+Annex C says only that the codebooks "are available in electronic form" from two NATO
+sites [S1, p. C-1]. Measured 2026-11-22:
+
+- `s4591.nc3a.nato.int` does not resolve.
+- `www.nhqc3s.nato.int` resolves but does not answer.
+- `nso.nato.int` answers 403 to every page.
+
+Getting them needs a person with NATO standardization access.
+
+[S1] names three 1200 bit/s layout details but does not say how they are laid out. They
+were measured by running the reference coder as an external program on public speech
+[S3]:
+
+- The Table D-4 code is Pitch&UV2..0, read MSB first.
+- The voiced frames take the band-pass pairs (BP1,BP0), (BP3,BP2) and (BP5,BP4) in frame
+  order, and each pair is read as the Table D-2 column.
+- The spare pairs carry the Table D-9 bits.
+
+Table 1 was checked against the page image and its structure (`test_stanag4591_tables`).
+Table A-2 (the pulse dispersion filter) and the Annex E noise preprocessor tables are
+printed too. They are not quantiser tables and are not entered.
+
+### What a 1200H decode gets without the codebooks
+
+`melp1200_fields` decodes these fields from each 81-bit superframe, with its bits numbered
+and packed as in [S2]:
+
+- the sync bit;
+- the U/V pattern of the three frames;
+- the band-pass cutoff of each voiced frame;
+- the aperiodic flags.
+
+The pitch, gain, LSF and Fourier magnitude fields stay raw indices.
+`test/melp_synth/compare1200.py` checks the decoded fields against the reference coder's
+own reading of them, which is its upward transcode to 2400 bit/s. It then measures three
+synthesised outputs against the coder's 1200 bit/s decode. Measured 2026-11-22, with the
+measures of `docs/melp-synth.md`:
+
+| Payload | Superframes | U/V agrees | Cutoff agrees | Mode protection consistent | env dB: bits / +prosody / +all / unrelated |
+|---|---|---|---|---|---|
+| 1200_1 | 112 | 336/336 | 203/203 | 112/112 | 16.4 / 16.4 / 4.6 / 13.9 |
+| 1200_2 | 71 | 213/213 | 151/151 | 71/71 | 14.7 / 14.7 / 4.4 / 12.4 |
+| 1200_3 | 73 | 219/219 | 121/121 | 73/73 | 14.2 / 14.2 / 4.4 / 11.4 |
+| public speech [S3], coded by the reference coder | 238 | 714/714 | 547/547 | 238/238 | 12.3 / 12.5 / 4.1 / 14.5 |
+
+The output columns are these:
+
+- **bits:** only what the bits give. The pitch is fixed at 80 samples, the gain at
+  50 dB, and the spectrum is flat.
+- **+prosody:** the pitch and gains are measured from the reference decode, which
+  stands in for the pitch and gain codebooks. The LSFs are flat.
+- **+all:** every parameter is measured from the reference decode, which stands in for
+  all the codebooks.
+- **unrelated:** the reference decode compared with itself shifted by 1.5 s. This is
+  speech that carries none of the target's sounds.
+
+What this shows:
+
+- The codebook-free fields of all three Harris payloads decode exactly as the reference
+  coder reads them.
+- Without the LSF codebooks the output carries no spectral envelope. Its distance from
+  the reference decode (12-16 dB) is as large as that of unrelated speech (11-14 dB),
+  with or without the right pitch and gains. Measured this way it is not intelligible.
+  Nobody has listened to it.
+- With every parameter supplied, the synthesiser comes within 4.1-4.6 dB of the
+  reference decode. That is the same distance the reference coder's own 2400 bit/s decode
+  sits from the original speech (`docs/melp-synth.md`).
+- The aperiodic flags cannot be checked this way: the transcode sets AF to 0 in every
+  voiced frame.
+
+So the codebooks are what stands between this synthesiser and a 1200H decode.
+
+#### Sources
+
+[S1] NATO Standardization Agency, "The 600 bit/s, 1200 bit/s and 2400 bit/s NATO
+     interoperable narrow band voice coder," STANAG 4591, Ed. 1. Tables 1 and 3,
+     pp. 6-11; Annex C, p. C-1; Annex D, Tables D-2 to D-9b, pp. D-6 to D-16. Not
+     filed in this repo.
+
+[S2] V. Demjanenko and D. Satterlee, "RTP Payload Format for the Mixed Excitation
+     Linear Prediction Enhanced (MELPe) Codec," IETF RFC 8130, Mar. 2017, Table 2 and
+     Fig. 3 (1200 bit/s bit numbering and packing).
+
+[S3] D. Rowe, codec2, GitHub repository drowe67/codec2, LGPL-2.1,
+     https://github.com/drowe67/codec2 (`raw/hts1a.raw`, `hts2a.raw`, `ve9qrp_10s.raw`).
+
 ## Current state of the Harris work
 
 ### The task
@@ -624,8 +744,15 @@ All in the question dialog unless noted.
 - Not merged:
   - `feat/harris-blind`: the LPC-10e test, the patent sources and the review of the patent
     layout against the 600H bits.
-  - `feat/harris-synth`: a clean-room MELP synthesiser in `src/melp_synth/`, with no tables.
-    Its fast ctest passed 17/17 at handoff. The slow sweeps were not run.
+  - `feat/harris-synth`: a clean-room MELP synthesiser in `src/melp_synth/`.
+    - It holds the STANAG 4591 tables the PDF prints, as data.
+    - A fresh build passes ctest 23/23, slow sweeps included.
+    - It decodes the codebook-free fields of the three 1200H payloads exactly as the
+      reference coder reads them: the U/V patterns and the band-pass cutoffs.
+    - The LSF codebooks, the Fourier magnitude codebook and the 1200 bit/s VQ codebooks
+      are missing. Getting NATO's copy of them needs a person with NATO standardization
+      access.
+    - See *Synthesiser*, above.
   - `feat/harris-tx`: `docs/harris-tx.md` only. It records what TX does today and what is
     missing: zeros where the D1/D2 known symbols belong at block boundaries, no EOM, no
     interleaver flush, no Harris framing.

@@ -1,0 +1,11 @@
+# Fixed MELP parameter sequence for the melp_synth CLI smoke test (ctest melp_synth_cli).
+# Format: docs/melp-synth.md. 22.5 ms frames: voiced, a rising pitch, then unvoiced.
+frame_ms 22.5
+frame pitch=80 g1=45 g2=50 vbp=1,1,1,0,0 lsf=300,650,780,1150,1300,2000,2450,2650,3200,3600
+frame pitch=80 g1=50 g2=50 vbp=1,1,1,1,1 lsf=300,650,780,1150,1300,2000,2450,2650,3200,3600 fm=1.4,1.2,1.1,1,1,0.9,0.9,0.8,0.8,0.8
+frame pitch=76 g1=50 g2=50 vbp=1,1,1,1,1 lsf=310,640,800,1150,1320,2000,2450,2650,3200,3600
+frame pitch=72 g1=50 g2=49 vbp=1,1,1,1,0 lsf=320,630,820,1150,1340,2000,2450,2650,3200,3600
+frame pitch=70 g1=49 g2=47 vbp=1,1,0,0,0 lsf=330,620,840,1150,1360,2000,2450,2650,3200,3600 ap=1
+frame pitch=0 g1=42 g2=40 vbp=0,0,0,0,0 lsf=400,900,1400,1800,2200,2600,2900,3200,3500,3750
+frame pitch=0 g1=40 g2=38 vbp=0,0,0,0,0 lsf=400,900,1400,1800,2200,2600,2900,3200,3500,3750
+frame pitch=0 g1=30 g2=20 vbp=0,0,0,0,0 lsf=400,900,1400,1800,2200,2600,2900,3200,3500,3750
