@@ -8,6 +8,8 @@
 //   --code d9|alt|auto             K=7 tap reading: Figure D-9 (default), time-reversed, or best
 //   --psk-scr-shifts N             data scrambler iterations per QPSK/8PSK symbol (default 3)
 //   --qam-scale X                  QAM constellation scale vs the mini-probe (default 1; 0 = per-frame RMS)
+//   --eq dfe|probe|off             WID 1-13 channel equaliser: block MMSE-DFE with the data-aided pass
+//                                  (default), without it (probe CIRs only), or the one-tap gain
 //   --selftest                     check generated tables against the standard and exit
 //   -v                             diagnostics on stderr
 //
@@ -55,6 +57,10 @@ int main(int argc, char** argv) {
             opt.psk_scr_shifts = std::atoi(next().c_str());
         } else if (a == "--qam-scale") {
             opt.qam_scale = std::atof(next().c_str());
+        } else if (a == "--eq") {
+            std::string v = next();
+            opt.eq = v == "off" ? 0 : 1;
+            opt.eq_passes = v == "probe" ? 1 : 2;
         } else if (a == "--selftest") {
             int bad = tables_selftest() + walsh_selftest() + tables_selftest_qam();
             std::printf("selftest_mismatches=%d\n", bad);
@@ -120,6 +126,13 @@ int main(int argc, char** argv) {
         std::printf("code=%s\n", r.code_reversed == 1 ? "alt" : "d9");
         std::printf("reencode_agree=%.4f\n", r.reencode_agree);
         std::printf("probe_quality=%.3f\n", r.probe_quality);
+        std::printf("eq=%s\n", r.eq_used ? "dfe" : "one-tap");
+        if (r.eq_used) {
+            std::printf("eq_taps=");
+            for (size_t i = 0; i < r.eq_taps.size(); i++) std::printf("%s%d", i ? "," : "", r.eq_taps[i]);
+            std::printf("\n");
+            std::printf("eq_snr_db=%.1f\n", r.eq_snr_db);
+        }
         if (r.bits_per_sym > 1) {  // WID 6-13 demapper (appd_qam.h)
             std::printf("bits_per_symbol=%d\n", r.bits_per_sym);
             std::printf("evm_db=%.1f\n", r.qam.evm_db());

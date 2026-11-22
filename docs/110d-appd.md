@@ -589,6 +589,124 @@ Measured detail:
 - **WID 0** still needs 3 dB in AWGN (D-LXIV -6 dB) and still fails Poor at every SNR. The
   tracking work did not find its cause.
 
+## Equaliser (WID 1-13)
+
+Source: `src/m110d/appd_eq.h` (CIR fit, block MMSE-DFE) and `AppDRx::setup_eq` /
+`equalise_frame` in `src/m110d/appd_rx.h`. `m110d_rx --eq off` keeps the one-tap gain path,
+and `--eq probe` skips the data-aided pass.
+
+### Why this design
+
+The frame gives the receiver a known mini-probe after every data block and one at the end of
+the preamble (D.5.2.2; U and K per WID from Tables D-XI and D-XII). A probe is its base
+sequence (Table D-XXI: length L = 13, 16 or 25 at 3 kHz) cyclically extended to K symbols, so
+its first K-L symbols repeat its last K-L: a cyclic prefix. While the delay spread is at most
+K-L symbols, the last L received probe symbols hold no data energy, and the probe gives the
+channel impulse response (CIR) directly:
+
+| WID | U | K | L | K-L, ms | Table D-LXV channel at 3 kHz |
+|---|---|---|---|---|---|
+| 1-2 | 48 | 48 | 25 | 9.6 | WID 2: 0 / 3.0 / 9.0 ms |
+| 3-4 | 96 | 32 | 16 | 6.7 | |
+| 5-10, 13 | 256 | 32 | 16 | 6.7 | WID 10: 0 / 2.0 / 4.5 ms |
+| 11-12 | 360 | 24 | 13 | 4.6 | WID 12: 0 / 1.5 ms |
+
+So every data block sits between two known probes, each with its own CIR estimate. The
+equaliser equalises one block at a time with both probes known: a block MMSE
+decision-feedback equaliser (LDL^H form), with decisions fed back from the end of the block,
+next to the following probe, towards its start. It is a DFE rather than a linear equaliser
+because the Table D-LXV channels are equal-power paths, whose spectral nulls a linear
+equaliser fills only by enhancing the noise. Each symbol's error variance comes out of the
+factorisation and weights its soft decisions into the existing Viterbi decoder.
+
+### Steps
+
+1. **Tracking (pass 1).** The frequency and timing loops above run unchanged over every probe
+   position to the end of the input. A probe with one-tap correlation below 0.3 does not update
+   the frequency loop.
+2. **Support.** The probe-averaged periodic power-delay profile gives the delays that carry
+   energy, modulo L. Each way of unwrapping it into a span of at most K-L delays is scored by
+   a least-squares fit on the probe samples that span leaves free of data; ties within 2.5x go
+   to the shortest span. The chosen arc +-2 delays is then thresholded at 2.5x the noise of the
+   periodic estimate.
+3. **CIR per probe.** A least-squares fit on that support uses every clean probe sample (K for
+   a single path, as the one-tap estimate did). The signal ends at the first two probes in a row
+   whose fit explains less than 0.2 of what it can.
+4. **Per block.** The CIR is interpolated linearly between the two probes, with the rotation
+   between probe centres taken from the CIRs and unwrapped about the frequency loop's
+   prediction. Block MMSE-DFE. Then a data-aided pass: with the first decisions as data, a
+   least-squares CIR at the block centre gives a quadratic trajectory, and the block is
+   equalised again. The pass with the lower decision error is kept.
+5. **Soft decisions.** Weighted by the DFE's per-symbol error variance, plus any measured
+   decision error above it over a +-16 symbol window.
+
+Acquisition changed with it. On equal-power paths the nine-symbol fixed-section metric falls
+to about 0.6, below the 0.7 at which the single-symbol shape is also searched, and the
+single-symbol shape could then win by chance and give no valid down-count. The nine-symbol lock
+is now tried as well, and the first lock that reads a valid preamble and WID is kept.
+
+### Measured
+
+Baseline is master `79de273`, re-measured here with the same runner, seeds and jobs; it
+reproduces the tables above (static 6/45, fading 93/400). Matrices run one at a time
+(`--matrix X --seeds 3`, fading `--seeds 10`, `--jobs 2`):
+
+| Matrix | 79de273 | eq at 2d66ba3 | eq at c5e4eb7 | Rows with a worse cell |
+|---|---|---|---|---|
+| default (110 runs) | 95 | 103 | 104 | none |
+| awgn (150) | 111 | 116 | not run in full | none |
+| foff (240) | 240 | 240 | not run in full | none |
+| drift (105) | 105 | 105 | not run in full | none |
+| ppm (270) | 270 | 270 | not run in full | none |
+| static (45) | 6 | 36 | see below | none |
+| fading, 10 seeds (400) | 93 | 310 | see below | none |
+
+Fading at `2d66ba3`, 10 seeds:
+
+```
+condition                #1 W0 SH   #13 W3 SH  #53 W13 SH   #29 W7 SH  #41 W10 SH
+good @30                     8/10       10/10       10/10       10/10        8/10
+moderate @30                 0/10        9/10       10/10       10/10        9/10
+poor @30                     0/10       10/10       10/10        9/10        9/10
+poor @D-LXIV poor       -1dB 0/10    7dB 9/10   11dB 9/10   19dB 8/10   31dB 9/10
+poor @D-LXIV poor+10     9dB 0/10  17dB 10/10  21dB 10/10   29dB 9/10  41dB 10/10
+poor noiseless               0/10       10/10       10/10        9/10        9/10
+D.6.4 poor +75 Hz @30        0/10       10/10       10/10       10/10        9/10
+D.6.4 poor -75 Hz @30        0/10       10/10       10/10        8/10        9/10
+runs: 400, text PASS: 310
+```
+
+Static at `2d66ba3`: static-wid10 and static-wid12 pass 3/3 on every file. static-wid2 passes
+WID 0 and WID 3 only: its 9 ms (21.6 symbols) spread is longer than the K-L = 16 symbols of
+the K = 32 probes of WID 3-13, and Table D-LXV pairs it with WID 2 (K = 48). The WID 0 cells
+improve through the acquisition change; the equaliser does not touch WID 0.
+
+`c5e4eb7` (support refinement after `2d66ba3`):
+
+- Clean set 60/60 on WID+interleaver and on text with EOM at 48 kHz and at 8 kHz
+  (`score.py`, `--resample 8000`); selftest 0 mismatches.
+- Default matrix 104/110, every cell at or above `79de273`.
+- Reduced fading, 4 seeds, files 13, 53, 29, 41: 126/128 (the two misses are good @30 on WID
+  10). Reduced awgn, 3 seeds, the same files: every cell as at `2d66ba3`.
+- Table D-LXV channels on their own WIDs at 50 dB, seed 1 (`m110d_chan --preset`): WID 2 file
+  9 on static-wid2, WID 10 files 41 and 42 on static-wid10, WID 12 file 49 on static-wid12 all
+  decode. Every default file except WID 0 decodes static-wid10 and static-wid12. The fit's
+  channel-to-noise reads 40 dB on static-wid2 / WID 2 and 37 dB on static-wid12 / WID 12.
+- Poor with +100 ppm, static-wid10 with +200 ppm, and good with +10 ppm/s clock drift, at 30 or
+  50 dB, decode on WID 7 and 10 (1-2 seeds each).
+
+### Not done
+
+- The full matrix at `c5e4eb7`, except default, was not complete when this was written.
+- WID 0 has no equaliser (no probes): still 0/10 on Poor.
+- WID 12 on Poor @30 still fails (2 seeds tried). Table D-LXIV gives no Poor requirement for
+  WID 11-12.
+- On equal paths 1.2 symbols apart at 30 dB, the 64QAM EVM is 4.5 dB worse than on one path;
+  the MMSE-DFE bound for that channel is about 3 dB (inferred from the mean of ln(1 + cos)).
+  Fractional (T/2) spacing was not tried.
+- The tap threshold, the 2.5x tie, the 0.2 end-of-signal level and the +-16 symbol window were
+  set on the cases named in the source comments, not swept.
+
 ## Input formats
 
 - **WAV**: PCM 16, 24 or 32-bit, or IEEE float 32-bit; `WAVE_FORMAT_EXTENSIBLE` accepted;
@@ -645,10 +763,8 @@ python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resampl
   file has a probe quality of 1.000 and a frequency offset estimate of 0.00 Hz (or -0.01 Hz on
   the continuous-PN files). Channel testing above measures noise, fading, multipath, frequency
   offset and clock offset on five SHORT files only.
-- Channel estimation is a single complex gain per mini-probe, interpolated across each data
-  frame under the tracked frequency and timing. There is no equaliser. The static multipath
-  channels of Table D-LXV and the fading channels fail for that reason (inferred: they fail
-  with the WID read correctly, and frequency and timing are not the cause on the AWGN rows).
+- WID 1-13 are equalised (see "Equaliser"). WID 0 is not, and still fails the fading
+  channels.
 - Frequency acquisition covers +-112.5 Hz by design. Larger offsets were tried on one file at
   30 dB only.
 - The WID 6-13 soft bits are max-log distances with no noise-variance estimate. On a clean
@@ -664,7 +780,8 @@ python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resampl
    past 255 (measured above; not chased).
 2. On a multipath channel the preamble clock fit is off by tens of ppm (measured above). With a
    three-super-frame preamble the fit cannot tell clock error from a multipath-shifted peak.
-   An equaliser's timing reference may settle it (inferred).
+   The equaliser absorbs it: ITU good WID 7 went from 3/10 to 10/10, and Poor with +100 ppm
+   decodes (measured). The fit itself is unchanged.
 3. Why WID 0 needs 9 dB more than Table D-LXIV in AWGN (measured; cause not determined).
 
 ## Proofs files for a report page
