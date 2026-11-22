@@ -213,16 +213,18 @@ modem.
   carry, and `m110a_rx` finds three frames (`preamble_hits=3`). Under Table XII as printed it
   would be 1. NOT
   DETERMINABLE from the standard alone which one Table XII intends. The readings fit value + 4.
-- **TX known symbols.** This modem's TX sends every known segment as zeros. 110C puts D1 and D2
-  in the two before each new interleaver block [1, 5.3.2.3.7.1.2]. The Harris radio does. The
-  receiver skips those two segments, so it reads either kind.
+- **TX known symbols.** 110C puts D1 and D2 in the two known segments before each new
+  interleaver block [1, 5.3.2.3.7.1.2], and the Harris radio does. For 600H and 1200H this
+  modem's TX now does too (`docs/harris-tx.md`). Every other mode, 2400V included, still sends
+  every known segment as zeros. The receiver skips those two segments, so it reads either kind.
 - **Quality thresholds.** `quality_db` no longer counts the block-boundary probes, so it reads
   higher than before wherever a transmitter sends D1 and D2 there. The thresholds were set on
   the old figure (`api/modem_rx.cpp`, `quality_threshold_db`). They were not re-derived. On the
   420 decodes above, no wrong payload passes them.
-- **TX end of message.** This modem's TX ends a message with four frames of zero data. It does
-  not send the EOM 4B65A5B2 [1, 5.3.2.3.1] or the interleaver flush [1, 5.3.2.3.2]. So
-  `eom=1` on own-TX loopback is not tested.
+- **TX end of message.** For 600H and 1200H this modem's TX sends the EOM 4B65A5B2
+  [1, 5.3.2.3.1] and the interleaver flush [1, 5.3.2.3.2], and own-TX loopback is tested
+  with `eom=1` (ctest `harris_tx_loopback`; `docs/harris-tx.md`). Every other mode, 2400V
+  included, still ends a message with four frames of zero data, without the EOM or the flush.
 - **75 bps.** AUTO names 75S and 75L. There is no 75 bps data path, in TX or in RX.
 - `src/m110a/preamble_codec.h` has its own D1, D2 table, with 75 bps marked "estimated" as 7,7
   short and 5,7 long. Those collide with 2400 digital voice and the Harris 600 code. Nothing in
