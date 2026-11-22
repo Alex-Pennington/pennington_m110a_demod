@@ -74,7 +74,8 @@ public:
             return Error(ErrorCode::NOT_IMPLEMENTED, "M75 modes not yet supported");
         }
 
-        // Harris modes: whole 110C message from bits (EOM, flush, D1/D2 probes)
+        // Harris modes (600H, 1200H, 2400V): whole 110C message from bits (EOM, flush,
+        // D1/D2 probes)
         if (is_bits_mode(mode_id)) {
             std::vector<uint8_t> bits;
             bits.reserve(data.size() * 8);
@@ -140,7 +141,7 @@ public:
         if (!valid.ok()) return valid.error();
         if (bits.empty()) return Error(ErrorCode::TX_DATA_EMPTY);
         if (!is_bits_mode(api_to_internal_mode(config_.mode))) {
-            return Error(ErrorCode::NOT_IMPLEMENTED, "encode_bits: 600H and 1200H only");
+            return Error(ErrorCode::NOT_IMPLEMENTED, "encode_bits: 600H, 1200H and 2400V only");
         }
         return encode_bits_locked(bits, symbols);
     }
@@ -222,7 +223,7 @@ private:
     static constexpr int RRC_SPAN = 6;  // symbols each side
     
     static bool is_bits_mode(ModeId m) {
-        return m == ModeId::M600H || m == ModeId::M1200H;
+        return m == ModeId::M600H || m == ModeId::M1200H || m == ModeId::M2400V;
     }
 
     static int psk8_position(const complex_t& s) {

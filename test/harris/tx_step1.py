@@ -1,6 +1,6 @@
 """Step-1 check for the Harris-mode transmitter: re-make recorded RT-1694D messages.
 
-For each 600H / 1200H message in the test set:
+For each 600H / 1200H / 2400V message in the test set:
 
 1. m110a_rx finds the message in the recording (modem.py's I/Q route) and its start time.
 2. m110a_tx re-transmits the message's trusted payload bits (<payload>/<slug>.bits, as the
@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import modem  # noqa: E402
 
 KV = re.compile(r'(\w+)=(\S+)')
-TX_MODES = {"600H", "1200H"}
+TX_MODES = {"600H", "1200H", "2400V"}
 
 
 def compare(score, wav, t0, t1, sym, eq):

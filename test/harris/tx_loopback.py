@@ -5,9 +5,10 @@ the payload bytes again, with success=1 and eom=1, the mode named from D1/D2, an
 the number of symbols a 110C message of that length takes: the 3-frame preamble plus
 whole 1440-symbol interleaver blocks holding payload, EOM (32 bits) and flush (144).
 
-Cases per mode (600H, 1200H), from a fixed seed:
-  - framed: random whole vocoder units (60 or 81 bits) wrapped by --frame as the
-    RT-1694D frames them (54-bit header, units, 108-bit trailer, zeros to 16 bits)
+Cases per mode (600H, 1200H, 2400V), from a fixed seed:
+  - framed: random whole vocoder units (60, 81 or 54 bits) wrapped by --frame as the
+    RT-1694D frames them: the 54-bit header, the units, then the trailer W, W' and zeros
+    to 16 bits (600H, 1200H) or 108 ones and zeros to 8 bits (2400V, as melp2400)
   - bytes: random bytes through --bytes, one length that ends on an interleaver block
     and one that does not
 
@@ -23,9 +24,9 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import modem  # noqa: E402
 
-INFO_PER_BLOCK = {"600H": 360, "1200H": 720}
-UNIT = {"600H": 60, "1200H": 81}
-D = {"600H": ("5", "7"), "1200H": ("5", "6")}
+INFO_PER_BLOCK = {"600H": 360, "1200H": 720, "2400V": 1440}
+UNIT = {"600H": 60, "1200H": 81, "2400V": 54}
+D = {"600H": ("5", "7"), "1200H": ("5", "6"), "2400V": ("7", "7")}
 # docs/harris-600-format.md, measured in the nine 600_x and 1200_x streams
 HEADER = "011111011010100110011010100100000100111110000011110010"
 W1 = "101001010010100010100000000100010101000101110011111101"
@@ -47,10 +48,14 @@ def run_case(a, mode, name, args, payload_bits, units=None):
         print(f"{mode} {name}: m110a_tx sent other bits than given")
         return False
     if units is not None:
-        framed = HEADER + units + W1 + W2
-        framed += "0" * (-len(framed) % 16)
+        if mode == "2400V":
+            framed = HEADER + units + "1" * 108
+            framed += "0" * (-len(framed) % 8)
+        else:
+            framed = HEADER + units + W1 + W2
+            framed += "0" * (-len(framed) % 16)
         if bits != framed:
-            print(f"{mode} {name}: --frame did not give header + units + W, W' + zeros to 16 bits")
+            print(f"{mode} {name}: --frame did not give header + units + trailer + zero fill")
             return False
     want = bytes(sum(int(bits[i + k]) << k for k in range(8)) for i in range(0, len(bits), 8))
     nsym = os.path.getsize(sym)
@@ -80,7 +85,7 @@ def main():
     os.makedirs(a.work, exist_ok=True)
     rng = random.Random(110)
     ok = True
-    for mode in ("600H", "1200H"):
+    for mode in ("600H", "1200H", "2400V"):
         units = "".join(rng.choice("01") for _ in range(UNIT[mode] * 23))
         f = os.path.join(a.work, f"{mode}_units.bits")
         with open(f, "w") as fh:

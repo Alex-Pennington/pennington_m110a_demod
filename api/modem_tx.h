@@ -111,13 +111,13 @@ public:
     /**
      * Encode payload bits to audio, ending the message as 110C/D does
      *
-     * For the Harris modes (600H, 1200H) only. The bits (each 0 or 1, in the order
+     * For the Harris modes (600H, 1200H, 2400V) only. The bits (each 0 or 1, in the order
      * the FEC encoder takes them) go out verbatim, followed by the EOM 4B65A5B2, the
      * 144-bit flush and zeros to the end of the interleaver block, with D1 and D2 in
      * the two known segments at the end of every interleaver block. Preamble, data
      * and end are modulated as one symbol stream, so pulse shaping leaves no gap
      * between them. include_eom is ignored: the EOM is always sent.
-     * encode(bytes) takes this path for 600H and 1200H, bytes LSB first.
+     * encode(bytes) takes this path for 600H, 1200H and 2400V, bytes LSB first.
      *
      * @param bits     payload bits
      * @param symbols  if not null, receives the 8PSK position (0-7) of every symbol
