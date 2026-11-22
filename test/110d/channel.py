@@ -4,6 +4,12 @@
 Usage:
   python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan \
       --set <test-set dir> [--matrix default] [--files 1,13,53,29,41] [--seeds N] [--jobs 2]
+      [--proofs DIR [--decoder-label TEXT] [--proofs-note TEXT]]
+
+--proofs DIR also writes DIR/t6.json for a report page: one item per condition, summed over
+the files and seeds run (status pass when every run decoded the message, partial when some
+did, fail when none did). It refuses, as score.py does, a text field holding a path or host
+name: nothing is written and the exit status is 3.
 
 Each file is run through every condition of the chosen matrix with N seeds (seed 1..N), each
 impaired WAV is decoded by m110d_rx, and the decode passes when its text starts with the
@@ -29,6 +35,7 @@ import concurrent.futures
 import csv
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -105,6 +112,51 @@ def matrices():
     return m
 
 
+PRESET_WORDS = {
+    "good": "ITU Good fading channel",
+    "moderate": "ITU Moderate fading channel",
+    "poor": "ITU Poor fading channel",
+    "static-wid2": "static multipath channel for waveform 2 (Table D-LXV)",
+    "static-wid10": "static multipath channel for waveform 10 (Table D-LXV)",
+    "static-wid12": "static multipath channel for waveform 12 (Table D-LXV)",
+}
+
+
+def cond_words(c, row):
+    """The condition in plain words. `row` is one README row it applies to."""
+    parts = []
+    m = re.search(r"D-LXIV(?: poor)?([+-]\d+)?$", c.label)
+    if "D-LXIV" in c.label:
+        off = int(m.group(1)) if m and m.group(1) else 0
+        poor = "D-LXIV poor" in c.label
+        ref = "required SNR for the Poor channel" if poor else "required SNR for that waveform"
+        parts.append("noise at the standard's " + ref if off == 0 else
+                     f"noise {abs(off)} dB {'above' if off > 0 else 'below'} the standard's {ref}")
+    ca = c.args(row) or []
+    i = 0
+    while i < len(ca):
+        f = ca[i]
+        v = ca[i + 1] if i + 1 < len(ca) else ""
+        if f == "--snr" and not parts:
+            parts.append(f"noise at {float(v):g} dB SNR")
+        elif f == "--preset":
+            parts.append(PRESET_WORDS.get(v, v))
+        elif f == "--foff":
+            parts.append(f"frequency offset {float(v):+g} Hz")
+        elif f == "--fdrift":
+            parts.append(f"frequency drift {float(v):+g} Hz per second")
+        elif f == "--ppm":
+            parts.append(f"sample clock error {float(v):+g} ppm")
+        elif f == "--ppm-drift":
+            parts.append(f"sample clock drift {float(v):+g} ppm per second")
+        elif f == "--sweep":
+            parts.append(f"frequency sweep {v} (D.6.5 triangle)")
+        i += 2
+    if "--snr" in ca and "D-LXIV" not in c.label and not any(p.startswith("noise") for p in parts):
+        parts.insert(0, f"noise at {float(ca[ca.index('--snr') + 1]):g} dB SNR")
+    return ", ".join(parts) if parts else "clean, no impairment"
+
+
 def run_one(chan, rx, src, dst, cargs, seed, keep):
     p = subprocess.run([chan, "--seed", str(seed), *cargs, src, dst], capture_output=True, text=True, timeout=300)
     if p.returncode:
@@ -132,6 +184,9 @@ def main():
     ap.add_argument("--work", help="scratch directory for impaired WAVs (default: a new one under $TMPDIR)")
     ap.add_argument("--keep", action="store_true", help="keep the impaired WAVs")
     ap.add_argument("--csv", help="also write one row per run to this CSV file")
+    ap.add_argument("--proofs", metavar="DIR", help="also write DIR/t6.json, one item per condition, for a report page")
+    ap.add_argument("--decoder-label", help="decoder label for --proofs (default: m110d_rx @<short commit>)")
+    ap.add_argument("--proofs-note", help="note text for --proofs")
     a = ap.parse_args()
 
     rows = {r["num"]: r for r in score.parse_readme(os.path.join(a.set, "README.md"))}
@@ -234,6 +289,45 @@ def main():
             w = csv.DictWriter(f, fieldnames=list(records[0]) if records else ["row"])
             w.writeheader()
             w.writerows(records)
+    if a.proofs:
+        items = []
+        for ci, c in enumerate(conds):
+            cells = [(n, cell[(ci, n)]) for n in nums if (ci, n) in cell]
+            if not cells:
+                continue
+            ok = sum(v[0] for _, v in cells)
+            tot = sum(v[1] for _, v in cells)
+            seeds = max(v[1] for _, v in cells)
+            snrs = []
+            for n, _ in cells:
+                ca = c.args(rows[n])
+                if "--snr" in ca:
+                    snrs.append(float(ca[ca.index("--snr") + 1]))
+            if not snrs:
+                snr = "no added noise"
+            elif min(snrs) == max(snrs):
+                snr = f"SNR {min(snrs):g} dB in 3 kHz"
+            else:
+                snr = f"SNR {min(snrs):g} to {max(snrs):g} dB in 3 kHz, set per waveform"
+            wids = ", ".join(str(rows[n]["wid"]) for n, _ in cells)
+            seed_txt = "seed 1" if seeds == 1 else f"seeds 1 to {seeds}"
+            items.append({
+                "name": c.label,
+                "mode": cond_words(c, rows[cells[0][0]]),
+                "status": "pass" if ok == tot else "fail" if ok == 0 else "partial",
+                "decoded": f"{ok} of {tot} runs decoded the message",
+                "detail": f"{len(cells)} files (waveforms {wids}), {seed_txt}, {snr}",
+            })
+        doc = {"id": "T6", "order": 65, "title": "110D receiver on a simulated HF channel",
+               "what": "The same recordings passed through a standard HF channel simulator "
+                       "(noise, frequency offset, clock error, fading) before decoding.",
+               "decoder": a.decoder_label or score.default_decoder_label(),
+               "note": a.proofs_note or "Each line is one channel condition, summed over the files and seeds listed; "
+                                        "a run passes when the decoded text starts with the sent message.",
+               "items": items}
+        prc = score.write_proofs(a.proofs, "t6.json", doc)
+        if prc:
+            return prc
     return 1 if errors else 0
 
 

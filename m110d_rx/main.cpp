@@ -1,16 +1,24 @@
 // m110d_rx: decode one MIL-STD-188-110D Appendix D (3 kHz) transmission from a WAV file.
 //
-// Usage: m110d_rx [options] <file.wav>
+// Usage: m110d_rx [options] <file.wav | - | --stdin>
+//   -, --stdin                     read the WAV from stdin (streamed WAV with 0/0xFFFFFFFF lengths read to EOF)
+//   --resampler-report FS          print the measured response of the FS -> 48000 Hz input resampler and exit
 //   --pn restart|continuous|auto   preamble PN alignment (default auto)
 //   --bpsk-scr-shifts N            data scrambler iterations per BPSK symbol (default 3)
 //   --code d9|alt|auto             K=7 tap reading: Figure D-9 (default), time-reversed, or best
 //   --psk-scr-shifts N             data scrambler iterations per QPSK/8PSK symbol (default 3)
 //   --qam-scale X                  QAM constellation scale vs the mini-probe (default 1; 0 = per-frame RMS)
+//   --eq dfe|probe|off             WID 1-13 channel equaliser: block MMSE-DFE with the data-aided pass
+//                                  (default), without it (probe CIRs only), or the one-tap gain
 //   --selftest                     check generated tables against the standard and exit
 //   -v                             diagnostics on stderr
 //
+// Input rates: any multiple of 2400 Hz as is; any other rate from 6840 Hz (8000 Hz, 44100 Hz, ...)
+// resampled to 48000 Hz first (src/m110d/appd_input.h).
+//
 // Output is one key=value per line on stdout; test/110d/score.py parses it.
 #include "m110d/appd_rx.h"
+#include "m110d/appd_input.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -49,12 +57,21 @@ int main(int argc, char** argv) {
             opt.psk_scr_shifts = std::atoi(next().c_str());
         } else if (a == "--qam-scale") {
             opt.qam_scale = std::atof(next().c_str());
+        } else if (a == "--eq") {
+            std::string v = next();
+            opt.eq = v == "off" ? 0 : 1;
+            opt.eq_passes = v == "probe" ? 1 : 2;
         } else if (a == "--selftest") {
             int bad = tables_selftest() + walsh_selftest() + tables_selftest_qam();
             std::printf("selftest_mismatches=%d\n", bad);
             return bad ? 1 : 0;
         } else if (a == "-v") {
             opt.verbose = true;
+        } else if (a == "-" || a == "--stdin") {
+            path = "-";
+        } else if (a == "--resampler-report") {
+            resampler_report(std::atoi(next().c_str()));
+            return 0;
         } else if (!a.empty() && a[0] == '-') {
             std::fprintf(stderr, "unknown option %s\n", a.c_str());
             return 2;
@@ -64,13 +81,13 @@ int main(int argc, char** argv) {
     }
     if (path.empty()) {
         std::fprintf(stderr, "usage: m110d_rx [--pn restart|continuous|auto] [--bpsk-scr-shifts N] "
-                             "[--code d9|alt|auto] [-v] <file.wav>\n");
+                             "[--code d9|alt|auto] [-v] <file.wav | ->\n");
         return 2;
     }
     std::vector<double> audio;
     int fs = 0;
     std::string err;
-    if (!read_wav(path, audio, fs, err)) {
+    if (!read_wav_any(path, audio, fs, err) || !to_internal_rate(audio, fs, err, opt.verbose)) {
         std::fprintf(stderr, "%s: %s\n", path.c_str(), err.c_str());
         return 2;
     }
@@ -85,6 +102,7 @@ int main(int argc, char** argv) {
         std::printf("preamble=%s\n", r.preamble_shape.c_str());
         std::printf("pn=%s\n", r.pn_restart == 1 ? "restart" : "continuous");
         std::printf("freq_offset_hz=%.2f\n", r.freq_offset_hz);
+        std::printf("clock_ppm=%.1f\n", r.clock_ppm);
         std::printf("superframes=%d\n", r.superframes_seen);
         std::printf("counts=");
         for (size_t i = 0; i < r.counts.size(); i++) std::printf("%s%d", i ? "," : "", r.counts[i]);
@@ -108,6 +126,13 @@ int main(int argc, char** argv) {
         std::printf("code=%s\n", r.code_reversed == 1 ? "alt" : "d9");
         std::printf("reencode_agree=%.4f\n", r.reencode_agree);
         std::printf("probe_quality=%.3f\n", r.probe_quality);
+        std::printf("eq=%s\n", r.eq_used ? "dfe" : "one-tap");
+        if (r.eq_used) {
+            std::printf("eq_taps=");
+            for (size_t i = 0; i < r.eq_taps.size(); i++) std::printf("%s%d", i ? "," : "", r.eq_taps[i]);
+            std::printf("\n");
+            std::printf("eq_snr_db=%.1f\n", r.eq_snr_db);
+        }
         if (r.bits_per_sym > 1) {  // WID 6-13 demapper (appd_qam.h)
             std::printf("bits_per_symbol=%d\n", r.bits_per_sym);
             std::printf("evm_db=%.1f\n", r.qam.evm_db());

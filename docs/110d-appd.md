@@ -1,5 +1,148 @@
 # MIL-STD-188-110D Appendix D receiver (3 kHz)
 
+## Handoff
+
+This section describes the receiver as merged at master `0914cb4`, the equaliser merge. The
+sections below it hold the detail and the full measured tables.
+
+### State of the receiver
+
+- **Clean interop set** (60 files from another transmitter, every 3 kHz waveform, WID 0-13,
+  four interleavers, five variants). It passes 60/60 on WID and interleaver and 60/60 on text
+  with EOM as expected. It passes at 48 kHz, at 8 kHz from a file, and at 8 kHz through stdin
+  (measured on a fresh build of `0914cb4`, and through stdin at `4e43f17`).
+- **Implemented:**
+  - preamble acquisition over +-112.5 Hz;
+  - WID, interleaver and constraint-length detection;
+  - payload decode for Walsh, BPSK, QPSK, 8PSK and 16/32/64/256QAM, with K=7 coding;
+  - frequency tracking and symbol-timing tracking;
+  - a probe-aided block MMSE-DFE equaliser for WID 1-13;
+  - any input rate from 6840 Hz up, and a WAV on stdin.
+- **Not implemented:** K=9 coding, and streaming input (the whole input is read before
+  decoding).
+- **STD-AMB-001:** files 56 and 57 acquire only with the PN running continuously across the
+  section. The main matrix acquires only with PN restarting per Walsh symbol. The receiver
+  finds whichever is in use.
+
+### Channel matrix as it stands (measured)
+
+Default files: WID 0, 3, 13, 7 and 10, all SHORT. Seeds: 3, and 10 for fading. Each cell is
+one decode of a burst, not a BER figure.
+
+| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser (`2d66ba3`; default at `c5e4eb7`) |
+|---|---|---|---|
+| default (110) | 87 | 95 | 104 |
+| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 |
+| foff (240) | 135 | 240 | 240 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 105 at `2d66ba3`; **100 at `c5e4eb7` (regression)** |
+| ppm and ppm drift (270) | 144 | 270 | 270 |
+| static (45) | 6 | 6 | 36 (36 at `c5e4eb7`) |
+| fading, 10 seeds (400) | 70 | 93 | 310 (322 at `c5e4eb7`) |
+
+- The equaliser columns are from the worker's runs. The coordinator reran the default matrix
+  on the merged build and got 104/110.
+- The full matrix at the equaliser's final commit (`c5e4eb7`, the code on master) finished
+  after the merge. Results: default 104/110, awgn 116/150, foff 240/240, ppm 270/270, static
+  36/45 and fading 322/400, none with a worse cell.
+- **Regression on master (measured): drift is 100/105, against 105/105 at `79de273`.** These
+  cells drop from 3/3 to 2/3 (files 1/13/53/29/41):
+  - fdrift +3.5 Hz/s @30 on WID 10;
+  - fdrift -3.5 Hz/s @30 on WID 13, 7 and 10;
+  - sweep D.6.5 @30 on WID 10.
+
+  It arrives with `eb91c3d` ("score support hypotheses with tail margins, ties go to the
+  shortest span"). It still fails with `--eq probe` and passes with `--eq off`.
+  - **Repro:** `m110d_chan --seed 2 --snr 30 --fdrift -3.5` on file 41, then `m110d_rx`. With
+    the equaliser there is no EOM and the text is garbage; with `--eq off` it decodes
+    (coordinator, master `f554207`).
+  - **Mechanism** (worker, `-v` on file 41): on that single-path channel the support
+    hypothesis tie rule (2.5x, shortest span wins) picks a span that puts the strongest tap a
+    full base period (L = 16) from delay 0. The fit is 8.9 dB, against 29.1 dB at `2d66ba3`.
+  - **Proposed fix** (inferred, not built): keep the strongest tap at the delay nearest 0 when
+    choosing the support. For example, skip hypotheses with |d(kmax)| > (K-L)/2, or apply the
+    tie only among hypotheses that place kmax the same way.
+  - **Re-check after the fix:** the drift matrix at 3 seeds, plus static and fading.
+
+### Branches and worktrees
+
+- **Merged to master and pushed as branches:** `feat/110d-rx`, `feat/110d-walsh`,
+  `feat/110d-qam`, `feat/110d-integrate`, `docs/110d-std-pdf`, `feat/110d-chan`,
+  `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`. None holds anything
+  that master lacks.
+- **Worktree left in place:** `m110a-wt-110d-proofs` (`feat/110d-proofs`, merged). It holds
+  an untracked `test/110d/__pycache__/`. Deleting that folder was refused by a permission
+  denial, so the worktree was not removed. Nothing in it is unmerged.
+- **Worktrees of other work:** `m110a-wt-rx-path`, `m110a-wt-mode-detect` and
+  `m110a-wt-harris-*`. They do not belong to 110D work.
+
+### Rebuild and rerun
+
+The test set is not in the repository. It lives in the main checkout, in the ignored
+`interop-110D-AppD-2026-09-08/` folder, called `<set>` below. Its `README.md` holds the
+expected text.
+
+```sh
+cmake -S . -B build-110d -DCMAKE_BUILD_TYPE=Release
+cmake --build build-110d --target m110d_rx m110d_chan -j2
+build-110d/bin/m110d_rx --selftest            # selftest_mismatches=0
+build-110d/bin/m110d_chan --selftest          # selftest: PASS
+
+# clean 60 at 48 kHz, at 8 kHz, and at 8 kHz through stdin
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --resample 8000 --workdir <scratch>/wav8k
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --resample 8000 --workdir <scratch>/wav8k --stdin
+
+# channel matrices: default, or awgn, foff, drift, ppm, static, fading, all
+python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan --set <set> --jobs 2 --work <scratch>/chan [--matrix X] [--seeds N]
+
+# proofs files for the report page (t5.json, t6.json), from a verified master build
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --proofs <inbox> --decoder-label "m110d_rx master @<commit>"
+python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan --set <set> --jobs 2 --work <scratch>/chan --proofs <inbox> --decoder-label "m110d_rx master @<commit>"
+```
+
+`<inbox>` is the greybeard-ale proofs inbox, `~/.local/share/greybeard-ale/proofs-inbox/`. Set
+`TMPDIR` and `<scratch>` to a directory outside `/tmp`. `m110d_rx --eq off` gives the
+pre-equaliser one-tap path.
+
+### Unfinished
+
+- **The drift regression above.** Fix it first.
+- WID 0 has no equaliser (it has no probes). It still fails fading: 0/10 on Poor.
+- WID 12 (256QAM) fails Poor at 30 dB. Table D-LXIV sets no Poor requirement for WID 11-12.
+- static-wid2 fails on WID 7, 10 and 13. Its 9 ms spread exceeds what the K=32 probes cover.
+  Table D-LXV pairs that channel with WID 2, which decodes.
+- The equaliser thresholds were set on named cases, not swept. Fractional (T/2) spacing was
+  not tried.
+
+### Open questions
+
+1. **WID 0 needs about 9 dB more than Table D-LXIV in AWGN** (measured; cause not
+   determined). The tracking and equaliser work did not explain it.
+2. **ITU good at 30 dB, WID 7.** On multipath the preamble clock fit is off by tens of ppm
+   (measured). After tracking this cell fell from 4/10 to 3/10. The equaliser absorbs the
+   error, and the cell now passes 10/10 (measured). The fit itself is unchanged.
+3. **Streaming input.** stdin reads the whole input before decoding. A real-time feed needs
+   acquisition that runs on a sliding window. That is demod-core work.
+4. **Band-limited channel.** The waveform occupies about 180-3420 Hz. A radio SSB audio
+   filter narrower than that was not tested. It needs a band-limiting condition in
+   `m110d_chan` and `channel.py`.
+5. **STD-AMB-001 fixed symbol 8.** On the continuous-PN files, PN index 256-287 matches no
+   offset: 29/288 chips wrong (measured). This is a question for the transmitter's author.
+
+### Next steps, in order
+
+1. Fix the drift regression in the support selection (above) and re-run the drift, static
+   and fading matrices.
+2. Add a band-limiting condition (SSB filter shapes) to `m110d_chan` and `channel.py`, and
+   measure the receiver against it.
+3. Streaming acquisition, so that `m110d_rx` can decode a live 8 kHz feed.
+4. WID 0 in noise and fading: find the 9 dB.
+5. A BER-style measurement (long runs, LONG interleaver) to compare with Table D-LXIV
+   properly.
+6. K=9 coding.
+
+## Overview
+
 `m110d_rx` decodes one 3 kHz Appendix D single-tone transmission from a WAV file [1]. It
 reports the Waveform ID (WID), the interleaver, the constraint length, acquisition and EOM
 status. It decodes the payload text for every waveform, WID 0 to 13: Walsh (WID 0), BPSK
@@ -43,6 +186,7 @@ The WAV must be 16-bit PCM at a sample rate that is a multiple of 2400 Hz (the t
 | key | meaning |
 |---|---|
 | `acquired`, `acq_metric`, `acq_time_s` | preamble found; normalised fixed-subsection correlation (1.000 = exact); time of the acquired super-frame |
+| `freq_offset_hz`, `clock_ppm` | carrier offset at the acquired super-frame; receive clock error fitted over the preamble (positive: more samples per symbol) |
 | `preamble`, `pn` | `nine-fixed` or `single-fixed` (D.5.2.1.3); preamble PN alignment that acquired, `restart` or `continuous` |
 | `superframes`, `counts` | super-frames found and their down-counts (D.5.2.1.3.1) |
 | `dcd` | 1 when every down-count passed parity and the WID checksum passed |
@@ -244,6 +388,20 @@ Each item below is a single decode run on the named file.
 | D.5.4.3, D.5.4.5.1: EOM 4B65A5B2 | `find_eom` |
 | D.5.1.2.3.1: WID 0 Walsh sets, normal and alternate (last di-bit of a block) | `kWalshData4`, `kWalshAlt8`, `decode_walsh` in `src/m110d/appd_walsh.h` |
 | D.5.1.4: WID 0 trinomial (159, 31) scrambler, 2048 values, reset per block | `walsh_scrambler`, checked by `walsh_selftest` against the D.5.1.4 example |
+
+Synchronisation. The standard specifies the signal and the performance (D.6.4, D.6.5), not
+the receiver's method; these are this receiver's choices:
+
+| Function | Method | Where |
+|---|---|---|
+| Frequency acquisition | Fixed-subsection search over 25 Hz bins, -100 to +100 Hz (coverage +-112.5 Hz), phase ramp on the chip reference, 32-chip coherent parts; sps/4 time grid refined to the sample | `search` |
+| Frequency estimate | Bin offset, plus the phase step between 8-chip parts (+-150 Hz unambiguous), then between 32-chip parts (+-37.5 Hz) | `estimate_freq` |
+| Clock ratio | Fixed-subsection peak of every super-frame (least-squares parabola over +-4 samples), straight-line fit, re-measured under the fitted ratio and refitted twice | `fit_clock`, `peak_offset` |
+| Sampling | Linear interpolation of the 48 kHz matched-filter output at the fitted clock ratio plus a tracked offset | `at`, `spos`, `sample` |
+| WID 1-13 frequency | Alpha-beta (0.5, 0.15) on the residual frequency and its drift per frame; probe-to-probe rotation unwrapped about the prediction; gain interpolated in magnitude under a linear phase ramp between probe centres | `decode_payload` |
+| WID 1-13 timing | Alpha-beta (0.15, 0.01) on the probe timing; parabola on probe gain magnitude at +-sps/4; no update below probe quality 0.6 | `decode_payload` |
+| WID 0 carrier | Second-order decision-directed loop (wn 0.15, zeta 0.707 per channel symbol), per-chip derotation, error from the largest-magnitude hypothesis, started from the last super-frame's gain | `decode_walsh` |
+| WID 0 timing | Second-order decision-directed loop (0.1, 0.005 per channel symbol), parabola on the decided hypothesis at +-sps/4 | `decode_walsh` |
 
 The TLC section (D.5.2.1.2) is not used. The receiver neither checks it nor counts its blocks.
 
@@ -454,24 +612,331 @@ same cells.
 - **WID 0** needs 3 dB in AWGN, 9 dB above its Table D-LXIV value, and fails the Poor channel
   with no noise.
 
+### With frequency and timing tracking (measured)
+
+These are the runner's own tables for the receiver at commit `1f9b405` (sources in
+`src/m110d/` and `m110d_rx/` as merged here), run with
+`--matrix default,awgn,foff,drift,ppm,static --seeds 3` and `--matrix fading --seeds 10`,
+both at `--jobs 2`. Both exited 0.
+
+```
+condition                 #1 W0 SH   #13 W3 SH  #53 W13 SH   #29 W7 SH  #41 W10 SH
+D-LXIV AWGN / Poor dB      -6 / -1       3 / 7      6 / 11     13 / 19     21 / 31
+----------------------------------------------------------------------------------
+clean                          1/1         1/1         1/1         1/1         1/1
+awgn D-LXIV+0             -6dB 0/3     3dB 3/3     6dB 3/3    13dB 3/3    21dB 3/3
+awgn D-LXIV+6              0dB 3/3     9dB 3/3    12dB 3/3    19dB 3/3    27dB 3/3
+awgn D-LXIV+12             6dB 3/3    15dB 3/3    18dB 3/3    25dB 3/3    33dB 3/3
+foff +10 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -30 Hz @30                3/3         3/3         3/3         3/3         3/3
+ppm +100 @30                   3/3         3/3         3/3         3/3         3/3
+poor @30                       0/3         1/3         1/3         1/3         0/3
+awgn D-LXIV-9            -15dB 0/3    -6dB 0/3    -3dB 0/3     4dB 0/3    12dB 0/3
+awgn D-LXIV-6            -12dB 0/3    -3dB 0/3     0dB 0/3     7dB 1/3    15dB 0/3
+awgn D-LXIV-3             -9dB 0/3     0dB 3/3     3dB 2/3    10dB 3/3    18dB 3/3
+awgn D-LXIV+3             -3dB 0/3     6dB 3/3     9dB 3/3    16dB 3/3    24dB 3/3
+awgn D-LXIV+9              3dB 3/3    12dB 3/3    15dB 3/3    22dB 3/3    30dB 3/3
+awgn D-LXIV+15             9dB 3/3    18dB 3/3    21dB 3/3    28dB 3/3    36dB 3/3
+awgn D-LXIV+20            14dB 3/3    23dB 3/3    26dB 3/3    33dB 3/3    41dB 3/3
+foff -75 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -40 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -35 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -20 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -10 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -5 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff -2 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff +2 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff +5 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff +20 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff +30 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff +35 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff +40 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff +75 Hz @30                3/3         3/3         3/3         3/3         3/3
+fdrift +0.5 Hz/s @30           3/3         3/3         3/3         3/3         3/3
+fdrift +1 Hz/s @30             3/3         3/3         3/3         3/3         3/3
+fdrift +2 Hz/s @30             3/3         3/3         3/3         3/3         3/3
+fdrift +3.5 Hz/s @30           3/3         3/3         3/3         3/3         3/3
+fdrift -3.5 Hz/s @30           3/3         3/3         3/3         3/3         3/3
+sweep D.6.5 from 0 @30         3/3         3/3         3/3         3/3         3/3
+sweep D.6.5 from 0 @24         3/3         3/3         3/3         3/3         3/3
+ppm -500 @30                   3/3         3/3         3/3         3/3         3/3
+ppm -300 @30                   3/3         3/3         3/3         3/3         3/3
+ppm -200 @30                   3/3         3/3         3/3         3/3         3/3
+ppm -100 @30                   3/3         3/3         3/3         3/3         3/3
+ppm -50 @30                    3/3         3/3         3/3         3/3         3/3
+ppm -30 @30                    3/3         3/3         3/3         3/3         3/3
+ppm -20 @30                    3/3         3/3         3/3         3/3         3/3
+ppm -10 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +10 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +20 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +30 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +50 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +200 @30                   3/3         3/3         3/3         3/3         3/3
+ppm +300 @30                   3/3         3/3         3/3         3/3         3/3
+ppm +500 @30                   3/3         3/3         3/3         3/3         3/3
+ppm-drift +10/s @30            3/3         3/3         3/3         3/3         3/3
+ppm-drift +100/s @30           3/3         3/3         3/3         3/3         3/3
+static-wid2 @50                0/3         0/3         0/3         0/3         0/3
+static-wid10 @50               0/3         0/3         0/3         0/3         0/3
+static-wid12 @50               3/3         3/3         0/3         0/3         0/3
+----------------------------------------------------------------------------------
+runs: 830, text PASS: 740
+```
+
+```
+condition                #1 W0 SH   #13 W3 SH  #53 W13 SH   #29 W7 SH  #41 W10 SH
+D-LXIV AWGN / Poor dB     -6 / -1       3 / 7      6 / 11     13 / 19     21 / 31
+---------------------------------------------------------------------------------
+good @30                     8/10        9/10        8/10        3/10        1/10
+moderate @30                 0/10        4/10        5/10        2/10        0/10
+poor @30                     0/10        2/10        5/10        2/10        0/10
+poor @D-LXIV poor       -1dB 0/10    7dB 2/10   11dB 4/10   19dB 2/10   31dB 0/10
+poor @D-LXIV poor+10     9dB 0/10   17dB 2/10   21dB 4/10   29dB 2/10   41dB 0/10
+poor noiseless               0/10        2/10        5/10        3/10        0/10
+D.6.4 poor +75 Hz @30        0/10        2/10        5/10        2/10        0/10
+D.6.4 poor -75 Hz @30        0/10        2/10        5/10        2/10        0/10
+---------------------------------------------------------------------------------
+runs: 400, text PASS: 93
+```
+
+Against the baseline above:
+
+| Matrix | Baseline | Now | Rows worse |
+|---|---|---|---|
+| default, awgn, foff, drift, ppm, static (3 seeds) | 477/830 | 740/830 | none |
+| foff | 135/240 | 240/240 | none |
+| drift and D.6.5 sweep | 60/105 | 105/105 | none |
+| ppm and ppm drift | 144/270 | 270/270 | none |
+| default | 87/110 | 95/110 | none |
+| awgn | every cell as now, except WID 0 at 0 dB: 1/3 | WID 0 at 0 dB: 3/3 | none |
+| static | as baseline | as baseline | none |
+| fading (10 seeds) | 70/400 | 93/400 | good @30, WID 7: 4/10 to 3/10 |
+
+Measured detail:
+
+- **Frequency.** Every file passes every offset to +-75 Hz. The estimate reads -75.01 Hz at
+  -75 Hz and -39.99 Hz at -40 Hz (`--csv`). WID 7 at 30 dB also decodes at +100, -110 and
+  +125 Hz (one seed each, `m110d_chan --foff`), beyond the +-112.5 Hz the bins cover.
+- **Drift and D.6.5.** Every file passes +-3.5 Hz/s and the D.6.5 sweep at 24 dB.
+- **Clock.** The fitted clock error reads 300.0 ppm at +300 ppm and -500.5 ppm at -500 ppm
+  (WID 7, 30 dB). Without the re-measurement passes it read 263 and -439 ppm, 12.5 % low on
+  every case tried. On a +100 ppm/s drift it reads about 236 ppm, the error over the
+  preamble; the loops track the rest.
+- **D.6.4.** Poor at +-75 Hz now passes as often as Poor at 0 Hz (WID 3 2/10, WID 13 5/10,
+  WID 7 2/10). It was 0/10 on every file.
+- **The one worse cell.** On ITU good (two paths 0.5 ms apart), the preamble clock fit reads
+  between -48 and +6 ppm where the true error is 0 (WID 7, seeds 1-10), and WID 7 passes 3/10
+  against 4/10 with the fit disabled (temporary build, not kept). Probe timing loop gains of
+  0.5 / 0.1 cost one more seed on WID 7 and WID 10 there, so the loop runs at 0.15 / 0.01;
+  those gains still pass +-500 ppm and +-100 ppm/s on WID 7, 10 and 13 (3 seeds each).
+- **WID 0** still needs 3 dB in AWGN (D-LXIV -6 dB) and still fails Poor at every SNR. The
+  tracking work did not find its cause.
+
+## Equaliser (WID 1-13)
+
+Source: `src/m110d/appd_eq.h` (CIR fit, block MMSE-DFE) and `AppDRx::setup_eq` /
+`equalise_frame` in `src/m110d/appd_rx.h`. `m110d_rx --eq off` keeps the one-tap gain path,
+and `--eq probe` skips the data-aided pass.
+
+### Why this design
+
+The frame gives the receiver a known mini-probe after every data block and one at the end of
+the preamble (D.5.2.2; U and K per WID from Tables D-XI and D-XII). A probe is its base
+sequence (Table D-XXI: length L = 13, 16 or 25 at 3 kHz) cyclically extended to K symbols, so
+its first K-L symbols repeat its last K-L: a cyclic prefix. While the delay spread is at most
+K-L symbols, the last L received probe symbols hold no data energy, and the probe gives the
+channel impulse response (CIR) directly:
+
+| WID | U | K | L | K-L, ms | Table D-LXV channel at 3 kHz |
+|---|---|---|---|---|---|
+| 1-2 | 48 | 48 | 25 | 9.6 | WID 2: 0 / 3.0 / 9.0 ms |
+| 3-4 | 96 | 32 | 16 | 6.7 | |
+| 5-10, 13 | 256 | 32 | 16 | 6.7 | WID 10: 0 / 2.0 / 4.5 ms |
+| 11-12 | 360 | 24 | 13 | 4.6 | WID 12: 0 / 1.5 ms |
+
+So every data block sits between two known probes, each with its own CIR estimate. The
+equaliser equalises one block at a time with both probes known: a block MMSE
+decision-feedback equaliser (LDL^H form), with decisions fed back from the end of the block,
+next to the following probe, towards its start. It is a DFE rather than a linear equaliser
+because the Table D-LXV channels are equal-power paths, whose spectral nulls a linear
+equaliser fills only by enhancing the noise. Each symbol's error variance comes out of the
+factorisation and weights its soft decisions into the existing Viterbi decoder.
+
+### Steps
+
+1. **Tracking (pass 1).** The frequency and timing loops above run unchanged over every probe
+   position to the end of the input. A probe with one-tap correlation below 0.3 does not update
+   the frequency loop.
+2. **Support.** The probe-averaged periodic power-delay profile gives the delays that carry
+   energy, modulo L. Each way of unwrapping it into a span of at most K-L delays is scored by
+   a least-squares fit on the probe samples that span leaves free of data; ties within 2.5x go
+   to the shortest span. The chosen arc +-2 delays is then thresholded at 2.5x the noise of the
+   periodic estimate.
+3. **CIR per probe.** A least-squares fit on that support uses every clean probe sample (K for
+   a single path, as the one-tap estimate did). The signal ends at the first two probes in a row
+   whose fit explains less than 0.2 of what it can.
+4. **Per block.** The CIR is interpolated linearly between the two probes, with the rotation
+   between probe centres taken from the CIRs and unwrapped about the frequency loop's
+   prediction. Block MMSE-DFE. Then a data-aided pass: with the first decisions as data, a
+   least-squares CIR at the block centre gives a quadratic trajectory, and the block is
+   equalised again. The pass with the lower decision error is kept.
+5. **Soft decisions.** Weighted by the DFE's per-symbol error variance, plus any measured
+   decision error above it over a +-16 symbol window.
+
+Acquisition changed with it. On equal-power paths the nine-symbol fixed-section metric falls
+to about 0.6, below the 0.7 at which the single-symbol shape is also searched, and the
+single-symbol shape could then win by chance and give no valid down-count. The nine-symbol lock
+is now tried as well, and the first lock that reads a valid preamble and WID is kept.
+
+### Measured
+
+Baseline is master `79de273`, re-measured here with the same runner, seeds and jobs; it
+reproduces the tables above (static 6/45, fading 93/400). Matrices run one at a time
+(`--matrix X --seeds 3`, fading `--seeds 10`, `--jobs 2`):
+
+| Matrix | 79de273 | eq at 2d66ba3 | eq at c5e4eb7 | Rows with a worse cell |
+|---|---|---|---|---|
+| default (110 runs) | 95 | 103 | 104 | none |
+| awgn (150) | 111 | 116 | not run in full | none |
+| foff (240) | 240 | 240 | not run in full | none |
+| drift (105) | 105 | 105 | not run in full | none |
+| ppm (270) | 270 | 270 | not run in full | none |
+| static (45) | 6 | 36 | see below | none |
+| fading, 10 seeds (400) | 93 | 310 | see below | none |
+
+Fading at `2d66ba3`, 10 seeds:
+
+```
+condition                #1 W0 SH   #13 W3 SH  #53 W13 SH   #29 W7 SH  #41 W10 SH
+good @30                     8/10       10/10       10/10       10/10        8/10
+moderate @30                 0/10        9/10       10/10       10/10        9/10
+poor @30                     0/10       10/10       10/10        9/10        9/10
+poor @D-LXIV poor       -1dB 0/10    7dB 9/10   11dB 9/10   19dB 8/10   31dB 9/10
+poor @D-LXIV poor+10     9dB 0/10  17dB 10/10  21dB 10/10   29dB 9/10  41dB 10/10
+poor noiseless               0/10       10/10       10/10        9/10        9/10
+D.6.4 poor +75 Hz @30        0/10       10/10       10/10       10/10        9/10
+D.6.4 poor -75 Hz @30        0/10       10/10       10/10        8/10        9/10
+runs: 400, text PASS: 310
+```
+
+Static at `2d66ba3`: static-wid10 and static-wid12 pass 3/3 on every file. static-wid2 passes
+WID 0 and WID 3 only: its 9 ms (21.6 symbols) spread is longer than the K-L = 16 symbols of
+the K = 32 probes of WID 3-13, and Table D-LXV pairs it with WID 2 (K = 48). The WID 0 cells
+improve through the acquisition change; the equaliser does not touch WID 0.
+
+`c5e4eb7` (support refinement after `2d66ba3`):
+
+- Clean set 60/60 on WID+interleaver and on text with EOM at 48 kHz and at 8 kHz
+  (`score.py`, `--resample 8000`); selftest 0 mismatches.
+- Default matrix 104/110, every cell at or above `79de273`.
+- Reduced fading, 4 seeds, files 13, 53, 29, 41: 126/128 (the two misses are good @30 on WID
+  10). Reduced awgn, 3 seeds, the same files: every cell as at `2d66ba3`.
+- Table D-LXV channels on their own WIDs at 50 dB, seed 1 (`m110d_chan --preset`): WID 2 file
+  9 on static-wid2, WID 10 files 41 and 42 on static-wid10, WID 12 file 49 on static-wid12 all
+  decode. Every default file except WID 0 decodes static-wid10 and static-wid12. The fit's
+  channel-to-noise reads 40 dB on static-wid2 / WID 2 and 37 dB on static-wid12 / WID 12.
+- Poor with +100 ppm, static-wid10 with +200 ppm, and good with +10 ppm/s clock drift, at 30 or
+  50 dB, decode on WID 7 and 10 (1-2 seeds each).
+
+### Not done
+
+- The full matrix at `c5e4eb7`, except default, was not complete when this was written.
+- WID 0 has no equaliser (no probes): still 0/10 on Poor.
+- WID 12 on Poor @30 still fails (2 seeds tried). Table D-LXIV gives no Poor requirement for
+  WID 11-12.
+- On equal paths 1.2 symbols apart at 30 dB, the 64QAM EVM is 4.5 dB worse than on one path;
+  the MMSE-DFE bound for that channel is about 3 dB (inferred from the mean of ln(1 + cos)).
+  Fractional (T/2) spacing was not tried.
+- The tap threshold, the 2.5x tie, the 0.2 end-of-signal level and the +-16 symbol window were
+  set on the cases named in the source comments, not swept.
+
+## Input formats
+
+- **WAV**: PCM 16, 24 or 32-bit, or IEEE float 32-bit; `WAVE_FORMAT_EXTENSIBLE` accepted;
+  any channel count, channel 0 used. The sample rate is read from the `fmt ` chunk.
+- **stdin**: `m110d_rx -` (or `--stdin`) reads the WAV from stdin. A data chunk whose length
+  field is 0 or 0xFFFFFFFF, or runs past the end of the input (a streamed WAV), is read to
+  EOF; the RIFF length field is ignored. The whole input is read before decoding starts. The
+  output is the same as for a file, with `file=-`.
+- **Rates**: a multiple of 2400 Hz (9600, 48000, 96000, ...) goes to the demodulator as is.
+  Any other rate from 6840 Hz up (8000, 11025, 16000, 44100, ...) is resampled to 48000 Hz
+  first. Below 6840 Hz the 110D band (180-3420 Hz) does not fit, and the file is refused.
+- **Resampler** (`src/m110d/appd_input.h`): rational polyphase FIR, L/M = 48000/fs reduced by
+  their gcd, Kaiser-windowed sinc, delay-compensated. With fmin = min(fs, 48000), the
+  passband is 0-0.4375 fmin and the stopband starts at 0.5 fmin, with at least 100 dB of
+  attenuation. `m110d_rx --resampler-report FS` measures the designed filter:
+
+  | input | L/M | taps | passband | deviation | stopband | attenuation |
+  |---|---|---|---|---|---|---|
+  | 8000 Hz | 6/1 | 625 | 0-3500 Hz | 0.0001 dB | 4000-24000 Hz | 100.3 dB |
+  | 16000 Hz | 3/1 | 313 | 0-7000 Hz | 0.0001 dB | 8000-24000 Hz | 100.4 dB |
+  | 44100 Hz | 160/147 | 16641 | 0-19294 Hz | 0.0001 dB | 22050 Hz up | 102.8 dB |
+
+  At 3420 Hz, the top of the 110D band, the 8 kHz filter loses 0.0001 dB.
+
+### 8 kHz measurement
+
+`score.py --resample 8000` resamples each clean file 48 -> 8 kHz with scipy `resample_poly`
+and a separately designed Kaiser FIR (515 taps, passband 0-3400 Hz within 0.0001 dB,
+stopband 4000 Hz up at 100.2 dB, 0.002 dB down at 3420 Hz), writes 16-bit PCM (0 samples
+clipped) and decodes that. `--stdin` pipes each WAV to `m110d_rx -` with its RIFF and data
+length fields set to 0xFFFFFFFF (`--stream-sizes ff`, the default) or 0 (`zero`).
+
+Receiver at 4e43f17, scorer at 6a7f4f2:
+
+| input | WID+interleaver | text WID 0 | text WID 1-5 | text WID 6-13 | text + EOM |
+|---|---|---|---|---|---|
+| 48 kHz file | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+| 8 kHz file | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+| 8 kHz stdin, lengths 0xFFFFFFFF | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+| 8 kHz stdin, lengths 0 | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+
+The 48 kHz table is byte-identical to the one before the input stage was added. At 8 kHz every
+WID 6-13 file keeps its 48 kHz EVM to 0.1 dB (-53.9 to -54.7 dB, 256QAM included), and every
+file keeps probe quality 1.000 and re-encode agreement 1.0000.
+
+```
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <dir>
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <dir> --stdin
+```
+
 ## Limits of what was tested
 
 - The interop test set itself is clean digital audio straight from the transmitter. Every
   file has a probe quality of 1.000 and a frequency offset estimate of 0.00 Hz (or -0.01 Hz on
   the continuous-PN files). Channel testing above measures noise, fading, multipath, frequency
   offset and clock offset on five SHORT files only.
-- Channel estimation is a single complex gain per mini-probe, linearly interpolated across
-  each data block. There is no equaliser and no symbol-timing tracking. On this set that is
-  enough for 256QAM (EVM -54 dB). Over a channel with multipath or clock offset the QAM
-  orders will need an equaliser and timing tracking first (inferred, not tested).
+- WID 1-13 are equalised (see "Equaliser"). WID 0 is not, and still fails the fading
+  channels.
+- Frequency acquisition covers +-112.5 Hz by design. Larger offsets were tried on one file at
+  30 dB only.
 - The WID 6-13 soft bits are max-log distances with no noise-variance estimate. On a clean
   set that costs nothing; its effect at low SNR was not measured.
-- Acquisition searches the whole file, offline, at every sample. It does not stream.
+- Acquisition searches the whole file, offline, on an sps/4 grid in nine frequency bins, then
+  refines to the sample. It does not stream.
+- 8 kHz input was measured on the clean set resampled from 48 kHz only. A radio audio path
+  whose passband is narrower than the 180-3420 Hz the waveform occupies was not tested.
 
 ## Open questions
 
 1. What the STD-AMB-001 transmitter sends in fixed symbol 8, where the continuous index runs
    past 255 (measured above; not chased).
+2. On a multipath channel the preamble clock fit is off by tens of ppm (measured above). With a
+   three-super-frame preamble the fit cannot tell clock error from a multipath-shifted peak.
+   The equaliser absorbs it: ITU good WID 7 went from 3/10 to 10/10, and Poor with +100 ppm
+   decodes (measured). The fit itself is unchanged.
+3. Why WID 0 needs 9 dB more than Table D-LXIV in AWGN (measured; cause not determined).
+
+## Proofs files for a report page
+
+`score.py --proofs DIR` writes `DIR/t5.json` and `channel.py --proofs DIR` writes
+`DIR/t6.json`. Each holds a title, a decoder label (`m110d_rx @<short commit>` by default,
+or `--decoder-label`), a note (`--proofs-note`) and a list of items with a name, a mode in
+plain words, a status (`pass`, `partial`, `fail`, `none`), the decoded text and a one-line
+detail. `t5.json` has one item per file of the 60-file set, with trailing zero padding
+summarised as `[+ N padding bytes]`. `t6.json` has one item per channel condition, summed
+over the files and seeds run. A text field that holds a path or host name is refused: the
+script exits 3 and writes nothing. The tables and exit status of both scripts are unchanged.
 
 ## Credits
 

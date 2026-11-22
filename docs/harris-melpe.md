@@ -123,17 +123,17 @@ deinterleaver and the Viterbi decoder.
 
 | Message | Mode | Bytes | EOM | Disagreement, EQ | Disagreement, tracked | Probe SER | m110a_rx (DFE) |
 |---|---|---|---|---|---|---|---|
-| 600_1 | 600H | 442 | yes | 0.00 % | 0.00 % | 0.93 % | same bytes, 9.6 dB |
-| 600_2 | 600H | 418 | yes | 0.00 % | 0.00 % | 1.26 % | same bytes, 9.7 dB |
-| 600_3_multiples_m1 | 600H | 314 | yes | 0.00 % | 0.00 % | 3.01 % | same bytes, 9.7 dB |
-| 600_3_multiples_m2 | 600H | 224 | yes | 0.00 % | 0.00 % | 3.04 % | same bytes, 9.6 dB |
-| 600_3_multiples_m3 | 600H | 142 | yes | 0.00 % | 0.00 % | 6.50 % | same bytes, 9.7 dB |
-| 600_3_multiples_m4 | 600H | 82 | yes | 0.00 % | 0.00 % | 3.97 % | same bytes, 9.9 dB |
-| 1200_1 | 1200H | 1156 | yes | 0.00 % | 0.00 % | 0.85 % | same bytes, 9.4 dB |
-| 1200_2 | 1200H | 740 | yes | 0.00 % | 0.00 % | 0.29 % | same bytes, 9.7 dB |
-| 1200_3 | 1200H | 760 | yes | 0.00 % | 0.00 % | 1.16 % | same bytes, 9.6 dB |
-| melp600 | 600H | 628 | yes | 0.00 % | 0.00 % | 10.70 % | same bytes, 8.3 dB |
-| melp2400 | 2400V | 1911 | yes | 0.04 % | 2.26 % | 9.64 % | 43 bytes differ, 6.8 dB, success=0 |
+| 600_1 | 600H | 442 | yes | 0.00 % | 0.00 % | 0.93 % | same bytes, 16.4 dB |
+| 600_2 | 600H | 418 | yes | 0.00 % | 0.00 % | 1.26 % | same bytes, 15.8 dB |
+| 600_3_multiples_m1 | 600H | 314 | yes | 0.00 % | 0.00 % | 3.01 % | same bytes, 16.2 dB |
+| 600_3_multiples_m2 | 600H | 224 | yes | 0.00 % | 0.00 % | 3.04 % | same bytes, 15.8 dB |
+| 600_3_multiples_m3 | 600H | 142 | yes | 0.00 % | 0.00 % | 6.50 % | same bytes, 16.3 dB |
+| 600_3_multiples_m4 | 600H | 82 | yes | 0.00 % | 0.00 % | 3.97 % | same bytes, 16.9 dB |
+| 1200_1 | 1200H | 1156 | yes | 0.00 % | 0.00 % | 0.85 % | same bytes, 15.7 dB |
+| 1200_2 | 1200H | 740 | yes | 0.00 % | 0.00 % | 0.29 % | same bytes, 16.1 dB |
+| 1200_3 | 1200H | 760 | yes | 0.00 % | 0.00 % | 1.16 % | same bytes, 15.7 dB |
+| melp600 | 600H | 628 | yes | 0.00 % | 0.00 % | 10.70 % | same bytes, 11.9 dB |
+| melp2400 | 2400V | 1911 | yes | 0.04 % | 2.26 % | 9.64 % | same bytes, 10.8 dB |
 
 The columns:
 
@@ -141,7 +141,7 @@ The columns:
 - *Probe SER* is the share of zero-valued known symbols whose 8PSK position is wrong, with
   phase tracked and no equalizer. It is an 8-ary decision, so it runs higher than the BPSK and
   QPSK data decisions.
-- *m110a_rx* is its own decode, with its `quality_db`.
+- *m110a_rx* is its own decode, with its `quality_db`. All 11 succeed (`success=1`, `eom=1`).
 
 `600 #3 multiples` holds four messages. `m110a_rx` finds each preamble, at 0.763, 7.557, 13.216
 and 17.495 s.
@@ -149,12 +149,51 @@ and 17.495 s.
 melp2400 is the weak file. Its audio passband is 703 to 2918 Hz, which cuts into the 2400-baud
 spectrum. Without an equalizer, 2.3 % of its coded bits disagree. The Viterbi decoder corrects
 them: the equalized decode (0.04 % disagreement) is byte-identical to the tracked-only one, and
-to the equalized decode at four other equalizer settings, from 9 to 21 taps. `m110a_rx`'s own
-DFE decode of it differs from all of these in 43 bytes, and scores 6.8 dB against its 7.75 dB
-2400 threshold, so it reports `success=0`. The other equalizers in `m110a_rx` (`--eq NONE`,
-`DFE_RLS`, `MLSE_*`, `TURBO`) differ from it in 21 to 218 bytes. The same receiver returns 53 of 54
-bytes on noiseless own-TX 2400S, with the last byte wrong, so the defect is in its 2400 receive
-chain and not in the 2400V mode. The melp2400 payload is the `harris_score` decode.
+to the equalized decode at four other equalizer settings, from 9 to 21 taps. `m110a_rx` decodes
+it to the same bytes. See *The 2400 receive chain* below.
+
+### The 2400 receive chain
+
+Two receiver defects made `m110a_rx` lose 2400 bps payloads. Both are fixed.
+
+- **Carrier from the preamble.** The fine AFC search scores correlation magnitude over 72-symbol
+  segments, which hardly changes within ±1 Hz. On a clean own-TX 2400S signal at 0 Hz it settled
+  at −0.50 Hz, and the data phase drifted about 100° over one 0.6 s block. All 1440 data
+  symbols were then off by at least one 8PSK position before the phase tracker. The tracker
+  recovered all but the last byte. `BrainDecoder::refine_carrier` now fits a line through the
+  phases of the 32-symbol blocks of every common segment from the frame found to the last. It
+  derotates the preamble and data symbols along that line. On the same signal: 0.00 Hz, and
+  0 of 1440 symbols wrong.
+- **Block-boundary probes.** A 110C transmitter sends D1 and D2 in the two known segments before
+  each new interleaver block [1, 5.3.2.3.7.1.2]. The Harris radio does. The receiver took every
+  known segment as zeros, so in two of every 30 (36 at 150 to 1200 bps) segments the phase
+  tracker and the DFE trained on the wrong reference. On melp2400 the tracker's frequency
+  estimate went from −3.7 to −6.7 Hz and 45 bytes came out wrong. Those two segments per block
+  are now left out of probe training and of `quality_db`, so a transmitter that sends them and
+  one that sends zeros (this modem's TX) are read the same way. With both changes, the quality of every Harris file
+  rises, by 3.6 dB (melp600) to 7.0 dB.
+
+Measured on the MS-DMT reference recordings (150S to 2400L) and this modem's own TX (150S to
+2400L, and 2400V). Each was decoded with the mode given and with AUTO, using DFE, clean and with
+white noise at noise/signal 0.5, 1.0 and 1.5 (0 to 24 kHz, three seeds): 420 decodes. Neither
+fix changes a threshold.
+
+| Mode | Exact, before | Exact, after | Exact with `success=1`, before → after | `success=1` with wrong bytes, before → after |
+|---|---|---|---|---|
+| 150S to 600L (each) | 20 / 40 | 20 / 40 | 20 → 20 | 0 → 0 |
+| 1200S | 18 / 40 | 20 / 40 | 16 → 18 | 0 → 0 |
+| 1200L | 18 / 40 | 20 / 40 | 16 → 20 | 2 → 0 |
+| 2400S | 0 / 40 | 12 / 40 | 0 → 10 | 2 → 0 |
+| 2400L | 10 / 40 | 14 / 40 | 8 → 10 | 0 → 0 |
+| 2400V | 0 / 20 | 2 / 20 | 0 → 2 | 2 → 0 |
+
+No decode returned fewer correct bytes after the change than before. MS-DMT 2400S clean went
+from 51 / 54 bytes at 6.3 dB to 54 / 54 at 11.9 dB with `success=1`. Own-TX 2400S and 2400V
+clean went from 53 / 54 (the last byte wrong) with `success=1` to 54 / 54. Own-TX with added
+noise finds no preamble in this measurement, before and after. Its leading symbols plus the 0.1 s
+noise lead-in put the preamble outside `BrainDecoder`'s 500-symbol search window; `m110a_rx`
+cuts 40 ms before each preamble, so it does not meet this. The 150 to 600 bps failures are those
+own-TX noise cases.
 
 **Bit order.** Bit *k* of the stream, in the order bits leave the K=7 Viterbi decoder (after
 descrambling and deinterleaving), is bit *k* mod 8 of byte ⌊*k* / 8⌋, LSB first. That is the
@@ -174,14 +213,13 @@ modem.
   carry, and `m110a_rx` finds three frames (`preamble_hits=3`). Under Table XII as printed it
   would be 1. NOT
   DETERMINABLE from the standard alone which one Table XII intends. The readings fit value + 4.
-- **The 2400 receive chain.** 2400S and 2400V lose the last byte of a noiseless own-TX message,
-  and decode melp2400 with 43 wrong bytes. The 2400 quality threshold (7.75 dB) was set on 2400L.
-  This needs its own receive-chain work.
 - **TX known symbols.** This modem's TX sends every known segment as zeros. 110C puts D1 and D2
-  in the two before each new interleaver block [1, 5.3.2.3.7.1.2]. The Harris radio does.
-  The receiver also treats every known segment as zeros, so its DFE trains on the wrong
-  reference in two of every 36 (or 30) segments of a Harris signal. The 600H and 1200H files
-  decode regardless.
+  in the two before each new interleaver block [1, 5.3.2.3.7.1.2]. The Harris radio does. The
+  receiver skips those two segments, so it reads either kind.
+- **Quality thresholds.** `quality_db` no longer counts the block-boundary probes, so it reads
+  higher than before wherever a transmitter sends D1 and D2 there. The thresholds were set on
+  the old figure (`api/modem_rx.cpp`, `quality_threshold_db`). They were not re-derived. On the
+  420 decodes above, no wrong payload passes them.
 - **TX end of message.** This modem's TX ends a message with four frames of zero data. It does
   not send the EOM 4B65A5B2 [1, 5.3.2.3.1] or the interleaver flush [1, 5.3.2.3.2]. So
   `eom=1` on own-TX loopback is not tested.
@@ -248,16 +286,120 @@ transmission order. Its `-b 06` output is nine 6-bit words per 2400 bps frame, t
 bit 1 upward with bit 1 as the LSB, which matches RFC 8130's numbering. `melpe_frames.py`
 holds the packing (`pack_frames`, `unpack_frames`).
 
-### Speech measure
+### Speech measures
 
-`melpe_frames.speech_measure` works on the decoded audio, in 22.5 ms hops with a 40 ms
-window. A frame is voiced when its normalised autocorrelation peaks above 0.5 at a lag for
-80-308 Hz, and the frame is within 40 dB of the loudest frames. `track` is the share of
-frames that are voiced and within about 10 % of the previous frame's pitch: speech has a
-continuing pitch contour, and a pitch drawn at random each frame does not.
+A decode counts as speech only when it passes three measures. Each one rules out one kind
+of decode that is not speech, and each one alone can be fooled by the others.
 
-Calibration: `score.py --calibrate` on 16 s of male speech (the Codec2 test samples hts1a,
-hts2a and ve9qrp_10s [6]), coded and decoded through the reference coder:
+**Voiced pitch track** (`melpe_frames.speech_measure`, `track`). This works on the decoded
+audio, in 22.5 ms hops with a 40 ms window. A frame is voiced when its normalised
+autocorrelation peaks above 0.5 at a lag for 80-308 Hz, and the frame is within 40 dB of
+the loudest frames. `track` is the share of frames that are voiced and within about 10 %
+of the previous frame's pitch.
+
+- *What it shows:* the decode is voiced audio with a pitch that carries from frame to
+  frame. Random bits, frames cut at the wrong offset and bits in the wrong order score low.
+  So it rules out random bits, and it is what finds the bit order and frame offset in the
+  search.
+- *What it does not show:* that the audio is speech. An independent review falsified that
+  reading. A coded 110 Hz buzz with vibrato scores 0.99. One coded frame repeated scores
+  0.99-1.00. Shuffled frames of real speech score up to 0.57. Real speech in heavy noise
+  scores as low as 0.02 in a vendor decode.
+
+**Time structure.** Does the loudness of the decode carry on from frame to frame in the
+frames' own order? This rules out shuffled frames.
+
+- *Boundary test* (`melpe_frames.boundary_ratio`, 1200 and 600 bps). A MELPe frame at these
+  rates holds three or four 22.5 ms sub-frames. B is the mean loudness step (dB) across
+  frame boundaries, divided by the mean step between sub-frames of one frame. It uses the
+  coder's synthesis delay, measured once per rate on shuffled speech. In speech decoded in
+  order a boundary is like any other step, and B is near 1. Shuffled frames jump at the
+  boundaries, so B is 2 or more.
+- *Shuffled-order test* (`score.order_test`, 2400 bps). A 2400 bps frame holds only two
+  gains, and the decoder smooths across its boundaries, so B separates nothing there.
+  Instead: the lag-1 autocorrelation r1 of the decode's energy per frame
+  (`energy_contour`), against the same frames decoded in 32 shuffled orders. The margin is
+  r1 minus the shuffles' mean.
+- *What it shows:* the loudness has the frame-to-frame order of a real signal.
+- *What it does not show:* pitch, spectrum or meaning. Random bits pass the boundary test
+  at 1200 bps (B from 1.32), and inverted 2400 bps bits pass the order test. Both fail the
+  pitch track.
+
+**Energy depth** (`energy_contour`): the standard deviation of the energy per frame, in
+dB. This rules out a steady buzz and one frame repeated, which barely change in loudness.
+It does not show speech either: random bits are deep.
+
+None of the three shows that the words can be understood. Only listening shows that.
+
+#### Calibration ladder
+
+Real coded speech, on one side:
+
+- 16 s of male English from the Codec2 test samples (hts1a, hts2a, ve9qrp_10s [6]), whole
+  and in 5 s parts;
+- 16 recordings from a private, unlicensed vendor sample set. It is not filed in this repo
+  and is used for private testing only. The 16 are 12 clean (English, French, Chinese and
+  an NSA test vector, male and female) and 4 in noise (car, white, wideband and street
+  noise, at about 0 to -4 dB). Each was coded through the reference coder at each rate,
+  whole and in its first 5 s;
+- the vendor's own MELP 2400, MELPe 2400 and MELPe 1200 decodes of 12 of those
+  recordings, measured on their audio.
+
+On the other side: shuffled frames of every coded recording; random bits (10 seeds, 5 s);
+the coded buzz; one coded frame repeated. Ranges below are min..max.
+
+| Rate | Measure | Coded speech, clean | Coded speech, noisy | Vendor decodes, clean / noisy | Shuffled | Random bits | Buzz / repeated | Limit |
+|---|---|---|---|---|---|---|---|---|
+| 2400 | track | 0.154..0.670 | 0.104..0.274 | 0.251..0.698 / 0.023..0.170 | 0.006..0.329 | 0.032..0.095 | 0.99 / 0.99 | >= 0.10 |
+| 2400 | order margin | +0.196..+0.427 | +0.140..+0.371 | +0.252..+0.430 / +0.246..+0.330 | -0.032..+0.043 (Codec2 speech: up to +0.134) | -0.040..+0.053 | -0.33 / 0.00 | >= 0.137 |
+| 1200 | track | 0.222..0.694 | 0.123..0.307 | 0.346..0.621 / 0.034..0.198 | 0.067..0.518 | 0.036..0.095 (Codec2 run: 0.100) | 0.99 / 1.00 | >= 0.11 |
+| 1200 | B | 0.889..1.421 | 0.819..1.426 | 1.089..1.353 / 0.726..1.582 | 2.170..3.646 | 1.323..2.015 | 1.56 / 0.64 | <= 1.85 |
+| 600 | track | 0.256..0.662 | 0.112..0.300 | - | 0.116..0.574 | 0.078..0.137 | 0.99 / 0.99 | >= 0.14 |
+| 600 | B | 0.975..1.584 | 0.970..1.707 | - | 2.288..3.669 | 1.602..2.577 | 1.68 / 2.97 | <= 2.0 |
+| all | depth, dB | 7.6..18.2 | 5.65..11.6 | 5.9..17.0 / 1.6..5.8 | 4.9..13.6 | 8.3..16.1 | 0.4..2.3 / 0.1..4.0 | >= 4.8 |
+
+Each limit sits at the midpoint of the gap between real coded speech and the one class
+the measure rules out: track against random bits, B or the order margin against shuffled
+frames, depth against the buzz and the repeated frame. No limit was set from the Harris
+files. Where the gaps are:
+
+- **2400 bps order margin: no usable gap.** Real speech in noise reads +0.140, and one
+  shuffle of Codec2 speech reached +0.134. B at 2400 bps does no better: real speech
+  reaches 1.25, and shuffled frames of noisy speech go as low as 1.22.
+- **Track against random bits: thin.** 0.095 against 0.104 at 2400 bps, and 0.100 against
+  0.123 at 1200 bps. At 600 bps the two overlap: random bits reach 0.137, and noisy speech
+  falls to 0.112, so the 600 bps limit fails real speech in noise.
+- **B against shuffled frames: wide.** At 1200 bps real speech reaches at most 1.58 (a
+  vendor decode in wideband noise; 1.43 through our coder), and shuffled frames at least
+  2.17. At 600 bps, 1.71 against 2.29.
+- **Depth: wide for our coder, not for heavy noise.** Coded speech reaches down to
+  5.65 dB, and the buzz and repeated frame at most 4.0. But the vendor's decodes of speech
+  in heavy noise read 1.6-5.8 dB, because the noise fills the pauses.
+
+So these measures can show speech that is clean or in moderate noise. They cannot show
+speech in heavy noise: vendor decodes of it fail the track and the depth, and through our
+coder it sits on the edge of both.
+
+Tried and dropped, by measurement:
+
+- a syllable-rate (2-8 Hz) modulation share of the energy contour: shuffled coded speech
+  scored as high as speech in order, because shuffling whole 67.5 or 90 ms frames leaves
+  power at 2-8 Hz;
+- the shuffled-order test at 1200 and 600 bps: at 55-74 frames, random bits beat their
+  own shuffles by up to +0.21 and shuffled speech by up to +0.29, while one 5 s part of
+  coded speech managed only +0.14.
+
+**Self-checks.** `score.py --calibrate <speech>` runs 54 cases at the three rates through
+the reference coder: coded speech whole and in parts, cut late, reversed, inverted,
+shuffled, random bits, the buzz, a repeated frame, all-zero bits. It exits non-zero if any
+is classified wrongly. `score.py --anchor ORIG REF` checks the coder path. In the vendor
+set, one recording in white noise, coded and decoded at 2400 bps with the noise
+preprocessor on, reproduces the vendor's own decode of it sample for sample (32040 of
+32040). `ctest -L fast` checks the same logic on audio stand-ins that need no coder or
+private data.
+
+Calibration of the pitch track on the Codec2 speech alone, from the first pass. It is kept
+because it is what the alignment search relies on:
 
 | Case | 2400 bps | 1200 bps | 600 bps |
 |---|---|---|---|
@@ -288,13 +430,16 @@ So the scorer:
 
 - takes the rate from the receiver mode in the modem stage's sidecar (600H 600 bps,
   1200H 1200 bps, 2400V 2400 bps), or from the file's slug without one;
-- checks the frame period first (below) and does not decode a mode whose bits do not
-  repeat at the rate's STANAG 4591 frame size;
+- removes the 54-bit header and the 108-bit trailer when a stream opens with the header
+  (Results, below);
+- checks the frame period (below) and does not decode a mode whose bits do not repeat at
+  the rate's STANAG 4591 frame size;
 - with `--search` tries both payload byte orders and every frame offset, and at 600 bps
   both coder packings (measured MSB-first, and RFC 8130's LSB-first); the sync bit fixes
   the offset at 2400 and 1200 bps when it alternates in at least 90 % of frames.
   `--search-all` adds every rate, frame reversal and inversion;
-- passes a message when `track` >= 0.25 and beats every other choice it tried by 0.05.
+- calls a message speech when all three measures pass. Where no sync bit fixes the
+  alignment (600 bps), the track must also beat every other choice tried by 0.05.
 
 ### Frame period
 
@@ -336,58 +481,80 @@ output), which needs no MELPe coder.
 
 `score.py --rx ... --score ... --search` over the eight recordings. The modem stage's
 payloads are byte-identical to those of the modem scorer on feat/harris-mode, all 11.
+Frames are cut from the bits between the 54-bit header and the 108-bit trailer (below).
 
-| Message | Mode | Bytes | MELPe frames | Frame start | Sync bit alternates | track | Next best | Result |
+| Message | Mode | Bytes | MELPe frames | Sync bit alternates | track (next best) | Time test | Depth | Result |
 |---|---|---|---|---|---|---|---|---|
 | 600_1 | 600H | 442 | not STANAG 4591 | - | - | - | - | not decoded |
 | 600_2 | 600H | 418 | not STANAG 4591 | - | - | - | - | not decoded |
 | 600_3_multiples_m1 to m4 | 600H | 314, 224, 142, 82 | not STANAG 4591 | - | - | - | - | not decoded |
-| 1200_1 | 1200H | 1156 | 113 × 81 bits | bit 54 | 100 % | 0.325 | 0.115 | speech |
-| 1200_2 | 1200H | 740 | 72 × 81 bits | bit 54 | 99 % | 0.386 | 0.130 | speech |
-| 1200_3 | 1200H | 760 | 74 × 81 bits | bit 54 | 99 % | 0.172 | 0.131 | frames found, measure low |
+| 1200_1 | 1200H | 1156 | 112 × 81 bits | 100 % | 0.328 (0.117) | B 1.09 | 18.3 dB | speech: all three pass |
+| 1200_2 | 1200H | 740 | 71 × 81 bits | 100 % | 0.392 (0.115) | B 1.01 | 18.3 dB | speech: all three pass |
+| 1200_3 | 1200H | 760 | 73 × 81 bits | 100 % | 0.174 (0.130) | B 1.37 | 19.2 dB | speech: all three pass |
 | melp600 | 600H | 628 | not STANAG 4591 | - | - | - | - | not decoded |
-| melp2400 | 2400V | 1911 | 283 × 54 bits | bit 6 + 54k | 100 % | 0.121 | 0.107 | frames found, measure low |
+| melp2400 | 2400V | 1911 | 280 × 54 bits | 100 % | 0.115 (0.090) | order +0.126 | 16.3 dB | frames found; time test fails |
+
+Limits (Calibration ladder, above): track 0.11 at 1200 bps and 0.10 at 2400 bps; B 1.85 at
+1200 bps; order margin 0.137 at 2400 bps; depth 4.8 dB. Where each Harris reading sits on
+the ladder:
+
+- **1200_1, 1200_2:** inside real coded speech on every measure.
+- **1200_3:** track 0.174 lies above random bits (at most 0.100) and inside real speech
+  (0.123 upward). B 1.37 lies inside real speech (up to 1.43 through our coder, 1.58 in a
+  vendor decode) and well under shuffled frames (2.17 upward).
+- **melp2400:** track 0.115 sits in the thin gap between random bits (at most 0.095) and
+  real speech in noise (0.104 upward). The order margin +0.126 lies above random bits and
+  shuffled frames on the vendor ladder (at most +0.053) but below real coded speech
+  (+0.140 upward). One shuffle of Codec2 speech reached +0.134. So it fails.
 
 Bit order: at 2400 and 1200 bps the frames read with stream bit k as frame bit k+1 (the
 payload's LSB-first bytes, bit 1 first [4, s5.5.3]), packed for the coder as RFC 8130 [5].
-The sync bit then alternates in 99-100 % of frames; random bits reach at most 0.59.
+The sync bit then alternates in 100 % of frames; random bits reach at most 0.59.
 
-**A common 54-bit header.** All 11 streams, in all three modes, begin with the same 54
-bits: `011111011010100110011010100100000100111110000011110010` (stream order). They differ
-from bit 54 on. The 1200 bps frames start right after it, at bit 54, in all three 1200
-files. The melp2400 frames fill the stream exactly: 15288 bits = 6 + 283 × 54, so its
-frame grid passes bit 60. That the header is the STANAG 4591 Annex O frame
-synchronization sequence [4, Annex O] is an inference: Annex O is not in the edition at
-hand.
+**A common 54-bit header and a trailer.** All 11 streams, in all three modes, begin with
+the same 54 bits: `011111011010100110011010100100000100111110000011110010` (stream order).
+They differ from bit 54 on. The 1200 bps frames start right after it. That the header is
+the STANAG 4591 Annex O frame synchronization sequence [4, Annex O] is an inference:
+Annex O is not in the edition at hand. The 600 bps format worker (feat/harris-600v,
+`docs/harris-600-format.md`, not yet reviewed) measured that every stream also ends in a
+108-bit trailer on a vocoder-unit boundary: a repeated 54-bit word in the 600 and 1200
+files, and 108 ones in melp600 and melp2400. The scorer drops both before cutting frames,
+and before the frame-period check. After the cut, the melp2400 grid is at offset 6 of the
+remaining bits, as before.
 
-**600H is not STANAG 4591 600 bps MELPe.** Frame period, pooled over each mode's messages:
+**600H is not STANAG 4591 600 bps MELPe.** Frame period of the bits between header and
+trailer, pooled over each mode's messages:
 
 | Mode | Strongest period | z | z at the STANAG frame size |
 |---|---|---|---|
-| 1200H | 81 bits | 42.4 | 42.4 (81) |
-| 2400V | 54 bits | 109.2 | 109.2 (54) |
-| 600H | 60 bits | 14.9 | 0.4 (54) |
+| 1200H | 81 bits | 41.6 | 41.6 (81) |
+| 2400V | 54 bits | 110.8 | 110.8 (54) |
+| 600H | 60 bits | 16.6 | 0.5 (54) |
 
 The 600H payloads repeat every 60 bits, with a 20-bit sub-period, and show no structure at
 the 54 bits of a STANAG 4591 600 bps frame. 60 bits is 100 ms at 600 bps: the block of
 Harris's own 600 bps MELP vocoder, four 25 ms frames coded together in 60 bits [7]. That
-the RT-1694D's 600 bps voice is that vocoder is an inference from the period; [7] does not
-give its bit layout or codebooks, and the reference coder here cannot decode it. Before
-this check, a search of every frame offset, both byte orders and both coder packings
-found no 600H choice that stood out: in six of the seven 600H messages the best and
-second-best readings were within 0.04 of each other, at scattered offsets, byte orders and
-packings. The seventh, the 12-frame fourth message of 600 #3, read 0.362 against 0.298:
-too short to mean anything.
+the RT-1694D's 600 bps voice is that vocoder is an inference from the period. An
+independent adversarial review could not falsify that the 60-bit period comes from the
+vocoder and not from the modem. Over 20 seeds, random streams of the same lengths reach
+z 1.9-3.4 at their strongest period, and the 1200H streams, through the same modem chain,
+give z 1.4 at 60. [7] does not give its bit layout or codebooks, and the reference coder
+here cannot decode it. Before this check, a search of every frame offset, both byte orders
+and both coder packings found no 600H choice that stood out. In six of the seven 600H
+messages, the best and second-best readings were within 0.04 of each other, at scattered
+offsets, byte orders and packings. The seventh, the 12-frame fourth message of 600 #3, read
+0.362 against 0.298: too short to mean anything.
 
-**melp2400 and 1200_3.** Their frames are certain (the sync bit alternates in 99-100 % of
-283 and 74 frames), but the audio measure reads below 0.25. The melp2400 parameters are
-speech-like: with RFC 8130 Table 1 positions, adjacent frames carry pitch codes within 2
-of each other in 32 % of frames (coded calibration speech 45 %, random bits 7 %; the same
-stream cut 27 bits late 10 %). Pauses do not explain the low reading: melp2400 is active
-(within 20 dB of its loudest frames) in 66 % of frames, and its track over active frames
-is 0.18, against about 0.55 for 1200_1 and 1200_2. NOT DETERMINABLE here whether the
-cause is the speech itself or the recording; listening to the decoded audio would answer
-it.
+**melp2400.** Its frames are certain (the sync bit alternates in 100 % of 280 frames). It
+passes the pitch track narrowly and the depth easily, but fails the time-structure test,
+so there is no evidence here that the decode is speech. On the uncut stream its parameters
+looked speech-like: with RFC 8130 Table 1 positions, adjacent frames carried pitch codes
+within 2 of each other in 32 % of frames (coded calibration speech 45 %, random bits 7 %;
+the same stream cut 27 bits late 10 %). Pauses do not explain the low pitch track. melp2400
+is active (within 20 dB of its loudest frames) in 66 % of frames, and its track over active
+frames is 0.18, against about 0.55 for 1200_1 and 1200_2. Whether melp2400 uses the
+standard 2400 bps layout at all is under separate review. NOT DETERMINABLE here; listening
+to the decoded audio would add evidence.
 
 ## References
 

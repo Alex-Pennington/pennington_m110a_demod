@@ -6,11 +6,9 @@
  * @brief TX/RX loopback for the D1/D2 codes added after the Harris recordings.
  *
  * Table XI codes (MIL-STD-188-110C/D):
- *   - 2400 digital voice, D1,D2 = 7,7: own TX -> Mode::AUTO must report 2400V.
- *     The payload is printed, not required: 2400V shares 2400S's waveform, and
- *     this receiver does not decode 2400S own TX exactly either (the last byte
- *     comes back wrong on a noiseless signal; test_mode_detect checks 2400S for
- *     mode only for the same reason)
+ *   - 2400 digital voice, D1,D2 = 7,7: own TX -> Mode::AUTO must report 2400V
+ *     and return the exact payload; so must 2400S given explicitly (2400V is
+ *     2400S's waveform)
  *   - 75 bps short 7,5 and long 5,5: own TX preamble (the 75 bps data path is not
  *     implemented) -> Mode::AUTO must read the D1/D2 and report 75S / 75L
  * Harris application-specific codes (Table XI reserves 5,6 and 5,7 and does not
@@ -93,7 +91,8 @@ static void preamble_only(Mode m, int d1, int d2) {
 }
 
 int main() {
-    loopback(Mode::M2400_VOICE, 7, 7, false);
+    loopback(Mode::M2400_VOICE, 7, 7);
+    loopback(Mode::M2400_SHORT, 6, 4);
     loopback(Mode::M600_HARRIS, 5, 7);
     loopback(Mode::M1200_HARRIS, 5, 6);
     loopback(Mode::M600_SHORT, 6, 6);
