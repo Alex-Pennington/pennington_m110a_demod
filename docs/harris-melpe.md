@@ -248,13 +248,50 @@ transmission order. Its `-b 06` output is nine 6-bit words per 2400 bps frame, t
 bit 1 upward with bit 1 as the LSB, which matches RFC 8130's numbering. `melpe_frames.py`
 holds the packing (`pack_frames`, `unpack_frames`).
 
-### Speech measure
+### Speech measures
 
-`melpe_frames.speech_measure` works on the decoded audio, in 22.5 ms hops with a 40 ms
-window. A frame is voiced when its normalised autocorrelation peaks above 0.5 at a lag for
-80-308 Hz, and the frame is within 40 dB of the loudest frames. `track` is the share of
-frames that are voiced and within about 10 % of the previous frame's pitch: speech has a
-continuing pitch contour, and a pitch drawn at random each frame does not.
+A decode counts as speech only when it passes two measures. Each one alone can be fooled.
+
+**Voiced pitch track** (`melpe_frames.speech_measure`, `track`). This works on the decoded
+audio, in 22.5 ms hops with a 40 ms window. A frame is voiced when its normalised
+autocorrelation peaks above 0.5 at a lag for 80-308 Hz, and the frame is within 40 dB of
+the loudest frames. `track` is the share of frames that are voiced and within about 10 %
+of the previous frame's pitch.
+
+- *What it shows:* the decode is steady voiced audio from frame to frame. Frames cut at
+  the wrong offset, bits in the wrong order and random bits all score low (table below).
+  So it is what finds the bit order and the frame offset.
+- *What it does not show:* that the audio is speech. An independent review falsified that
+  reading. A coded 110 Hz buzz with vibrato scores 0.98-0.99, and one coded frame repeated
+  0.997. Shuffling the frames of a real 1200 bps decode left it passing (0.321 and 0.312
+  for 1200_2, against 0.386 in order).
+
+**Time structure.** This asks whether the loudness of the decode carries on from frame to
+frame in the frames' own order, and whether it changes at all.
+
+- *Boundary test* (`melpe_frames.boundary_ratio`, 1200 and 600 bps). A MELPe frame at these
+  rates holds three or four 22.5 ms sub-frames. B is the mean loudness step (dB) across
+  frame boundaries divided by the mean step between sub-frames of one frame. It uses the
+  coder's synthesis delay, measured once per rate on shuffled speech. In speech decoded in
+  order, a boundary is like any other step and B is about 1. Out-of-order frames and
+  random bits jump at the boundaries, so B is well above 1. Pass: B <= 1.33.
+- *Shuffled-order test* (`score.order_test`, 2400 bps). A 2400 bps frame holds only two
+  gains, and the decoder smooths across its boundaries, so B does not separate random bits
+  there. Instead: the lag-1 autocorrelation of the energy per frame (`energy_contour`, r1)
+  of the decode, against the same frames decoded in 32 shuffled orders. Pass: r1 beats the
+  shuffles' mean by 0.20 or more.
+- *Energy depth*, every rate: the standard deviation of the energy per frame. Pass:
+  5 dB or more. This is what fails a buzz and a repeated frame at any rate.
+- *What it shows:* the decode's loudness has the frame-to-frame order of a real signal
+  that rises and falls. A buzz, a repeated frame, shuffled frames and random bits fail it.
+- *What it does not show:* the pitch, the spectrum, or that anyone could understand the
+  words. Inverted 2400 bps bits pass it, because inverting every gain index keeps their
+  continuity. They fail the pitch track. Only listening shows that the words are
+  intelligible.
+
+Calibration of the pitch track alone. `score.py --calibrate` on 16 s of male speech (the
+Codec2 test samples hts1a, hts2a and ve9qrp_10s [6]), coded and decoded through the
+reference coder:
 
 Calibration: `score.py --calibrate` on 16 s of male speech (the Codec2 test samples hts1a,
 hts2a and ve9qrp_10s [6]), coded and decoded through the reference coder:
@@ -272,6 +309,36 @@ hts2a and ve9qrp_10s [6]), coded and decoded through the reference coder:
 
 The share of voiced frames alone does not separate speech from random bits (about 0.45
 against 0.3), so the scorer uses `track`.
+
+Calibration of the time structure, on the same speech coded at each rate, whole (16 s)
+and in 5 s parts (about the length of a Harris message):
+
+| Case | 2400 bps: order margin, depth | 1200 bps: B, depth | 600 bps: B, depth |
+|---|---|---|---|
+| coded speech, whole and 5 s parts | +0.28 to +0.38, 12-17 dB | 0.82-1.30, 10-17 dB | 1.01-1.17, 9-17 dB |
+| random bits, 10 seeds (5 s) | -0.09 to +0.08 | 1.37-2.17 | 1.47-2.50 |
+| shuffled coded speech | -0.03 to +0.13 | 2.37-3.07 | 2.41-3.20 |
+| shuffled Harris frames | -0.09 to +0.02 (melp2400) | 2.01-2.97 (1200 files) | - |
+| coded 110 Hz buzz with vibrato | -0.33, 2.3 dB | 1.56, 1.7 dB | 1.68, 0.4 dB |
+| one coded frame repeated | 0.00, 3.7 dB | 2.01, 0.2 dB | 1.86, 0.2 dB |
+| speech cut 17 bits late, reversed | +0.04 to +0.12 | 1.49-1.65 | 2.03-2.13 |
+| speech bits inverted | +0.31 (fails the track) | 1.35 | 2.22 |
+
+The limits sit in the gaps: B 1.33 (speech at most 1.30, everything else at least 1.35),
+order margin 0.20 (speech at least 0.28, everything else at most 0.13 apart from the
+inverted bits), depth 5 dB (speech at least 8.8 dB, buzz and repeated frame at most
+3.7 dB). The 1200 bps gap is narrow: one 5 s part of speech reads 1.30, and inverted bits
+1.35. A shuffled-order test was tried at 1200 and 600 bps and dropped. At 55-74 frames,
+random bits beat their own shuffles by up to +0.21 and shuffled speech by up to +0.29,
+while one 5 s part of coded speech managed only +0.14. A syllable-rate (2-8 Hz)
+modulation share of the energy contour was tried first and dropped too: shuffled coded
+speech scored as high as speech in order, because shuffling whole 67.5 or 90 ms frames
+leaves energy contour power at 2-8 Hz.
+
+`score.py --calibrate` runs all of these cases (54 at the three rates) as a self-check
+through the reference coder, and exits non-zero if any is classified wrongly. All 54 come
+out as expected. `ctest -L fast` checks the same logic on audio stand-ins that need no
+coder.
 
 A search over many decoding choices raises the best wrong reading. On coded speech
 written as a payload with a lead of 23 bits (600 bps) or 11 bits (2400 bps), searching
@@ -294,7 +361,10 @@ So the scorer:
   both coder packings (measured MSB-first, and RFC 8130's LSB-first); the sync bit fixes
   the offset at 2400 and 1200 bps when it alternates in at least 90 % of frames.
   `--search-all` adds every rate, frame reversal and inversion;
-- passes a message when `track` >= 0.25 and beats every other choice it tried by 0.05.
+- calls a message speech when `track` >= 0.25 and beats every other choice it tried by
+  0.05, *and* the time-structure test passes (below). A message that passes the first and
+  not the second has frames in the right place, but no evidence here that they carry
+  speech.
 
 ### Frame period
 
@@ -337,16 +407,22 @@ output), which needs no MELPe coder.
 `score.py --rx ... --score ... --search` over the eight recordings. The modem stage's
 payloads are byte-identical to those of the modem scorer on feat/harris-mode, all 11.
 
-| Message | Mode | Bytes | MELPe frames | Frame start | Sync bit alternates | track | Next best | Result |
+| Message | Mode | Bytes | MELPe frames | Frame start | Sync bit alternates | track (next best) | Time test, depth | Result |
 |---|---|---|---|---|---|---|---|---|
 | 600_1 | 600H | 442 | not STANAG 4591 | - | - | - | - | not decoded |
 | 600_2 | 600H | 418 | not STANAG 4591 | - | - | - | - | not decoded |
 | 600_3_multiples_m1 to m4 | 600H | 314, 224, 142, 82 | not STANAG 4591 | - | - | - | - | not decoded |
-| 1200_1 | 1200H | 1156 | 113 × 81 bits | bit 54 | 100 % | 0.325 | 0.115 | speech |
-| 1200_2 | 1200H | 740 | 72 × 81 bits | bit 54 | 99 % | 0.386 | 0.130 | speech |
-| 1200_3 | 1200H | 760 | 74 × 81 bits | bit 54 | 99 % | 0.172 | 0.131 | frames found, measure low |
+| 1200_1 | 1200H | 1156 | 113 × 81 bits | bit 54 | 100 % | 0.325 (0.115) | B 1.09, 18.4 dB | speech: both pass |
+| 1200_2 | 1200H | 740 | 72 × 81 bits | bit 54 | 99 % | 0.386 (0.130) | B 1.01, 18.6 dB | speech: both pass |
+| 1200_3 | 1200H | 760 | 74 × 81 bits | bit 54 | 99 % | 0.172 (0.131) | B 1.37, 19.4 dB | frames found; both fail |
 | melp600 | 600H | 628 | not STANAG 4591 | - | - | - | - | not decoded |
-| melp2400 | 2400V | 1911 | 283 × 54 bits | bit 6 + 54k | 100 % | 0.121 | 0.107 | frames found, measure low |
+| melp2400 | 2400V | 1911 | 283 × 54 bits | bit 6 + 54k | 100 % | 0.121 (0.107) | order +0.152, 15.6 dB | frames found; both fail |
+
+Limits: track 0.25 and 0.05 over the next choice; B 1.33 (1200, 600 bps) or order margin
+0.20 (2400 bps); depth 5 dB. 1200_3 misses B by 0.04 and sits just above the lowest
+non-speech reading of the calibration (1.35). melp2400 beats its shuffles by +0.152,
+which is more than random bits or shuffled speech did (at most +0.13) and less than coded
+speech did (at least +0.28).
 
 Bit order: at 2400 and 1200 bps the frames read with stream bit k as frame bit k+1 (the
 payload's LSB-first bytes, bit 1 first [4, s5.5.3]), packed for the coder as RFC 8130 [5].
@@ -371,7 +447,11 @@ hand.
 The 600H payloads repeat every 60 bits, with a 20-bit sub-period, and show no structure at
 the 54 bits of a STANAG 4591 600 bps frame. 60 bits is 100 ms at 600 bps: the block of
 Harris's own 600 bps MELP vocoder, four 25 ms frames coded together in 60 bits [7]. That
-the RT-1694D's 600 bps voice is that vocoder is an inference from the period; [7] does not
+the RT-1694D's 600 bps voice is that vocoder is an inference from the period. An
+independent adversarial review could not falsify that the 60-bit period comes from the
+vocoder and not from the modem: over 20 seeds, random streams of the same lengths reach
+z 1.9-3.4 at their strongest period, and the 1200H streams, through the same modem chain,
+give z 1.4 at 60. [7] does not
 give its bit layout or codebooks, and the reference coder here cannot decode it. Before
 this check, a search of every frame offset, both byte orders and both coder packings
 found no 600H choice that stood out: in six of the seven 600H messages the best and
@@ -380,7 +460,10 @@ packings. The seventh, the 12-frame fourth message of 600 #3, read 0.362 against
 too short to mean anything.
 
 **melp2400 and 1200_3.** Their frames are certain (the sync bit alternates in 99-100 % of
-283 and 74 frames), but the audio measure reads below 0.25. The melp2400 parameters are
+283 and 74 frames), but both speech measures fail: the pitch track reads below 0.25, and
+the time-structure test falls short (B 1.37 for 1200_3, order margin +0.152 for
+melp2400). So there is no evidence here that these two decodes are speech, though the
+frames are in the right place. The melp2400 parameters are
 speech-like: with RFC 8130 Table 1 positions, adjacent frames carry pitch codes within 2
 of each other in 32 % of frames (coded calibration speech 45 %, random bits 7 %; the same
 stream cut 27 bits late 10 %). Pauses do not explain the low reading: melp2400 is active

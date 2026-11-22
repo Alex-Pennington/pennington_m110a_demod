@@ -237,6 +237,101 @@ def speech_measure(x):
     }
 
 
+MOD_HOP = 80            # 10 ms energy frames
+MOD_BAND = (2.0, 8.0)   # syllable-rate modulation, Hz
+MOD_SPAN = (0.5, 25.0)  # modulation range the share is taken over, Hz
+
+
+def modulation(x):
+    """Share of the log-energy contour's modulation power at syllable rate.
+
+    The audio's energy in 10 ms frames, in dB (floored 50 dB under the loudest), has its
+    mean removed, is Hann-windowed and transformed. Returns the power at 2-8 Hz as a share
+    of the power at 0.5-25 Hz. Speech, whose loudness rises and falls with its syllables,
+    puts much of it at 2-8 Hz; a steady buzz has little modulation at all, and frames in
+    random order spread it toward the frame rate. NaN for under 1 s of audio."""
+    x = np.asarray(x, dtype=np.float64)
+    n = len(x) // MOD_HOP
+    if n * MOD_HOP < FS:
+        return float("nan")
+    e = (x[: n * MOD_HOP].reshape(n, MOD_HOP) ** 2).mean(axis=1)
+    db = 10 * np.log10(np.maximum(e, 1e-3))
+    db = np.maximum(db, db.max() - 50)
+    v = (db - db.mean()) * np.hanning(n)
+    p = np.abs(np.fft.rfft(v)) ** 2
+    f = np.fft.rfftfreq(n, MOD_HOP / FS)
+    span = (f >= MOD_SPAN[0]) & (f <= MOD_SPAN[1])
+    band = (f >= MOD_BAND[0]) & (f <= MOD_BAND[1])
+    tot = p[span].sum()
+    return float(p[band].sum() / tot) if tot > 0 else 0.0
+
+
+def energy_contour(x, rate):
+    """Decoded audio's energy per MELPe frame of the rate, in dB, floored 50 dB under the
+    loudest frame. Returns (r1, depth): the lag-1 autocorrelation of the contour, and its
+    standard deviation in dB.
+
+    r1 shows that each frame's loudness carries on from the frame before. depth shows that
+    loudness changes at all. NaN for under 8 frames; r1 is 0 when depth is 0."""
+    x = np.asarray(x, dtype=np.float64)
+    n_s = frame_samples(rate)
+    n = len(x) // n_s
+    if n < 8:
+        return float("nan"), float("nan")
+    e = (x[: n * n_s].reshape(n, n_s) ** 2).mean(axis=1)
+    db = 10 * np.log10(np.maximum(e, 1e-3))
+    db = np.maximum(db, db.max() - 50)
+    v = db - db.mean()
+    depth = float(v.std())
+    den = float((v * v).sum())
+    r1 = float((v[1:] * v[:-1]).sum() / den) if den > 0 else 0.0
+    return r1, depth
+
+
+# Sub-frames per MELPe frame (2400: two gains per frame; 1200: three 22.5 ms frames;
+# 600: four), and the reference coder's synthesis delay in samples: where a frame boundary
+# falls in the decoded audio. The delay was measured as the phase at which boundary steps
+# stand out most in shuffled coded speech.
+SUBFRAMES = {2400: 2, 1200: 3, 600: 4}
+DECODER_PHASE = {2400: 140, 1200: 105, 600: 100}
+
+
+def boundary_ratio(x, rate, phase=None):
+    """Loudness steps across MELPe frame boundaries against steps inside frames.
+
+    The decoded audio's energy in sub-frame blocks, in dB (floored 50 dB under the
+    loudest), from the decoder's phase. B = mean |dB step| across frame boundaries / mean
+    |dB step| between sub-frames of one frame. In speech decoded in its own order the
+    loudness at a boundary carries on as it does inside a frame (B about 1); when frames
+    are out of order or their bits are random, it jumps at the boundaries (B well above
+    1). NaN under 8 frames."""
+    phase = DECODER_PHASE[rate] if phase is None else phase
+    k = SUBFRAMES[rate]
+    sub = frame_samples(rate) // k
+    x = np.asarray(x, dtype=np.float64)[phase:]
+    n = len(x) // sub
+    if n < 8 * k:
+        return float("nan")
+    e = (x[: n * sub].reshape(n, sub) ** 2).mean(axis=1)
+    db = 10 * np.log10(np.maximum(e, 1e-3))
+    db = np.maximum(db, db.max() - 50)
+    st = np.abs(np.diff(db))
+    at = np.arange(1, n) % k == 0
+    w = st[~at].mean()
+    return float(st[at].mean() / w) if w > 0 else float("inf")
+
+
+def shuffled_frames(frames, rate, seed):
+    """The frames in a random order, with the sync bit (2400, 1200) set to alternate again
+    so the shuffle changes only the order of the frames' content."""
+    rng = np.random.default_rng(seed)
+    f = np.asarray(frames)[rng.permutation(len(frames))].copy()
+    i = sync_index(rate)
+    if i is not None and len(f):
+        f[:, i] = (np.arange(len(f)) + frames[0, i]) % 2
+    return f
+
+
 # ---- WAV / raw I/O -----------------------------------------------------------------
 
 def read_raw(path):

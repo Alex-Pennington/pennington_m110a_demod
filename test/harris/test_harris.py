@@ -114,7 +114,7 @@ def test_period():
     check(zb < 6, f"a global imbalance alone shows no period (best z {zb:.1f})")
 
 
-def buzz(f0_per_hop, seconds, seed=0):
+def buzz(f0_per_hop, seconds, seed=0, envelope=True):
     """Pulse train through a two-pole resonance, pitch per 22.5 ms hop, syllable envelope."""
     rng = np.random.default_rng(seed)
     n = int(seconds * mf.FS)
@@ -125,9 +125,71 @@ def buzz(f0_per_hop, seconds, seed=0):
     a1, a2 = 2 * 0.95 * np.cos(2 * np.pi * 700 / mf.FS), -0.95 ** 2
     for i in range(n):
         y[i] = pulses[i] + a1 * (y[i - 1] if i else 0) + a2 * (y[i - 2] if i > 1 else 0)
-    env = 0.55 + 0.45 * np.sin(2 * np.pi * 3 * np.arange(n) / mf.FS)
+    env = 0.55 + 0.45 * np.sin(2 * np.pi * 3 * np.arange(n) / mf.FS) if envelope else 1.0
     y = y * env + 0.01 * rng.standard_normal(n)
     return (8000 * y / np.max(np.abs(y))).astype(np.int16)
+
+
+def chunks(x, n):
+    k = len(x) // n
+    return [x[i * n:(i + 1) * n] for i in range(k)]
+
+
+def order_margin(x, chunk, rate, n_shuf=12):
+    """Audio-level order test: energy-contour r1 of x against its chunks shuffled.
+    Returns (r1, depth, margin over the mean of the shuffles)."""
+    import score
+    cs = chunks(x, chunk)
+    r1, depth = mf.energy_contour(np.concatenate(cs), rate)
+    rng = np.random.default_rng(3)
+    sh = [mf.energy_contour(np.concatenate([cs[i] for i in rng.permutation(len(cs))]), rate)[0]
+          for _ in range(n_shuf)]
+    return r1, depth, r1 - float(np.mean(sh)), score
+
+
+def test_time_structure():
+    rate, chunk = 1200, 540  # a 1200 bit/s frame
+    secs = 6
+    hops = int(secs * mf.FS / mf.HOP) + 2
+    t = np.arange(hops) * mf.HOP / mf.FS
+    x = buzz(120 + 20 * np.sin(2 * np.pi * 0.5 * t), secs, seed=4).astype(float)
+    n = len(x)
+    tt = np.arange(n) / mf.FS
+    # syllables: 2 per second, rising and falling, with pauses
+    env = np.clip(np.sin(2 * np.pi * 1 * tt), 0, None) ** 2 * (0.2 + 0.8 * (np.sin(2 * np.pi * 0.31 * tt) > -0.3))
+    syll = (x * env + 30 * np.random.default_rng(1).standard_normal(n)).astype(np.int16)
+    steady = buzz(np.full(hops, 110.0), secs, seed=5, envelope=False)
+    rep = np.tile(syll[n // 2:n // 2 + chunk], n // chunk)
+    cs = chunks(syll, chunk)
+    pre_shuffled = np.concatenate([cs[i] for i in np.random.default_rng(8).permutation(len(cs))])
+    import score
+
+    def ok(x):
+        b = mf.boundary_ratio(x, rate, phase=0)
+        d = mf.energy_contour(x, rate)[1]
+        return b <= score.BOUNDARY_MAX and d >= score.DEPTH_MIN, b, d
+
+    for name, sig, want in (("syllabic signal in order", syll, True),
+                            ("steady buzz", steady, False),
+                            ("one frame repeated", rep, False),
+                            ("frames shuffled", pre_shuffled, False)):
+        good, b, d = ok(sig)
+        check(good == want, f"time test: {name} {'passes' if want else 'fails'} "
+                            f"(B {b:.2f}, depth {d:.1f} dB)")
+    # the shuffled-order test (2400 bit/s) on the same audio stand-ins
+    r_s, d_s, m_s, _ = order_margin(syll, chunk, rate)
+    r_r, d_r, m_r, _ = order_margin(rep, chunk, rate)
+    r_p, d_p, m_p, _ = order_margin(pre_shuffled, chunk, rate)
+    check(m_s >= score.ORDER_MARGIN, f"order test: syllabic signal beats its shuffles ({m_s:+.2f})")
+    check(m_r < score.ORDER_MARGIN and m_p < score.ORDER_MARGIN,
+          f"order test: repeated ({m_r:+.2f}) and shuffled ({m_p:+.2f}) frames do not")
+    check(all(np.isnan(v) for v in mf.energy_contour(np.zeros(1000), rate))
+          and np.isnan(mf.boundary_ratio(np.zeros(1000), rate)), "under 8 frames: no reading")
+    f = mf.random_frames(1200, 30, 2)
+    f[:, 0] = np.arange(30) % 2
+    s = mf.shuffled_frames(f, 1200, 1)
+    check(sorted(map(tuple, s[:, 1:])) == sorted(map(tuple, f[:, 1:]))
+          and np.array_equal(s[:, 0], f[:, 0]), "shuffled frames: same content, sync bit alternates")
 
 
 def test_measure():
@@ -295,6 +357,7 @@ def main():
     test_sync()
     test_period()
     test_measure()
+    test_time_structure()
     test_proofs(work)
     test_multiples(work)
     print(f"{len(FAILS)} failed")
