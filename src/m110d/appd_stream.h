@@ -11,8 +11,11 @@
 //              feed (appd_input.h), so a rate that is not a multiple of 2400 Hz is handled as
 //              in file mode.
 //   search     the preamble detector (AppDRx::detect) runs on each new second of audio plus
-//              0.5 s of overlap. Between transmissions only those 1.5 s are kept, plus 1.5 s
-//              of history before a detection.
+//              0.5 s of overlap. A detection counts only when the preamble reads there: a
+//              valid down-count and WID checksum, and for the single-symbol fixed shape a
+//              metric of 0.7 (its 32 chips pass 0.5 on noise several times a second). A lock
+//              whose super-frame is not complete waits for more input. Between transmissions
+//              only those 1.5 s are kept, plus 1.5 s of history before a detection.
 //   decode     from 1.5 s before the detection to the newest sample, the file decoder
 //              (AppDRx::run) is re-run as audio arrives: every 0.5 s until the preamble is
 //              complete, then every max(1 s, 0.2 x segment). The preamble search is confined to
@@ -180,6 +183,7 @@ private:
     long long scan_ = 0;   // detector has looked at everything before this
     long long floor_ = 0;  // end of the last transmission handed out; segments start at or after it
     long long t_det_ = 0, seg0_ = 0, next_try_ = 0;
+    long long wait_until_ = 0;  // a lock not yet complete: search again from here
     bool pre_known_ = false;
     long long pre_lo_ = 0, pre_hi_ = 0;
 
@@ -195,19 +199,24 @@ private:
     void process(bool eof) {
         for (;;) {
             if (!decoding_) {
-                if (!(end() - scan_ >= hop_ || (eof && end() > scan_))) return;
+                if (!((end() - scan_ >= hop_ && end() >= wait_until_) || (eof && end() > scan_))) return;
                 long long w0 = std::max({b0_, floor_, scan_ - overlap_});
                 std::vector<double> win(buf_.begin() + (w0 - b0_), buf_.end());
                 long t = -1;
                 double m = 0;
+                int st = 0;
                 if ((long long)win.size() > sf_) {
                     AppDRx d(opt_);
-                    m = d.detect(win, fs_, t);
+                    st = d.detect(win, fs_, t, m);
                 }
                 if (opt_.verbose)
-                    std::fprintf(stderr, "stream: search %.2f-%.2f s metric %.3f\n", (double)w0 / fs_,
-                                 (double)end() / fs_, m);
-                if (t >= 0) {
+                    std::fprintf(stderr, "stream: search %.2f-%.2f s metric %.3f status %d\n", (double)w0 / fs_,
+                                 (double)end() / fs_, m, st);
+                if (st == 2 && !eof) {  // lock near the end of the window: look again with more input
+                    wait_until_ = w0 + t + sf_ + fs_ / 5;
+                    return;
+                }
+                if (st == 1) {
                     t_det_ = w0 + t;
                     seg0_ = std::max({b0_, floor_, t_det_ - hist_});
                     trim(seg0_);

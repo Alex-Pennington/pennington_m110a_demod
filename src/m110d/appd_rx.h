@@ -354,19 +354,39 @@ public:
         return r;
     }
 
-    // Preamble search only (the streaming front end's detector): the best acquisition metric
-    // over the input, and in t the sample index where it was found (-1 below 0.5).
-    double detect(const std::vector<double>& audio, int fs, long& t) {
+    // Preamble detector for the streaming front end (appd_stream.h). Searches the input as run()
+    // does, then reads the preamble at each lock: the nine-symbol shape from metric 0.5, the
+    // single-symbol shape from single_min (its 32 chips reach 0.5 on noise several times a
+    // second). Returns 1 when a lock reads a valid down-count and WID checksum, with t its
+    // sample index; 2 when a lock's super-frame is not complete in the input yet (t its index:
+    // call again with more input); 0 otherwise. metric: the best search metric.
+    int detect(const std::vector<double>& audio, int fs, long& t, double& metric, double single_min = 0.7) {
         RxResult r;
         t = -1;
+        metric = 0;
         sps_ = fs / (int)kSymbolRate;
         fs_ = fs;
         if (sps_ * (int)kSymbolRate != fs) return 0;
         y_ = to_baseband(audio, fs, sps_);
         Lock nine, single;
-        if (!acquire(r, nine, single)) return r.acq_metric;
-        t = single.c && single.metric > nine.metric ? single.t : nine.t;
-        return r.acq_metric;
+        bool any = acquire(r, nine, single);
+        metric = r.acq_metric;
+        if (!any) return 0;
+        std::vector<Lock> order;
+        if (single.c && single.metric > nine.metric) order = {single, nine};
+        else order = {nine, single};
+        int st = 0;
+        for (const Lock& lk : order) {
+            if (!lk.c || lk.metric < (lk.c->nfix == 1 ? single_min : 0.5)) continue;
+            RxResult rt;
+            lock_on(lk, rt);
+            if ((double)lk.t + (double)(sf_len_ + 8) * sps_ >= (double)y_.size()) {
+                if (!st) { st = 2; t = lk.t; }
+                continue;
+            }
+            if (read_preamble(rt) && rt.wid.checksum_ok) { t = lk.t; return 1; }
+        }
+        return st;
     }
 
 private:
