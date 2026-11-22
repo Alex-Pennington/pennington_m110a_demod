@@ -50,7 +50,11 @@ add_executable(m110d_chan m110d_chan/main.cpp)
 # test_gui is Windows-only (test/test_gui/brain_client.h uses winsock without a
 # POSIX fallback); build.ps1 builds it on Windows.
 
-set_target_properties(m110a_server hfchansim m110a_rx m110d_rx m110d_chan PROPERTIES
+# Waveform candidate scorer for recorded 110A messages (test/harris/score.py drives it
+# over the Harris MELP test set; docs/harris-melpe.md)
+add_executable(harris_score test/harris/harris_score.cpp)
+
+set_target_properties(m110a_server hfchansim m110a_rx m110d_rx m110d_chan harris_score PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----
@@ -81,6 +85,13 @@ foreach(t test_mode_detect test_decode_quality)
   add_test(NAME ${t} COMMAND ${t} ${CMAKE_SOURCE_DIR}/release/examples/refrence_pcm)
   set_tests_properties(${t} PROPERTIES LABELS "rx")
 endforeach()
+
+# Table XI codes 7,7 (2400 digital voice), 7,5 / 5,5 (75 bps) and the Harris
+# application-specific codes 5,7 / 5,6: own TX -> AUTO RX
+add_executable(test_table_xi_modes test/test_table_xi_modes.cpp)
+target_link_libraries(test_table_xi_modes PRIVATE m110a_modem)
+add_test(NAME test_table_xi_modes COMMAND test_table_xi_modes)
+set_tests_properties(test_table_xi_modes PROPERTIES LABELS "rx")
 
 # ---- I/Q receive path through m110a_rx ----
 # Synthetic RSP2 I/Q (test/rx/synth_iq.py: 2 MS/s cs16, dial at +100 kHz)

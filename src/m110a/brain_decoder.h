@@ -65,6 +65,10 @@ struct BrainDecodeResult {
     float accuracy = 0.0f;  // Hard decision accuracy on preamble
     int start_sample = 0;
     float phase_offset = 0.0f;
+    // Residual carrier phase rate after the AFC, radians per symbol, from
+    // refine_carrier(); symbol n after start_sample is derotated by
+    // exp(j (phase_offset - phase_rate * n))
+    float phase_rate = 0.0f;
     float freq_offset_hz = 0.0f;  // Detected frequency offset from nominal carrier
     
     // Preamble countdown of the frame found (frames still to come after it),
@@ -76,6 +80,17 @@ struct BrainDecodeResult {
     int d2 = -1;
     float d1_corr = 0.0f;
     float d2_corr = 0.0f;
+    // Runner-up D value and its correlation, for D1 and D2
+    int d1_second = -1;
+    int d2_second = -1;
+    float d1_corr2 = 0.0f;
+    float d2_corr2 = 0.0f;
+    // Count segment: the D value (4-7) read for each of the three digits, its
+    // |correlation| and the runner-up's, normalised to 1.0 for a clean symbol;
+    // filled whether or not the countdown was accepted
+    int count_d[3] = {-1, -1, -1};
+    float count_corr[3] = {0.0f, 0.0f, 0.0f};
+    float count_corr2[3] = {0.0f, 0.0f, 0.0f};
     std::string mode_name = "UNKNOWN";
     
     // Extracted symbols
@@ -235,7 +250,14 @@ public:
         
         // Step 4b: Which preamble frame was found (count segment)
         decode_countdown(filtered, result);
-        
+
+        // Step 4c: Carrier phase and residual frequency from the common segments
+        // of every preamble frame from the one found to the last; re-extract the
+        // preamble symbols with that phase line
+        refine_carrier(filtered, result);
+        result.preamble_symbols.clear();
+        extract_preamble_symbols(filtered, result);
+
         // Step 5: Extract data symbols
         extract_data_symbols(filtered, result);
         
@@ -516,18 +538,87 @@ private:
         }
     }
     
+    /// Derotation for symbol n after the start of the frame found:
+    /// exp(j (phase_offset - phase_rate * n)). phase_rate is 0 until
+    /// refine_carrier() has measured it.
+    complex_t derotation(const BrainDecodeResult& r, long n) const {
+        const double a = r.phase_offset - r.phase_rate * static_cast<double>(n);
+        return complex_t(static_cast<float>(std::cos(a)), static_cast<float>(std::sin(a)));
+    }
+
+    /**
+     * Fit carrier phase against time over the preamble.
+     *
+     * The fine AFC search (quick_preamble_correlation) scores correlation
+     * magnitude over 72-symbol segments, which hardly changes within +/-1 Hz,
+     * so it can settle 0.5 Hz or more off: on a clean own-TX 2400S signal it
+     * chose -0.5 Hz for 0 Hz, and the data phase then drifted about 100
+     * degrees over one 0.6 s interleaver block. Here each 32-symbol block of
+     * the common segment (known) of each frame from the one found to the last
+     * gives a phase; a least-squares line through the unwrapped phases gives
+     * the residual frequency (phase_rate, radians per symbol) and the phase at
+     * the start of the frame found (phase_offset). Blocks are 32 symbols
+     * apart within a frame and 224 between frames, so the unwrap holds for a
+     * residual under about 5 Hz. Blocks whose correlation is under half the
+     * strongest are left out. With fewer than 4 blocks nothing changes.
+     */
+    void refine_carrier(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        const int frames = result.countdown >= 0 ? result.countdown + 1 : 1;
+        struct Blk { double t; complex_t c; };
+        std::vector<Blk> blk;
+        float cmax = 0.0f;
+        for (int f = 0; f < frames; f++) {
+            for (int b = 0; b < 9; b++) {
+                complex_t c(0, 0);
+                bool ok = true;
+                for (int i = 0; i < 32; i++) {
+                    const int k = b * 32 + i;
+                    const long idx = result.start_sample +
+                        (static_cast<long>(f) * brain::P_FRAME_LENGTH + k) * sps_;
+                    if (idx < 0 || idx >= static_cast<long>(filtered.size())) { ok = false; break; }
+                    const uint8_t p = common_pattern_[k];
+                    c += filtered[idx] * std::conj(complex_t(brain::psk8_i[p], brain::psk8_q[p]));
+                }
+                if (!ok) break;
+                blk.push_back({static_cast<double>(f) * brain::P_FRAME_LENGTH + b * 32 + 15.5, c});
+                cmax = std::max(cmax, std::abs(c));
+            }
+        }
+        std::vector<Blk> use;
+        for (const auto& b : blk) if (std::abs(b.c) >= 0.5f * cmax) use.push_back(b);
+        if (use.size() < 4) return;
+        std::vector<double> ph(use.size());
+        ph[0] = std::arg(use[0].c);
+        for (size_t i = 1; i < use.size(); i++) {
+            double d = std::arg(use[i].c) - std::arg(use[i - 1].c);
+            while (d > PI) d -= 2 * PI;
+            while (d < -PI) d += 2 * PI;
+            ph[i] = ph[i - 1] + d;
+        }
+        double st = 0, sp = 0, stt = 0, stp = 0;
+        const double n = static_cast<double>(use.size());
+        for (size_t i = 0; i < use.size(); i++) {
+            st += use[i].t; sp += ph[i]; stt += use[i].t * use[i].t; stp += use[i].t * ph[i];
+        }
+        const double den = n * stt - st * st;
+        if (den <= 0) return;
+        const double rate = (n * stp - st * sp) / den;      // rad / symbol
+        const double phi0 = (sp - rate * st) / n;            // phase at symbol 0
+        result.phase_rate = static_cast<float>(rate);
+        result.phase_offset = static_cast<float>(-phi0);
+        result.freq_offset_hz += static_cast<float>(rate * config_.baud_rate / (2 * PI));
+    }
+
     /**
      * Extract preamble symbols for further processing
      */
-    void extract_preamble_symbols(const std::vector<complex_t>& filtered, 
+    void extract_preamble_symbols(const std::vector<complex_t>& filtered,
                                    BrainDecodeResult& result) {
-        complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
-        
         // Extract all 480 symbols of first preamble frame
         for (int i = 0; i < 480; i++) {
             int idx = result.start_sample + i * sps_;
             if (idx >= static_cast<int>(filtered.size())) break;
-            result.preamble_symbols.push_back(filtered[idx] * rot);
+            result.preamble_symbols.push_back(filtered[idx] * derotation(result, i));
         }
     }
     
@@ -545,8 +636,11 @@ private:
         
         float best_d1_corr = 0.0f;
         float best_d2_corr = 0.0f;
+        float second_d1_corr = 0.0f;
+        float second_d2_corr = 0.0f;
         int d1 = 0, d2 = 0;
-        
+        int d1_second = -1, d2_second = -1;
+
         for (int d = 0; d < 8; d++) {
             // D1 correlation
             complex_t corr1(0, 0);
@@ -561,7 +655,12 @@ private:
                 pow1 += std::norm(filtered[idx]);
             }
             float c1 = std::abs(corr1) / std::sqrt(pow1 * 32 + 0.0001f);
-            if (c1 > best_d1_corr) { best_d1_corr = c1; d1 = d; }
+            if (c1 > best_d1_corr) {
+                second_d1_corr = best_d1_corr; d1_second = d1;
+                best_d1_corr = c1; d1 = d;
+            } else if (c1 > second_d1_corr) {
+                second_d1_corr = c1; d1_second = d;
+            }
             
             // D2 correlation
             complex_t corr2(0, 0);
@@ -576,13 +675,22 @@ private:
                 pow2 += std::norm(filtered[idx]);
             }
             float c2 = std::abs(corr2) / std::sqrt(pow2 * 32 + 0.0001f);
-            if (c2 > best_d2_corr) { best_d2_corr = c2; d2 = d; }
+            if (c2 > best_d2_corr) {
+                second_d2_corr = best_d2_corr; d2_second = d2;
+                best_d2_corr = c2; d2 = d;
+            } else if (c2 > second_d2_corr) {
+                second_d2_corr = c2; d2_second = d;
+            }
         }
-        
+
         result.d1 = d1;
         result.d2 = d2;
         result.d1_corr = best_d1_corr;
         result.d2_corr = best_d2_corr;
+        result.d1_second = d1_second;
+        result.d2_second = d2_second;
+        result.d1_corr2 = second_d1_corr;
+        result.d2_corr2 = second_d2_corr;
         
         // Look up mode name
         result.mode_name = lookup_mode_name(d1, d2);
@@ -606,14 +714,20 @@ private:
         const int count_start = result.start_sample +
             (brain::P_COMMON_LENGTH + brain::P_MODE_LENGTH) * sps_;
         int countdown = 0;
+        bool clear = true;
         for (int seg = 0; seg < 3; seg++) {
             float best = 0.0f, second = 0.0f;
             int best_d = -1;
+            float power = 0.0f;
+            for (int i = 0; i < 32; i++) {
+                int idx = count_start + (seg * 32 + i) * sps_;
+                if (idx < 0 || idx >= static_cast<int>(filtered.size())) return;
+                power += std::norm(filtered[idx]);
+            }
             for (int d = 4; d < 8; d++) {
                 complex_t corr(0, 0);
                 for (int i = 0; i < 32; i++) {
                     int idx = count_start + (seg * 32 + i) * sps_;
-                    if (idx < 0 || idx >= static_cast<int>(filtered.size())) return;
                     uint8_t pattern = (brain::psymbol[d][i % 8] + brain::pscramble[i]) % 8;
                     corr += filtered[idx] *
                             std::conj(complex_t(brain::psk8_i[pattern], brain::psk8_q[pattern]));
@@ -622,20 +736,26 @@ private:
                 if (mag > best) { second = best; best = mag; best_d = d; }
                 else if (mag > second) { second = mag; }
             }
-            if (best_d < 0 || best < 1.5f * second) return;  // ambiguous digit
-            countdown = (countdown << 2) | (best_d - 4);
+            const float norm = std::sqrt(power * 32.0f + 0.0001f);
+            result.count_d[seg] = best_d;
+            result.count_corr[seg] = best / norm;
+            result.count_corr2[seg] = second / norm;
+            if (best_d < 0 || best < 1.5f * second) clear = false;  // ambiguous digit
+            else countdown = (countdown << 2) | (best_d - 4);
         }
-        if (countdown < frames) result.countdown = countdown;
+        if (clear && countdown < frames) result.countdown = countdown;
     }
     
     /**
      * Look up mode name from D1/D2 values
      */
     std::string lookup_mode_name(int d1, int d2) {
-        // Mode table from Brain Modem
+        // MIL-STD-188-110C/D Table XI, then the Harris application-specific
+        // codes (Table XI reserves 5,6 and 5,7 and does not define them)
         struct ModeEntry { int d1; int d2; const char* name; };
         static const ModeEntry modes[] = {
-            {0, 0, "M75N"},    // 75bps no interleave (special case)
+            {7, 5, "M75NS"},
+            {5, 5, "M75NL"},
             {7, 4, "M150S"},
             {5, 4, "M150L"},
             {6, 7, "M300S"},
@@ -647,6 +767,9 @@ private:
             {6, 4, "M2400S"},
             {4, 4, "M2400L"},
             {7, 6, "M4800S"},
+            {7, 7, "M2400V"},  // 2400 digital voice
+            {5, 7, "M600H"},   // Harris application-specific: 600 bps, short
+            {5, 6, "M1200H"},  // Harris application-specific: 1200 bps, short
         };
         
         for (const auto& m : modes) {
@@ -662,8 +785,6 @@ private:
      */
     void extract_data_symbols(const std::vector<complex_t>& filtered,
                                BrainDecodeResult& result) {
-        complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
-        
         // Use configured preamble length (set by caller based on known mode)
         // This is critical for interoperability - don't rely on D1/D2 detection
         // which may not match the configured mode exactly
@@ -687,7 +808,8 @@ private:
         
         // Extract data symbols
         for (int idx = data_start; idx < static_cast<int>(filtered.size()); idx += sps_) {
-            result.data_symbols.push_back(filtered[idx] * rot);
+            result.data_symbols.push_back(
+                filtered[idx] * derotation(result, (idx - result.start_sample) / sps_));
         }
         
         std::cout << "[RX] extracted " << result.data_symbols.size() << " data symbols" << std::endl;

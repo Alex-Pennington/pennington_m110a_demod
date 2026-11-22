@@ -94,7 +94,8 @@ public:
             
             BrainDecoder detector(detect_cfg);
             auto detect_result = detector.decode(samples);
-            
+            record_preamble(detect_result, result);
+
             // Check mode detection
             if (detect_result.mode_name == "UNKNOWN" || detect_result.correlation < 0.5f) {
                 result.success = false;
@@ -160,6 +161,8 @@ public:
             return result;
         }
         
+        block_frames_ = interleaver_block_frames(mode_cfg);
+
         // Bring symbols to the nominal level. The LMS DFE uses fixed step sizes,
         // so its convergence rate scales with input power: below about 2500 RMS
         // (int16) it never trained and the codec decoded garbage.
@@ -266,7 +269,8 @@ public:
                 
                 result.quality_db = probe_snr_db(phase_corrected,
                                                  mode_cfg.unknown_data_len,
-                                                 mode_cfg.known_data_len);
+                                                 mode_cfg.known_data_len,
+                                                 block_frames_);
                 result.quality_threshold_db = quality_threshold_db(mode_id);
                 result.success = result.quality_db >= result.quality_threshold_db;
                 if (!result.success) result.error = low_quality_error(result);
@@ -329,7 +333,8 @@ public:
         } else {
             result.quality_db = probe_snr_db(equalized_symbols,
                                              mode_cfg.unknown_data_len,
-                                             mode_cfg.known_data_len);
+                                             mode_cfg.known_data_len,
+                                             block_frames_);
         }
         result.quality_threshold_db = quality_threshold_db(mode_id);
         result.success = result.quality_db >= result.quality_threshold_db;
@@ -546,6 +551,38 @@ private:
     /// decodes as they were and lifts quiet ones to the same operating point.
     static constexpr double NOMINAL_SYMBOL_RMS = 0.55;
     
+    /// Copy what the AUTO pass read from the preamble into the result, and
+    /// print it on one line to stdout (m110a_rx passes stdout through under -v):
+    /// D1/D2 with best and runner-up correlation, the three count digits with
+    /// theirs, and the mode they map to.
+    static void record_preamble(const BrainDecodeResult& d, DecodeResult& r) {
+        if (!d.preamble_found) {
+            std::cout << "[RX PREAMBLE] not found corr=" << d.correlation << std::endl;
+            return;
+        }
+        r.d1 = d.d1;
+        r.d2 = d.d2;
+        r.countdown = d.countdown;
+        int raw = 0;
+        for (int i = 0; i < 3; i++) {
+            if (d.count_d[i] < 4) { raw = -1; break; }
+            raw = (raw << 2) | (d.count_d[i] - 4);
+        }
+        r.countdown_raw = raw;
+        char buf[512];
+        snprintf(buf, sizeof buf,
+                 "[RX PREAMBLE] common_corr=%.3f acc=%.1f%% foff=%+.2f Hz "
+                 "D1=%d (%.3f, 2nd D%d %.3f) D2=%d (%.3f, 2nd D%d %.3f) "
+                 "count=%d,%d,%d (%.3f/%.3f %.3f/%.3f %.3f/%.3f) countdown_raw=%d countdown=%d mode=%s",
+                 d.correlation, d.accuracy, d.freq_offset_hz,
+                 d.d1, d.d1_corr, d.d1_second, d.d1_corr2,
+                 d.d2, d.d2_corr, d.d2_second, d.d2_corr2,
+                 d.count_d[0], d.count_d[1], d.count_d[2],
+                 d.count_corr[0], d.count_corr2[0], d.count_corr[1], d.count_corr2[1],
+                 d.count_corr[2], d.count_corr2[2], raw, d.countdown, d.mode_name.c_str());
+        std::cout << buf << std::endl;
+    }
+
     /// Scale preamble and data symbols so the common preamble has the nominal RMS.
     static void normalize_symbol_level(BrainDecodeResult& r) {
         int n = std::min<int>(brain::P_COMMON_LENGTH, static_cast<int>(r.preamble_symbols.size()));
@@ -573,9 +610,36 @@ private:
         }
     }
     
+    /// Frames (data + probe patterns) per interleaver block, or 0 when unknown.
+    /// Each block is rows x cols coded bits, carried unknown_len data symbols
+    /// per frame at bits_per_symbol each: 30 frames at 2400 and 4800 short,
+    /// 36 at 150-1200 short, 240 / 288 long.
+    static int interleaver_block_frames(const ModeConfig& m) {
+        const int per_frame = m.bits_per_symbol * m.unknown_data_len;
+        if (per_frame <= 0 || m.known_data_len <= 0) return 0;
+        const int bits = m.interleaver.rows * m.interleaver.cols;
+        return bits % per_frame == 0 ? bits / per_frame : 0;
+    }
+
+    /// True for the probe of the last two frames of an interleaver block.
+    /// MIL-STD-188-110C 5.3.2.3.7.1.2: the two known-symbol patterns before
+    /// each new interleaver block carry D1 and D2 (Walsh patterns) instead of
+    /// zeros. A transmitter that follows it (the Harris RT-1694D does) sends
+    /// them; this modem's TX sends zeros. These probes are left out of probe
+    /// training and of the quality figure, so either kind of transmitter is
+    /// read the same way.
+    static bool block_boundary_probe(int frame, int block_frames) {
+        return block_frames > 2 && (frame % block_frames) >= block_frames - 2;
+    }
+
+    /// Frames per interleaver block of the mode being decoded (see above).
+    int block_frames_ = 0;
+
     /// SNR in dB of the probe symbols in a data+probe stream over the quality
     /// span, after a least-squares complex gain fit to the known probe values.
-    static float probe_snr_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len) {
+    /// Probes at interleaver block boundaries are skipped (block_boundary_probe).
+    static float probe_snr_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len,
+                              int block_frames = 0) {
         if (unknown_len <= 0 || known_len <= 0) return -99.0f;
         int pattern_len = unknown_len + known_len;
         int span = std::min<int>(QUALITY_SPAN_SYMBOLS, static_cast<int>(symbols.size()));
@@ -583,6 +647,10 @@ private:
         std::vector<complex_t> rx, ref;
         for (int f = 0; (f + 1) * pattern_len <= span; f++) {
             for (int i = 0; i < unknown_len; i++) scrambler.next();
+            if (block_boundary_probe(f, block_frames)) {
+                for (int i = 0; i < known_len; i++) scrambler.next();
+                continue;
+            }
             for (int i = 0; i < known_len; i++) {
                 int scr = scrambler.next();
                 float ph = scr * static_cast<float>(PI) / 4.0f;
@@ -613,8 +681,9 @@ private:
         switch (mode) {
             case ModeId::M150S:  case ModeId::M150L:  return 1.5f;
             case ModeId::M300S:  case ModeId::M300L:  return 1.5f;
-            case ModeId::M600S:  case ModeId::M600L:  return 2.75f;
-            case ModeId::M1200S:                      return 5.0f;
+            case ModeId::M600S:  case ModeId::M600L:
+            case ModeId::M600H:                       return 2.75f;
+            case ModeId::M1200S: case ModeId::M1200H: return 5.0f;
             case ModeId::M1200L:                      return 4.5f;
             default:                                  return 7.75f;
         }
@@ -727,6 +796,9 @@ private:
             case ModeId::M2400S: return Mode::M2400_SHORT;
             case ModeId::M2400L: return Mode::M2400_LONG;
             case ModeId::M4800S: return Mode::M4800_SHORT;
+            case ModeId::M2400V: return Mode::M2400_VOICE;
+            case ModeId::M600H: return Mode::M600_HARRIS;
+            case ModeId::M1200H: return Mode::M1200_HARRIS;
             default: return Mode::AUTO;
         }
     }
@@ -746,6 +818,9 @@ private:
             case Mode::M2400_SHORT: return ModeId::M2400S;
             case Mode::M2400_LONG: return ModeId::M2400L;
             case Mode::M4800_SHORT: return ModeId::M4800S;
+            case Mode::M2400_VOICE: return ModeId::M2400V;
+            case Mode::M600_HARRIS: return ModeId::M600H;
+            case Mode::M1200_HARRIS: return ModeId::M1200H;
             default: return ModeId::M2400S;  // Fallback to M2400S
         }
     }
@@ -764,6 +839,9 @@ private:
         if (name == "M2400S") return ModeId::M2400S;
         if (name == "M2400L") return ModeId::M2400L;
         if (name == "M4800S") return ModeId::M4800S;
+        if (name == "M2400V") return ModeId::M2400V;
+        if (name == "M600H") return ModeId::M600H;
+        if (name == "M1200H") return ModeId::M1200H;
         return ModeId::M2400S;
     }
     
@@ -1020,8 +1098,10 @@ private:
                 dfe.equalize(data_in, output);
             } else {
                 // With preamble or subsequent frames: equalize first, then update
+                // (not on a block-boundary probe, which may carry D1/D2)
                 dfe.equalize(data_in, output);
-                accumulate_probe_quality(dfe, probe_in, probe_ref, idx + pattern_len);
+                if (!block_boundary_probe(frame, block_frames_))
+                    accumulate_probe_quality(dfe, probe_in, probe_ref, idx + pattern_len);
             }
             
             // Pass through original probes
@@ -1549,8 +1629,10 @@ private:
                 auto corrected_probes = tracker.process(probe_in);
                 output.insert(output.end(), corrected_probes.begin(), corrected_probes.end());
                 
-                // Train for next frame
-                tracker.train(probe_in, probe_ref);
+                // Train for next frame (not on a block-boundary probe,
+                // which may carry D1/D2)
+                if (!block_boundary_probe(frame, block_frames_))
+                    tracker.train(probe_in, probe_ref);
             }
             
             idx += pattern_len;

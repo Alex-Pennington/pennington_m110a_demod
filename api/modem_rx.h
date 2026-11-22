@@ -63,7 +63,15 @@ struct DecodeResult {
     /// out AWGN decodes of the MS-DMT reference recordings, 4 of 56 successes
     /// at the knee had 1-2 wrong bytes, and none had more.
     float quality_threshold_db = 0.0f;
-    
+
+    /// Preamble as read in AUTO mode (-1 when not read): D1, D2 (0-7) and
+    /// the countdown of the frame the receiver locked onto. countdown_raw is
+    /// the three count digits as read, even when ambiguous or out of range.
+    int d1 = -1;
+    int d2 = -1;
+    int countdown = -1;
+    int countdown_raw = -1;
+
     /// Error information (if !success)
     std::optional<Error> error;
     
