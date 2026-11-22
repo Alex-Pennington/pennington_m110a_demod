@@ -2,11 +2,12 @@
 
 ## Handoff
 
-This section describes the receiver on `fix/110d-wid0`, cut from master `40683df`: the
+This section describes the receiver on `fix/110d-probe-gate`, cut from master `fd4a952`: the
 equaliser receiver with streaming input (`m110d_rx --stream`) and the band-limiting channel
-condition (`m110d_chan --bandpass`), plus presence gates sized to each correlation's noise
+condition (`m110d_chan --bandpass`), with presence gates sized to each correlation's noise
 floor, which take WID 0 to its Table D-LXIV AWGN value (see "Presence gates and WID 0"). The
-sections below it hold the detail and the full measured tables.
+WID 1-13 end-of-signal checks on the mini-probes are now set the same way (see "Probe end
+checks (WID 1-13)"). The sections below it hold the detail and the full measured tables.
 
 ### State of the receiver
 
@@ -29,6 +30,9 @@ sections below it hold the detail and the full measured tables.
 - **WID 0 in AWGN** (file 1, SHORT, 10 seeds per SNR): 10/10 from -6 dB up, the Table D-LXIV
   value; 8/10 at -7 and -8 dB, 7/10 at -9 dB. Master `40683df` gave 0/10 at -6 dB and below,
   and 9/10 from -5 to -2 dB (measured).
+- **WID 1-13 in AWGN** (the SHORT file of each WID, 10 seeds, D-LXIV -9 to +20 dB): 10/10 at
+  the Table D-LXIV value for every WID; WID 1 at D-LXIV -3 dB went from 0/10 to 5/10 with the
+  probe end checks, and no other cell moved (measured; table in "Probe end checks (WID 1-13)").
 - **Checks on this branch:** `m110d_rx --selftest` gives `selftest_mismatches=0`;
   `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 24/24
   (measured).
@@ -41,17 +45,24 @@ sections below it hold the detail and the full measured tables.
 Default files: WID 0, 3, 13, 7 and 10, all SHORT. Seeds: 3, and 10 for fading. Each cell is
 one decode of a burst, not a BER figure.
 
-| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` | master `db8329a` | `feat/110d-stream` | `fix/110d-wid0` |
-|---|---|---|---|---|---|---|---|
-| default (110) | 87 | 95 | 104 | 104 | 104 | 104 | 109 |
-| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 | 116 | 116 | 121 |
-| foff (240) | 135 | 240 | 240 | 240 | 240 | 240 | 240 |
-| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 | 105 | 105 | 105 |
-| ppm and ppm drift (270) | 144 | 270 | 270 | 270 | 270 | 270 | 270 |
-| static (45) | 6 | 6 | 36 | 36 | 36 | 36 | 36 |
-| fading, 10 seeds (400) | 70 | 93 | 322 | 322 | 322 | 322 | 367 |
+| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` | master `db8329a` | `feat/110d-stream` | `fix/110d-wid0` | master `fd4a952` | `fix/110d-probe-gate` |
+|---|---|---|---|---|---|---|---|---|---|
+| default (110) | 87 | 95 | 104 | 104 | 104 | 104 | 109 | 109 | 109 |
+| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 | 116 | 116 | 121 | 121 | 121 |
+| foff (240) | 135 | 240 | 240 | 240 | 240 | 240 | 240 | 240 | 240 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 | 105 | 105 | 105 | 105 | 105 |
+| ppm and ppm drift (270) | 144 | 270 | 270 | 270 | 270 | 270 | 270 | 270 | 270 |
+| static (45) | 6 | 6 | 36 | 36 | 36 | 36 | 36 | 36 | 36 |
+| fading, 10 seeds (400) | 70 | 93 | 322 | 322 | 322 | 322 | 367 | 367 | 367 |
 
-- The last column is a full run from a fresh build of `fix/110d-wid0`, compared cell for cell
+- The last two columns are full runs from fresh builds of master `fd4a952` and of
+  `fix/110d-probe-gate`, compared cell for cell from their CSVs: every cell is equal (280
+  cells at 3 seeds, 40 at 10). Master `fd4a952` reproduces the `fix/110d-wid0` column. None of
+  these files is WID 1, 2, 11 or 12. The one cell where master's end check cut a burst short,
+  WID 3 at awgn -6 dB (1, 5 and 9 probes of 33), now runs the burst to its end and still
+  fails on the payload (0/3). The change shows in the WID 1-13 AWGN curves ("Probe end checks
+  (WID 1-13)").
+- The `fix/110d-wid0` column is a full run from a fresh build of `fix/110d-wid0`, compared cell for cell
   with the same run of master `40683df` from their CSVs; master `40683df` gives the
   `feat/110d-stream` column, matrix for matrix. No cell is worse (280 cells at 3
   seeds, 40 at 10). Eleven cells are better, all WID 0: awgn -6 dB 0/3 to 3/3, -9 dB 0/3 to
@@ -59,8 +70,8 @@ one decode of a burst, not a BER figure.
   5/10, Poor @30 0/10 to 8/10, Poor noiseless 0/10 to 7/10, Poor at -1 dB 0/10 to 1/10, Poor at
   9 dB 0/10 to 8/10, D.6.4 +75 Hz 0/10 to 7/10, -75 Hz 0/10 to 8/10.
 
-- The last two columns are full runs from fresh builds of master `db8329a` and of this
-  branch, compared cell for cell from their CSVs: every cell is equal (280 cells at 3 seeds,
+- The `db8329a` and `feat/110d-stream` columns are full runs from fresh builds of master
+  `db8329a` and of `feat/110d-stream`, compared cell for cell from their CSVs: every cell is equal (280 cells at 3 seeds,
   40 at 10). On the 60 clean files the branch's file-mode output is byte-identical to
   master's.
 
@@ -86,9 +97,9 @@ one decode of a burst, not a BER figure.
 
 - **Merged to master and pushed as branches:** `feat/110d-rx`, `feat/110d-walsh`,
   `feat/110d-qam`, `feat/110d-integrate`, `docs/110d-std-pdf`, `feat/110d-chan`,
-  `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`, `feat/110d-stream`.
-  None holds anything that master lacks.
-- **This branch:** `fix/110d-wid0`, worktree `m110a-wt-110d-wid0`, not merged.
+  `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`, `feat/110d-stream`,
+  `fix/110d-wid0`. None holds anything that master lacks.
+- **This branch:** `fix/110d-probe-gate`, worktree `m110a-wt-110d-probegate`, not merged.
 - **Worktree left in place:** `m110a-wt-110d-proofs` (`feat/110d-proofs`, merged). It holds
   an untracked `test/110d/__pycache__/`. Deleting that folder was refused by a permission
   denial, so the worktree was not removed. Nothing in it is unmerged.
@@ -147,7 +158,13 @@ pre-equaliser one-tap path.
 - static-wid2 fails on WID 7, 10 and 13. Its 9 ms spread exceeds what the K=32 probes cover.
   Table D-LXV pairs that channel with WID 2, which decodes.
 - The equaliser thresholds were set on named cases, not swept. Fractional (T/2) spacing was
-  not tried.
+  not tried. The probe end checks are now set from noise ("Probe end checks (WID 1-13)").
+- WID 1 at D-LXIV -3 dB (-6 dB) passes 5/10. Three of the five misses end where the fit score
+  falls to 0.01-0.03 on two probes in a row mid-burst, below the noise p90, so no end cutoff
+  keeps them. The one-tap score drifts down before each dip, which points at the tracking
+  loops. They still use fixed cutoffs: a timing update needs q >= 0.6 and a frequency update
+  q >= 0.3, and at -6 dB WID 1 scores about 0.48, so timing is held most of the burst. Not
+  measured further; not changed.
 
 ### Open questions
 
@@ -818,6 +835,84 @@ Checks on `fix/110d-wid0` (measured, every exit status 0): `m110d_rx --selftest`
 and 8 kHz; `stream.py` 60/60 in order with no extra at 48 kHz and at 8 kHz, and 60/60 with no
 extra inside 1 h of noise at 30 dB (8 kHz).
 
+## Probe end checks (WID 1-13)
+
+Source: `AppDRx::probe_q_end`, `AppDRx::probe_fit_end`, `setup_eq` and `decode_payload` in
+`src/m110d/appd_rx.h`.
+
+### Cause (measured)
+
+Three checks decide where a WID 1-13 signal ends, and each compared a probe score with a fixed
+number: the one-tap path ended at the first probe whose one-tap correlation `q` was below 0.5,
+the support window at the first two in a row below 0.3, and the equaliser at the first two in a
+row whose fit quality `qfit` was below 0.2. The one-tap path runs only when the equaliser setup
+fails (1 run in 1300 WID 1-13 matrix runs on master), so the equaliser check is the one that
+binds. On noise both scores shrink with the probe length, and 0.2 sits about 9 sd above the
+fit's noise at K = 48. `qfit` on signal is about rho / (1 + rho) at symbol SNR rho, so 0.2 is a
+floor near -6 dB symbol SNR. That is the WID 1 and WID 2 region: on master, WID 1 at -6 dB
+ended 9 of 10 bursts at probe 3 to 19 of 145, WID 2 at -6 dB 9 of 10 at probe 1 to 19 of 81,
+and WID 3 at -6 dB 10 of 10 at probe 1 to 24 of 33 (the tenth WID 1 and WID 2 run did not
+acquire). WID 4-13 misses at low SNR run to the burst's end and fail on the payload.
+
+### Noise distributions (measured)
+
+Each SHORT file below was followed by 300 s of silence, put through `m110d_chan` at its Table
+D-LXIV AWGN SNR (6 seeds), and decoded with `-v`. Every probe after the burst's end + 3 scores
+noise through the real receiver path (the better of the two probe variants, the tracked
+frequency and timing).
+
+| K (WIDs) | probes | one-tap `q` mean +- sd | p90 | p99 | p99.99 | `qfit` mean +- sd |
+|---|---|---|---|---|---|---|
+| 48 (1, 2) | 45128 | 0.166 +- 0.061 | 0.25 | 0.33 | 0.45 | 0.011 +- 0.023 |
+| 32 (3-10, 13) | 33841 | 0.203 +- 0.074 | 0.30 | 0.39 | 0.52 | 0.016 +- 0.034 |
+| 24 (11, 12) | 11265 | 0.235 +- 0.085 | 0.35 | 0.45 | 0.57 | 0.026 +- 0.128 |
+
+`q` on noise is X / sqrt(K) with X of mean 1.15, sd 0.42 and p90 1.70 to 1.73 at all three
+lengths. A T-tap fit over N probe observations (N = K less the support span) explains a
+Beta(T, N - T) fraction of noise, so `qfit` has mean 0 and sd sqrt(T / ((N - T)(N + 1))): 0.021
+at K = 48 and 0.031 at K = 32 with one tap, against 0.023 and 0.034 measured. Its p90 is 1.32 to
+1.38 sd for N = 12 to 48 and T = 1 to 6 (Monte Carlo). The K = 24 runs (64QAM at 24 dB) chose
+supports of several taps, which widens their `qfit`.
+
+### Fix
+
+These are end checks on a signal already acquired, not presence gates: a probe left in costs
+one noise frame before the next check ends it, a probe cut costs the message. So each cutoff is
+the noise p90 of one probe, not the far tail the presence gates use: `q` below 1.75 / sqrt(K)
+(0.25, 0.31, 0.36 at K = 48, 32, 24) for the one-tap end and the support window, and `qfit`
+below 1.4 sd of the chosen fit's own noise for the equaliser end (0.029 for one tap at K = 48).
+Two noise probes in a row fall below a p90 cutoff 81% of the time. Measured on WID 1-3, the
+end lands 0 to 5 probes after the end master finds at high SNR.
+
+### Measured
+
+The SHORT file of each WID, AWGN in 3 kHz, 10 seeds, `channel.py --matrix awgn --seeds 10
+--files 5,9,...,53`; master `fd4a952` and this branch from fresh builds, compared cell for cell.
+Passes out of 10 at offsets from the Table D-LXIV AWGN value (Table D-LXIV, page 241 of
+`docs/standards/MIL-STD-188-110D.pdf`):
+
+| WID | K | D-LXIV dB | -9 | -6 | -3 | 0 | +3 to +20 |
+|---|---|---|---|---|---|---|---|
+| 1 | 48 | -3 | 0 | 0 | 0 -> 5 | 10 | 10 |
+| 2 | 48 | 0 | 0 | 0 | 10 | 10 | 10 |
+| 3 | 32 | 3 | 0 | 9 | 10 | 10 | 10 |
+| 4 | 32 | 5 | 0 | 2 | 9 | 10 | 10 |
+| 5 | 32 | 6 | 0 | 2 | 10 | 10 | 10 |
+| 6 | 32 | 9 | 0 | 2 | 10 | 10 | 10 |
+| 7 | 32 | 13 | 0 | 3 | 10 | 10 | 10 |
+| 8 | 32 | 16 | 0 | 2 | 10 | 10 | 10 |
+| 9 | 32 | 19 | 0 | 1 | 10 | 10 | 10 |
+| 10 | 32 | 21 | 0 | 0 | 10 | 10 | 10 |
+| 11 | 24 | 24 | 0 | 0 | 10 | 10 | 10 |
+| 12 | 24 | 30 | 0 | 3 | 10 | 10 | 10 |
+| 13 | 32 | 6 | 0 | 0 | 9 | 10 | 10 |
+
+One cell of 130 moved: WID 1 at -6 dB, 0/10 to 5/10. Every WID passes 10/10 at its Table D-LXIV
+value on both builds; the table's figures are for the LONG interleaver and a 20-super-frame
+preamble at BER 1E-5, so a SHORT burst passing at the value is not the requirement met. On
+WID 2 at -6 dB the branch runs 9 of 10 bursts to their end (master: 1) and they still fail on
+the payload, as do WID 3 at -6 dB and the WID 4-13 misses.
+
 ## Equaliser (WID 1-13)
 
 Source: `src/m110d/appd_eq.h` (CIR fit, block MMSE-DFE) and `AppDRx::setup_eq` /
@@ -862,7 +957,7 @@ factorisation and weights its soft decisions into the existing Viterbi decoder.
    then thresholded at 2.5x the noise of the periodic estimate.
 3. **CIR per probe.** A least-squares fit on that support uses every clean probe sample (K for
    a single path, as the one-tap estimate did). The signal ends at the first two probes in a row
-   whose fit explains less than 0.2 of what it can.
+   whose fit explains less than the noise p90 of that fit ("Probe end checks (WID 1-13)").
 4. **Per block.** The CIR is interpolated linearly between the two probes, with the rotation
    between probe centres taken from the CIRs and unwrapped about the frequency loop's
    prediction. Block MMSE-DFE. Then a data-aided pass: with the first decisions as data, a
@@ -940,8 +1035,9 @@ improve through the acquisition change; the equaliser does not touch WID 0.
 - On equal paths 1.2 symbols apart at 30 dB, the 64QAM EVM is 4.5 dB worse than on one path;
   the MMSE-DFE bound for that channel is about 3 dB (inferred from the mean of ln(1 + cos)).
   Fractional (T/2) spacing was not tried.
-- The tap threshold, the 2.5x tie, the 0.2 end-of-signal level and the +-16 symbol window were
-  set on the cases named in the source comments, not swept.
+- The tap threshold, the 2.5x tie and the +-16 symbol window were set on the cases named in the
+  source comments, not swept. The end-of-signal level is set from noise ("Probe end checks
+  (WID 1-13)").
 
 ## Input formats
 
