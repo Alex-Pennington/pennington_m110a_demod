@@ -35,3 +35,4 @@ src/melpe_core/
 
 # CMake build tree (CMakeLists.txt)
 /build/
+/build-110d/
