@@ -1095,6 +1095,12 @@ private:
         // lowest are a tie, and the tie goes to the shortest span. Misplacing a main path costs
         // one to three orders of magnitude (ITU Poor and Table D-LXV channels, measured with -v);
         // misplacing a weak tail tap cost 1.4 x on ITU Poor (measured).
+        // The timing loop centres the probe on the strongest one-tap path, so a hypothesis
+        // must place the strongest delay at the representative of its class nearest delay 0
+        // (|d| <= L/2). Residuals alone cannot rule out a main path a base period away: a
+        // residual frequency error of 1 to 3 Hz on the first probes (linear drift, measured
+        // with -v) raises the residual of a hypothesis scored over the whole probe about 3 x
+        // above that of an aliased one scored on a short window at a probe edge.
         const int ns = (int)sig.size();
         struct Hyp { std::vector<int> taps; double v; };
         std::vector<Hyp> hyps;
@@ -1106,6 +1112,7 @@ private:
                 for (int k : sig) taps.push_back(ds + ((k - b0) % L + L) % L);
                 std::sort(taps.begin(), taps.end());
                 if (taps.front() > K - L || taps.back() < -(K - L)) continue;
+                if (std::abs(ds + ((kmax - b0) % L + L) % L) > L / 2) continue;
                 // Pulse tails just outside the arc would pollute the edge observations of one
                 // hypothesis and not another: every hypothesis is scored with two delays of
                 // margin each side (classes not already used), when the probe allows it.
