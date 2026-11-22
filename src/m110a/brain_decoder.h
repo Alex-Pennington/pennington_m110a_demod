@@ -65,6 +65,10 @@ struct BrainDecodeResult {
     float accuracy = 0.0f;  // Hard decision accuracy on preamble
     int start_sample = 0;
     float phase_offset = 0.0f;
+    // Residual carrier phase rate after the AFC, radians per symbol, from
+    // refine_carrier(); symbol n after start_sample is derotated by
+    // exp(j (phase_offset - phase_rate * n))
+    float phase_rate = 0.0f;
     float freq_offset_hz = 0.0f;  // Detected frequency offset from nominal carrier
     
     // Preamble countdown of the frame found (frames still to come after it),
@@ -246,7 +250,14 @@ public:
         
         // Step 4b: Which preamble frame was found (count segment)
         decode_countdown(filtered, result);
-        
+
+        // Step 4c: Carrier phase and residual frequency from the common segments
+        // of every preamble frame from the one found to the last; re-extract the
+        // preamble symbols with that phase line
+        refine_carrier(filtered, result);
+        result.preamble_symbols.clear();
+        extract_preamble_symbols(filtered, result);
+
         // Step 5: Extract data symbols
         extract_data_symbols(filtered, result);
         
@@ -527,18 +538,87 @@ private:
         }
     }
     
+    /// Derotation for symbol n after the start of the frame found:
+    /// exp(j (phase_offset - phase_rate * n)). phase_rate is 0 until
+    /// refine_carrier() has measured it.
+    complex_t derotation(const BrainDecodeResult& r, long n) const {
+        const double a = r.phase_offset - r.phase_rate * static_cast<double>(n);
+        return complex_t(static_cast<float>(std::cos(a)), static_cast<float>(std::sin(a)));
+    }
+
+    /**
+     * Fit carrier phase against time over the preamble.
+     *
+     * The fine AFC search (quick_preamble_correlation) scores correlation
+     * magnitude over 72-symbol segments, which hardly changes within +/-1 Hz,
+     * so it can settle 0.5 Hz or more off: on a clean own-TX 2400S signal it
+     * chose -0.5 Hz for 0 Hz, and the data phase then drifted about 100
+     * degrees over one 0.6 s interleaver block. Here each 32-symbol block of
+     * the common segment (known) of each frame from the one found to the last
+     * gives a phase; a least-squares line through the unwrapped phases gives
+     * the residual frequency (phase_rate, radians per symbol) and the phase at
+     * the start of the frame found (phase_offset). Blocks are 32 symbols
+     * apart within a frame and 224 between frames, so the unwrap holds for a
+     * residual under about 5 Hz. Blocks whose correlation is under half the
+     * strongest are left out. With fewer than 4 blocks nothing changes.
+     */
+    void refine_carrier(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        const int frames = result.countdown >= 0 ? result.countdown + 1 : 1;
+        struct Blk { double t; complex_t c; };
+        std::vector<Blk> blk;
+        float cmax = 0.0f;
+        for (int f = 0; f < frames; f++) {
+            for (int b = 0; b < 9; b++) {
+                complex_t c(0, 0);
+                bool ok = true;
+                for (int i = 0; i < 32; i++) {
+                    const int k = b * 32 + i;
+                    const long idx = result.start_sample +
+                        (static_cast<long>(f) * brain::P_FRAME_LENGTH + k) * sps_;
+                    if (idx < 0 || idx >= static_cast<long>(filtered.size())) { ok = false; break; }
+                    const uint8_t p = common_pattern_[k];
+                    c += filtered[idx] * std::conj(complex_t(brain::psk8_i[p], brain::psk8_q[p]));
+                }
+                if (!ok) break;
+                blk.push_back({static_cast<double>(f) * brain::P_FRAME_LENGTH + b * 32 + 15.5, c});
+                cmax = std::max(cmax, std::abs(c));
+            }
+        }
+        std::vector<Blk> use;
+        for (const auto& b : blk) if (std::abs(b.c) >= 0.5f * cmax) use.push_back(b);
+        if (use.size() < 4) return;
+        std::vector<double> ph(use.size());
+        ph[0] = std::arg(use[0].c);
+        for (size_t i = 1; i < use.size(); i++) {
+            double d = std::arg(use[i].c) - std::arg(use[i - 1].c);
+            while (d > PI) d -= 2 * PI;
+            while (d < -PI) d += 2 * PI;
+            ph[i] = ph[i - 1] + d;
+        }
+        double st = 0, sp = 0, stt = 0, stp = 0;
+        const double n = static_cast<double>(use.size());
+        for (size_t i = 0; i < use.size(); i++) {
+            st += use[i].t; sp += ph[i]; stt += use[i].t * use[i].t; stp += use[i].t * ph[i];
+        }
+        const double den = n * stt - st * st;
+        if (den <= 0) return;
+        const double rate = (n * stp - st * sp) / den;      // rad / symbol
+        const double phi0 = (sp - rate * st) / n;            // phase at symbol 0
+        result.phase_rate = static_cast<float>(rate);
+        result.phase_offset = static_cast<float>(-phi0);
+        result.freq_offset_hz += static_cast<float>(rate * config_.baud_rate / (2 * PI));
+    }
+
     /**
      * Extract preamble symbols for further processing
      */
-    void extract_preamble_symbols(const std::vector<complex_t>& filtered, 
+    void extract_preamble_symbols(const std::vector<complex_t>& filtered,
                                    BrainDecodeResult& result) {
-        complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
-        
         // Extract all 480 symbols of first preamble frame
         for (int i = 0; i < 480; i++) {
             int idx = result.start_sample + i * sps_;
             if (idx >= static_cast<int>(filtered.size())) break;
-            result.preamble_symbols.push_back(filtered[idx] * rot);
+            result.preamble_symbols.push_back(filtered[idx] * derotation(result, i));
         }
     }
     
@@ -705,8 +785,6 @@ private:
      */
     void extract_data_symbols(const std::vector<complex_t>& filtered,
                                BrainDecodeResult& result) {
-        complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
-        
         // Use configured preamble length (set by caller based on known mode)
         // This is critical for interoperability - don't rely on D1/D2 detection
         // which may not match the configured mode exactly
@@ -730,7 +808,8 @@ private:
         
         // Extract data symbols
         for (int idx = data_start; idx < static_cast<int>(filtered.size()); idx += sps_) {
-            result.data_symbols.push_back(filtered[idx] * rot);
+            result.data_symbols.push_back(
+                filtered[idx] * derotation(result, (idx - result.start_sample) / sps_));
         }
         
         std::cout << "[RX] extracted " << result.data_symbols.size() << " data symbols" << std::endl;
