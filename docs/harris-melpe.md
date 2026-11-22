@@ -286,19 +286,38 @@ most 0.098.
 
 So the scorer:
 
-- takes the rate from the preamble (the file's slug, or `rate` in a sidecar), and with
-  `--search` tries both byte orders and every frame offset, using the sync bit to fix the
-  offset at 2400 and 1200 bps when it alternates in at least 90 % of frames;
+- takes the rate from the receiver mode in the modem stage's sidecar (600H 600 bps,
+  1200H 1200 bps, 2400V 2400 bps), or from the file's slug without one;
+- checks the frame period first (below) and does not decode a mode whose bits do not
+  repeat at the rate's STANAG 4591 frame size;
+- with `--search` tries both payload byte orders and every frame offset, and at 600 bps
+  both coder packings (measured MSB-first, and RFC 8130's LSB-first); the sync bit fixes
+  the offset at 2400 and 1200 bps when it alternates in at least 90 % of frames.
   `--search-all` adds every rate, frame reversal and inversion;
-- passes a file when `track` >= 0.25 and beats every other choice it tried by 0.05.
+- passes a message when `track` >= 0.25 and beats every other choice it tried by 0.05.
+
+### Frame period
+
+`melpe_frames.period_z` measures how strongly a stream repeats with a period P, whatever
+the frame phase. Cut into rows of P bits, a framed stream's column means stray from the
+stream's own share of ones at its biased positions: codebook index MSBs, voicing bits, the
+sync bit. The statistic z is about N(0, 1) when there is no structure at P. It is measured
+against the stream's own mean, so a stream with more zeros than ones shows no period from
+that alone. `period_check` pools z over every message of a mode, for P from 4 to 130.
+A mode fails the check when z at the rate's frame size is below 3 while another period,
+not a multiple of it, reaches 6 or more. Random bits peak at about 3.5 over that range.
 
 ### Running it
 
 ```
-python3 -I -B test/harris/score.py --melpe <reference coder> [--search] \
-    [--payload DIR] [--audio DIR] [--proofs DIR --set <test-set dir> --decoder TEXT]
+python3 -I -B test/harris/score.py --melpe <reference coder> --payload DIR \
+    [--rx build/bin/m110a_rx --score build/bin/harris_score] [--set <test-set dir>] \
+    [--search] [--audio DIR] [--proofs DIR --decoder TEXT]
 python3 -I -B test/harris/score.py --melpe <reference coder> --calibrate <8 kHz s16le speech> ...
 ```
+
+With `--rx` and `--score` the modem stage runs first and writes the payloads into
+`--payload`. Without them the MELPe stage reads payloads and sidecars written before.
 
 `--proofs DIR` writes `DIR/t7.json` and the audio it names under `DIR/t7-audio/`: the
 decoded speech, and the recording resampled to 8 kHz.
@@ -310,8 +329,65 @@ message's result in order, and the decoded speech is the messages joined with 0.
 silence between them. The item is "pass" when every message passes, "partial" when every
 message is at least partial, and "fail" otherwise. Text fields carry no file paths,
 host names or frequencies. `ctest -L fast` runs `test/harris/test_harris.py` (packing, sync
-search, the speech measure on synthetic signals, and the proof output), which needs no
-MELPe coder.
+search, the frame-period check and the speech measure on synthetic signals, and the proof
+output), which needs no MELPe coder.
+
+### Results on the Harris set
+
+`score.py --rx ... --score ... --search` over the eight recordings. The modem stage's
+payloads are byte-identical to those of the modem scorer on feat/harris-mode, all 11.
+
+| Message | Mode | Bytes | MELPe frames | Frame start | Sync bit alternates | track | Next best | Result |
+|---|---|---|---|---|---|---|---|---|
+| 600_1 | 600H | 442 | not STANAG 4591 | - | - | - | - | not decoded |
+| 600_2 | 600H | 418 | not STANAG 4591 | - | - | - | - | not decoded |
+| 600_3_multiples_m1 to m4 | 600H | 314, 224, 142, 82 | not STANAG 4591 | - | - | - | - | not decoded |
+| 1200_1 | 1200H | 1156 | 113 × 81 bits | bit 54 | 100 % | 0.325 | 0.115 | speech |
+| 1200_2 | 1200H | 740 | 72 × 81 bits | bit 54 | 99 % | 0.386 | 0.130 | speech |
+| 1200_3 | 1200H | 760 | 74 × 81 bits | bit 54 | 99 % | 0.172 | 0.131 | frames found, measure low |
+| melp600 | 600H | 628 | not STANAG 4591 | - | - | - | - | not decoded |
+| melp2400 | 2400V | 1911 | 283 × 54 bits | bit 6 + 54k | 100 % | 0.121 | 0.107 | frames found, measure low |
+
+Bit order: at 2400 and 1200 bps the frames read with stream bit k as frame bit k+1 (the
+payload's LSB-first bytes, bit 1 first [4, s5.5.3]), packed for the coder as RFC 8130 [5].
+The sync bit then alternates in 99-100 % of frames; random bits reach at most 0.59.
+
+**A common 54-bit header.** All 11 streams, in all three modes, begin with the same 54
+bits: `011111011010100110011010100100000100111110000011110010` (stream order). They differ
+from bit 54 on. The 1200 bps frames start right after it, at bit 54, in all three 1200
+files. The melp2400 frames fill the stream exactly: 15288 bits = 6 + 283 × 54, so its
+frame grid passes bit 60. That the header is the STANAG 4591 Annex O frame
+synchronization sequence [4, Annex O] is an inference: Annex O is not in the edition at
+hand.
+
+**600H is not STANAG 4591 600 bps MELPe.** Frame period, pooled over each mode's messages:
+
+| Mode | Strongest period | z | z at the STANAG frame size |
+|---|---|---|---|
+| 1200H | 81 bits | 42.4 | 42.4 (81) |
+| 2400V | 54 bits | 109.2 | 109.2 (54) |
+| 600H | 60 bits | 14.9 | 0.4 (54) |
+
+The 600H payloads repeat every 60 bits, with a 20-bit sub-period, and show no structure at
+the 54 bits of a STANAG 4591 600 bps frame. 60 bits is 100 ms at 600 bps: the block of
+Harris's own 600 bps MELP vocoder, four 25 ms frames coded together in 60 bits [7]. That
+the RT-1694D's 600 bps voice is that vocoder is an inference from the period; [7] does not
+give its bit layout or codebooks, and the reference coder here cannot decode it. Before
+this check, a search of every frame offset, both byte orders and both coder packings
+found no 600H choice that stood out: in six of the seven 600H messages the best and
+second-best readings were within 0.04 of each other, at scattered offsets, byte orders and
+packings. The seventh, the 12-frame fourth message of 600 #3, read 0.362 against 0.298:
+too short to mean anything.
+
+**melp2400 and 1200_3.** Their frames are certain (the sync bit alternates in 99-100 % of
+283 and 74 frames), but the audio measure reads below 0.25. The melp2400 parameters are
+speech-like: with RFC 8130 Table 1 positions, adjacent frames carry pitch codes within 2
+of each other in 32 % of frames (coded calibration speech 45 %, random bits 7 %; the same
+stream cut 27 bits late 10 %). Pauses do not explain the low reading: melp2400 is active
+(within 20 dB of its loudest frames) in 66 % of frames, and its track over active frames
+is 0.18, against about 0.55 for 1200_1 and 1200_2. NOT DETERMINABLE here whether the
+cause is the speech itself or the recording; listening to the decoded audio would answer
+it.
 
 ## References
 
@@ -335,3 +411,6 @@ MELPe coder.
 
 [6] D. Rowe, codec2, GitHub repository drowe67/codec2, LGPL-2.1,
     https://github.com/drowe67/codec2 (speech samples under `raw/`).
+
+[7] M. W. Chamberlain, "A 600 bps MELP vocoder for use on HF channels," in Proc. IEEE
+    MILCOM 2001. Harris Corporation, RF Communications Division. Not filed in this repo.

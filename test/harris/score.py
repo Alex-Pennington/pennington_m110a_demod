@@ -380,6 +380,18 @@ def recording_item(label, mode, results, audio, proofs_root, slug):
     """One proof item for a recording from its messages' results; writes its decoded audio."""
     status = combine_status([r["status"] for r in results])
     texts = [describe(r) for r in results]
+    skipped = [r for r in results if r["d"] is None and r.get("period") and not r["period"][3]]
+    if len(results) > 1 and len(skipped) == len(results):
+        pc = results[0]["period"]
+        decoded = (f"{len(results)} messages, one per preamble, of "
+                   + ", ".join(str(r["bytes"]) for r in results)
+                   + f" payload bytes. Not decoded: the bits repeat every {pc[0]} bits "
+                   f"({1000 * pc[0] / pc[4]:.0f} ms at {pc[4]} bps), not every "
+                   f"{mf.frame_bits(pc[4])} as STANAG 4591 {pc[4]} bps MELPe frames do.")
+        return proofs.item(label, mode, status, decoded, None, audio)
+    if len(results) == 1 and skipped:
+        decoded = texts[0][0] + "."
+        return proofs.item(label, mode, status, decoded, None, audio)
     if len(results) == 1:
         decoded = texts[0][0] + f"; speech from {PASS_TRACK:.2f}."
         detail = (texts[0][1][0].upper() + texts[0][1][1:] + ".") if texts[0][1] else None
