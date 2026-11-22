@@ -35,8 +35,12 @@ struct DecodeResult {
     /// Decoded data bytes
     std::vector<uint8_t> data;
     
-    /// Whether EOM (End of Message) was detected
+    /// Whether EOM (End of Message) was detected: the EOM 4B65A5B2, or the older
+    /// ModemTX ending of zero frames read from trailing zero bytes
     bool eom_detected = false;
+
+    /// True when the EOM 4B65A5B2 itself was found; data stops before it
+    bool eom_sequence = false;
     
     /// Estimated SNR in dB
     float snr_db = 0.0f;

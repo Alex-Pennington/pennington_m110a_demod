@@ -366,8 +366,10 @@ private:
         std::cerr.rdbuf(old_err);
 
         std::vector<uint8_t> d = r.data;
+        // ModemRX cuts the data at the EOM itself and says so in eom_sequence
         long eom_bit = find_eom(d);
         if (eom_bit >= 0) d.resize(static_cast<size_t>(eom_bit / 8));
+        const bool eom = eom_bit >= 0 || r.eom_sequence;
         std::string text, hex;
         char hx[4];
         for (uint8_t c : d) {
@@ -380,12 +382,12 @@ private:
                "bytes=%zu snr_db=%.1f d1=%d d2=%d countdown=%d err=\"%s\"\n",
                m.id, a_first / FS, a1 / FS, mode_name(r.mode).c_str(), m.hits, m.metric,
                m.freq, r.success ? 1 : 0, r.quality_db, r.quality_threshold_db,
-               eom_bit >= 0 ? 1 : 0, d.size(), r.snr_db, r.d1, r.d2, r.countdown,
+               eom ? 1 : 0, d.size(), r.snr_db, r.d1, r.d2, r.countdown,
                r.error ? r.error->message.c_str() : "");
         printf("  text=\"%s\"\n  hex=%s\n", text.c_str(), hex.c_str());
         fflush(stdout);
         if (r.success) decoded_ok_++;
-        if (opt_.have_expect && r.success && eom_bit >= 0 &&
+        if (opt_.have_expect && r.success && eom &&
             std::string(d.begin(), d.end()) == opt_.expect)
             expect_met_ = true;
     }

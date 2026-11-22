@@ -69,6 +69,12 @@ public:
         
         state_ = RxState::SEARCHING;
         DecodeResult result;
+        auto valid = config_.validate();  // the constructor takes the config unchecked
+        if (!valid.ok()) {
+            result.error = valid.error();
+            state_ = RxState::DECODE_ERROR;
+            return result;
+        }
         
         ModeId mode_id;
         float detected_freq_offset = 0.0f;
@@ -167,8 +173,7 @@ public:
         // so its convergence rate scales with input power: below about 2500 RMS
         // (int16) it never trained and the codec decoded garbage.
         normalize_symbol_level(brain_result);
-        dfe_probe_err_pow_ = 0.0;
-        dfe_probe_ref_pow_ = 0.0;
+        dfe_probe_frames_.clear();
         
         // Step 3: Apply phase tracking if enabled
         // Phase tracking corrects frequency offsets - only useful when no equalizer
@@ -261,16 +266,20 @@ public:
                 }
                 
                 // Detect and strip EOM
-                result.eom_detected = detect_eom(turbo_decoded, mode_cfg.unknown_data_len, 
-                                                 mode_cfg.known_data_len);
-                if (result.eom_detected) {
-                    turbo_decoded = strip_eom_padding(turbo_decoded);
+                const long eom_bit = cut_at_eom(turbo_decoded);
+                result.eom_sequence = eom_bit >= 0;
+                result.eom_detected = result.eom_sequence;
+                if (!result.eom_detected) {
+                    result.eom_detected = detect_eom(turbo_decoded, mode_cfg.unknown_data_len,
+                                                     mode_cfg.known_data_len);
+                    if (result.eom_detected) turbo_decoded = strip_eom_padding(turbo_decoded);
                 }
                 
                 result.quality_db = probe_snr_db(phase_corrected,
                                                  mode_cfg.unknown_data_len,
                                                  mode_cfg.known_data_len,
-                                                 block_frames_);
+                                                 block_frames_,
+                                                 quality_span(mode_cfg, eom_bit));
                 result.quality_threshold_db = quality_threshold_db(mode_id);
                 result.success = result.quality_db >= result.quality_threshold_db;
                 if (!result.success) result.error = low_quality_error(result);
@@ -314,27 +323,34 @@ public:
             return result;
         }
         
-        // Step 6: Detect EOM (End of Message)
-        // EOM = 4 frames of zeros, which decode as zero bytes
-        // Check if trailing bytes are zeros (indicating EOM was present)
-        result.eom_detected = detect_eom(decoded, mode_cfg.unknown_data_len, 
-                                         mode_cfg.known_data_len);
-        
-        // If EOM detected, strip the zero padding from result
-        if (result.eom_detected) {
-            decoded = strip_eom_padding(decoded);
+        // Step 6: Detect EOM (End of Message). The 110A EOM word 4B65A5B2 ends the
+        // data where it is found. Without it, fall back to the older ModemTX ending
+        // of 4 frames of zero data, which decode as trailing zero bytes.
+        const long eom_bit = cut_at_eom(decoded);
+        result.eom_sequence = eom_bit >= 0;
+        result.eom_detected = result.eom_sequence;
+        if (!result.eom_detected) {
+            result.eom_detected = detect_eom(decoded, mode_cfg.unknown_data_len,
+                                             mode_cfg.known_data_len);
+            if (result.eom_detected) decoded = strip_eom_padding(decoded);
         }
         
         // Step 7: Decode quality. With the DFE, score its own output on the
         // known probes; otherwise score the probes in the stream the codec read.
-        if (config_.equalizer == Equalizer::DFE && dfe_probe_err_pow_ > 0.0) {
-            result.quality_db = static_cast<float>(
-                10.0 * std::log10(dfe_probe_ref_pow_ / dfe_probe_err_pow_));
+        // Either way over the quality span, or only the message's own symbols when
+        // the EOM says it is shorter (a 4800S message can be 2 frames long).
+        const int span = quality_span(mode_cfg, eom_bit);
+        double dfe_err = 0.0, dfe_ref = 0.0;
+        for (const auto& f : dfe_probe_frames_) {
+            if (f[0] <= span) { dfe_err += f[1]; dfe_ref += f[2]; }
+        }
+        if (config_.equalizer == Equalizer::DFE && dfe_err > 0.0) {
+            result.quality_db = static_cast<float>(10.0 * std::log10(dfe_ref / dfe_err));
         } else {
             result.quality_db = probe_snr_db(equalized_symbols,
                                              mode_cfg.unknown_data_len,
                                              mode_cfg.known_data_len,
-                                             block_frames_);
+                                             block_frames_, span);
         }
         result.quality_threshold_db = quality_threshold_db(mode_id);
         result.success = result.quality_db >= result.quality_threshold_db;
@@ -536,10 +552,9 @@ private:
     RxConfig config_;
     RxState state_;
     
-    // Probe error and reference power of the DFE's a-priori outputs over the
-    // quality span (see accumulate_probe_quality).
-    double dfe_probe_err_pow_ = 0.0;
-    double dfe_probe_ref_pow_ = 0.0;
+    // Per frame within the quality span: the frame's end (symbols), and the probe
+    // error and reference power of the DFE's a-priori outputs (accumulate_probe_quality).
+    std::vector<std::array<double, 3>> dfe_probe_frames_;
     
     /// Data symbols scored for decode quality: 0.6 s at 2400 baud, one short
     /// interleaver block, the least any 110A transmission sends.
@@ -605,8 +620,8 @@ private:
         if (frame_end <= static_cast<size_t>(QUALITY_SPAN_SYMBOLS) && !probe_ref.empty()) {
             double ref_pow = 0.0;
             for (const auto& r : probe_ref) ref_pow += std::norm(r);
-            dfe_probe_err_pow_ += static_cast<double>(mse) * probe_ref.size();
-            dfe_probe_ref_pow_ += ref_pow;
+            dfe_probe_frames_.push_back({static_cast<double>(frame_end),
+                                         static_cast<double>(mse) * probe_ref.size(), ref_pow});
         }
     }
     
@@ -639,10 +654,10 @@ private:
     /// span, after a least-squares complex gain fit to the known probe values.
     /// Probes at interleaver block boundaries are skipped (block_boundary_probe).
     static float probe_snr_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len,
-                              int block_frames = 0) {
+                              int block_frames = 0, int span_symbols = QUALITY_SPAN_SYMBOLS) {
         if (unknown_len <= 0 || known_len <= 0) return -99.0f;
         int pattern_len = unknown_len + known_len;
-        int span = std::min<int>(QUALITY_SPAN_SYMBOLS, static_cast<int>(symbols.size()));
+        int span = std::min<int>(span_symbols, static_cast<int>(symbols.size()));
         DataScramblerFixed scrambler;
         std::vector<complex_t> rx, ref;
         for (int f = 0; (f + 1) * pattern_len <= span; f++) {
@@ -676,9 +691,15 @@ private:
     ///   1200L: wrong max 4.14                  2400L: wrong max 7.56
     /// 150 and 300 never produced wrong bytes (the preamble is lost first);
     /// their exact decodes scored 2.2 dB and up, and an untrained DFE about 0.8.
-    /// 2400S and 4800S do not decode exactly yet; they take the 2400L value.
+    /// 2400S takes the 2400L value.
+    /// 4800S is uncoded, so no threshold makes success mean bit-exact: at 17 dB in
+    /// 3 kHz some decodes still carry 1-2 bit errors at 13-15 dB. 12.5 dB is set from
+    /// 440 ModemTX RRC decodes (1-400 bytes, 0-18 dB) and checked on 416 more
+    /// (docs/TX_CHAIN.md): every decode it admits had BER below 1e-2 (worst 9.4e-3),
+    /// and clean messages of 1-600 bytes score 13.8 dB and up.
     static float quality_threshold_db(ModeId mode) {
         switch (mode) {
+            case ModeId::M4800S:                      return 12.5f;
             case ModeId::M150S:  case ModeId::M150L:  return 1.5f;
             case ModeId::M300S:  case ModeId::M300L:  return 1.5f;
             case ModeId::M600S:  case ModeId::M600L:
@@ -703,6 +724,12 @@ private:
     mutable std::mutex mutex_;
     
     DecodeResult decode_internal(const Samples& samples) {
+        auto valid = config_.validate();
+        if (!valid.ok()) {
+            DecodeResult r;
+            r.error = valid.error();
+            return r;
+        }
         // First pass - detect mode
         BrainDecoderConfig detect_cfg;
         detect_cfg.sample_rate = config_.sample_rate;
@@ -866,7 +893,57 @@ private:
     }
     
     /**
-     * Detect EOM (End of Message) marker in decoded data
+     * Cut decoded data at the 110A EOM 4B65A5B2 (MIL-STD-188-110 5.3.2.3.1)
+     *
+     * The EOM goes to the FEC encoder most significant digit first, so in the
+     * LSB-first bytes the decoder emits it reads D2 A6 A5 4D when byte aligned.
+     * Searched at every bit offset, as m110a_rx does.
+     *
+     * @param decoded Decoded data bytes; on a hit, cut to the whole bytes before it
+     * @return bit position of the EOM in the decoded stream, or -1
+     */
+    static long cut_at_eom(std::vector<uint8_t>& decoded) {
+        static const uint8_t EOM_BYTES[4] = {0xD2, 0xA6, 0xA5, 0x4D};
+        auto bit = [](const uint8_t* d, size_t i) { return (d[i / 8] >> (i % 8)) & 1; };
+        const size_t nbits = decoded.size() * 8;
+        for (size_t pos = 0; pos + 32 <= nbits; pos++) {
+            bool ok = true;
+            for (size_t i = 0; i < 32 && ok; i++) ok = bit(decoded.data(), pos + i) == bit(EOM_BYTES, i);
+            if (ok) {
+                decoded.resize(pos / 8);
+                return static_cast<long>(pos);
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Channel symbols (data + probes) the transmitter sent for a message whose EOM
+     * starts at decoded bit eom_bit: the bits up to it, the EOM, the 144 flush bits,
+     * coded and repeated as the mode does, padded to the interleaver block (or, with
+     * the interleaver bypassed, to the frame). Probes after that carry no signal.
+     */
+    static size_t message_symbols(const ModeConfig& m, long eom_bit) {
+        const int per_frame = m.bits_per_symbol * m.unknown_data_len;
+        if (eom_bit < 0 || per_frame <= 0) return static_cast<size_t>(QUALITY_SPAN_SYMBOLS);
+        size_t bits = static_cast<size_t>(eom_bit) + 32 + 144;
+        if (m.bps != 4800) bits *= 2;
+        if (m.symbol_repetition > 1 && m.modulation == Modulation::BPSK) bits *= m.symbol_repetition;
+        const bool bypass = m.interleaver.row_inc == 0 && m.interleaver.col_inc == 0;
+        const size_t unit = bypass ? static_cast<size_t>(per_frame)
+                                   : static_cast<size_t>(m.interleaver.rows * m.interleaver.cols);
+        bits = (bits + unit - 1) / unit * unit;
+        const size_t frames = (bits / m.bits_per_symbol + m.unknown_data_len - 1) / m.unknown_data_len;
+        return frames * static_cast<size_t>(m.unknown_data_len + m.known_data_len);
+    }
+
+    /// The quality span: QUALITY_SPAN_SYMBOLS, or the message when it is shorter
+    static int quality_span(const ModeConfig& m, long eom_bit) {
+        return static_cast<int>(std::min<size_t>(QUALITY_SPAN_SYMBOLS, message_symbols(m, eom_bit)));
+    }
+
+    /**
+     * Detect the older ModemTX end of message in decoded data
      * 
      * EOM consists of 4 frames of zero data. After FEC decoding,
      * this produces zero bytes at the end of the transmission.

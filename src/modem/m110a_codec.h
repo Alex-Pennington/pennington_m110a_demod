@@ -228,23 +228,46 @@ public:
      * @return Complex PSK symbols with probes interleaved
      */
     std::vector<complex_t> encode_with_probes(const std::vector<uint8_t>& data) {
-        int unknown_len = config_.unknown_data_len;
-        int known_len = config_.known_data_len;
-        
         // 75 bps modes have no probes - use regular encode
-        if (unknown_len == 0 || known_len == 0) {
+        if (config_.unknown_data_len == 0 || config_.known_data_len == 0) {
             return encode(data);
         }
-        
-        // Step 1: Convert bytes to bits (LSB first!)
-        std::vector<int> bits = bytes_to_bits_lsb(data);
-        
+        return encode_bits_with_probes(bytes_to_bits_lsb(data), false);
+    }
+
+    /**
+     * Encode information bits with probes integrated, optionally ending the message.
+     *
+     * With message_end, the FEC encoder (or, at 4800 bps, the uncoded stream) takes
+     * after the bits the EOM 4B65A5B2, most significant digit first (§5.3.2.3.1), then
+     * 144 zero bits (§5.3.2.3.2), and no further tail: the 144 zeros flush the K=7
+     * encoder. The zero padding to the end of the interleaver block that follows is the
+     * rest of the §5.3.2.3.2 flush. Without message_end the stream ends as before: the
+     * bits, a 6-bit encoder tail, zero padding to the block end.
+     *
+     * @param bits         information bits, each 0 or 1, in transmit order
+     * @param message_end  append EOM and flush
+     * @return data and probe symbols, from the first data symbol after the preamble
+     */
+    std::vector<complex_t> encode_bits_with_probes(std::vector<int> bits, bool message_end) {
+        int unknown_len = config_.unknown_data_len;
+        int known_len = config_.known_data_len;
+        if (unknown_len == 0 || known_len == 0) return {};
+
+        // Step 1: EOM and flush (§5.3.2.3.1, §5.3.2.3.2)
+        if (message_end) {
+            static const uint32_t EOM = 0x4B65A5B2u;
+            for (int i = 31; i >= 0; i--) bits.push_back((EOM >> i) & 1);
+            bits.insert(bits.end(), 144, 0);
+        }
+
         // Step 2: FEC encode (rate 1/2, K=7) - except 4800 bps uncoded
         std::vector<int> coded;
         if (config_.bps == 4800) {
             coded = bits;
         } else {
             coded = fec_encode(bits);
+            if (message_end) coded.resize(bits.size() * 2);  // the 144 zeros are the flush
         }
         
         // Step 3: Apply bit repetition for low-rate modes
@@ -269,16 +292,23 @@ public:
             repeated_coded = std::move(coded);
         }
         
-        // Step 4: Pad to interleaver block size
-        while (repeated_coded.size() % block_size != 0) {
+        // Step 4: Pad to interleaver block size. With the interleaver bypassed (4800
+        // bps), a message end stops after the coder flush (§5.3.2.3.2): pad only to the
+        // end of the frame's data segment.
+        const bool bypass_end = message_end && interleaver_.is_passthrough();
+        const size_t pad_unit = bypass_end
+            ? static_cast<size_t>(config_.bits_per_symbol * unknown_len)
+            : static_cast<size_t>(block_size);
+        while (repeated_coded.size() % pad_unit != 0) {
             repeated_coded.push_back(0);
         }
         
-        // Step 5: Interleave
+        // Step 5: Interleave (a bypassed interleaver passes the bits through)
         std::vector<soft_bit_t> soft_coded(repeated_coded.begin(), repeated_coded.end());
         std::vector<soft_bit_t> interleaved;
+        if (bypass_end) interleaved = soft_coded;
         
-        for (size_t i = 0; i < soft_coded.size(); i += block_size) {
+        for (size_t i = 0; !bypass_end && i < soft_coded.size(); i += block_size) {
             std::vector<soft_bit_t> block(soft_coded.begin() + i, 
                                           soft_coded.begin() + i + block_size);
             auto il = interleaver_.interleave(block);
@@ -303,10 +333,21 @@ public:
         // Apply ONE continuous scrambler to everything
         std::vector<complex_t> output;
         DataScramblerFixed scrambler;
-        int pattern_len = unknown_len + known_len;
-        
+
+        // §5.3.2.3.7.1.2: the two known segments before each new interleaver block
+        // (the last two frames of every 1440 / 11520-symbol block; 4800 bps takes the
+        // short pattern) carry D1, then D2: the 8-symbol Walsh pattern twice, then
+        // zeros when the segment is 20 symbols long. The last block carries them too,
+        // as encode_message_bits() and the Harris RT-1694D do.
+        static const int WALSH[8][8] = {
+            {0,0,0,0,0,0,0,0}, {0,4,0,4,0,4,0,4}, {0,0,4,4,0,0,4,4}, {0,4,4,0,0,4,4,0},
+            {0,0,0,0,4,4,4,4}, {0,4,0,4,4,0,4,0}, {0,0,4,4,4,4,0,0}, {0,4,4,0,4,0,0,4}};
+        const int per_frame = config_.bits_per_symbol * unknown_len;
+        const int frames_per_block = block_size % per_frame == 0 ? block_size / per_frame : 0;
+        const int d1 = config_.d1_sequence & 7, d2 = config_.d2_sequence & 7;
+
         size_t tribit_idx = 0;
-        while (tribit_idx < tribits.size()) {
+        for (int frame = 0; tribit_idx < tribits.size(); frame++) {
             // Data symbols
             for (int i = 0; i < unknown_len && tribit_idx < tribits.size(); i++) {
                 int tribit = tribits[tribit_idx++];
@@ -331,9 +372,12 @@ public:
                 output.push_back(PSK8_POINTS[sym_idx]);
             }
             
-            // Probe symbols (scrambler only, data=0)
+            // Probe symbols: scrambler only (data 0), or D1 / D2 before a new block
+            const int fb = frames_per_block > 2 ? frame % frames_per_block : -1;
+            const int d = fb < 0 ? -1 : fb == frames_per_block - 2 ? d1 : fb == frames_per_block - 1 ? d2 : -1;
             for (int i = 0; i < known_len; i++) {
-                int sym_idx = scrambler.next();
+                int pat = (d >= 0 && i < 16) ? WALSH[d][i % 8] : 0;
+                int sym_idx = (pat + scrambler.next()) & 7;
                 output.push_back(PSK8_POINTS[sym_idx]);
             }
         }

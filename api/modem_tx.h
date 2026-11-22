@@ -89,7 +89,12 @@ public:
      * Encode data to audio samples (one-shot)
      * 
      * This is the main encoding function. It takes raw data bytes
-     * and produces audio samples ready for transmission.
+     * and produces audio samples ready for transmission: preamble, then the
+     * data bytes (LSB first) and, with include_eom, the 110A message end: EOM
+     * 4B65A5B2, a 144-bit flush and zeros to the end of the interleaver block
+     * (MIL-STD-188-110 5.3.2.3.1-2). Without include_eom the data ends at its
+     * interleaver block and no EOM is sent. Preamble and data are modulated as
+     * one symbol stream.
      * 
      * @param data Data bytes to encode
      * @return Audio samples or error

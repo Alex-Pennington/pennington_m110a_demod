@@ -11,6 +11,12 @@
 namespace m110a {
 namespace api {
 
+/// The TX and RX run a whole number of samples per 2400 Bd symbol; of the rates
+/// they were written for, only 48 kHz gives one (8 kHz gives 3.33, and the symbol
+/// clock would run at 8000 / 3 = 2667 Bd).
+inline constexpr const char* SAMPLE_RATE_RULE =
+    "Sample rate must be 48000 Hz (a whole number of samples per 2400 Bd symbol)";
+
 // ============================================================
 // TX Configuration
 // ============================================================
@@ -28,18 +34,22 @@ struct TxConfig {
     /// Carrier frequency in Hz
     float carrier_freq = CARRIER_FREQ_DEFAULT;
     
-    /// Output amplitude (0.0 to 1.0)
+    /// Output amplitude (0.0 to 1.0): the carrier peak of a unit 8PSK symbol, so the
+    /// signal RMS is amplitude / sqrt(2) with or without pulse shaping. RRC pulses
+    /// peak higher than that (about 1.5 x amplitude).
     /// Default 0.32 matches MS-DMT reference output levels (~7000 RMS)
     float amplitude = 0.32f;
     
     /// Add preamble to transmission
     bool include_preamble = true;
     
-    /// Add EOM (End of Message) marker
+    /// End the message with the EOM 4B65A5B2 and the 144-bit flush (false: no EOM)
     bool include_eom = true;
     
-    /// Use RRC pulse shaping (improves spectrum, requires RX matched filter)
-    bool use_pulse_shaping = false;
+    /// Root-raised-cosine pulses (alpha 0.35), matched to the receiver's SRRC filter.
+    /// false sends rectangular pulses, which leave ISI after any matched receiver and
+    /// cost 4800S about 12 dB (docs/TX_CHAIN.md, Measured performance)
+    bool use_pulse_shaping = true;
     
     /// Add calibration burst for Brain Modem compatibility
     /// Brain TX starts with: 2 symbols burst + 8 symbols silence + ramp into preamble
@@ -58,9 +68,8 @@ struct TxConfig {
         if (mode == Mode::AUTO) {
             return Error(ErrorCode::INVALID_MODE, "AUTO mode not valid for TX");
         }
-        if (sample_rate != 8000.0f && sample_rate != 48000.0f) {
-            return Error(ErrorCode::INVALID_SAMPLE_RATE, 
-                        "Sample rate must be 8000 or 48000 Hz");
+        if (sample_rate != 48000.0f) {
+            return Error(ErrorCode::INVALID_SAMPLE_RATE, SAMPLE_RATE_RULE);
         }
         if (carrier_freq < 500.0f || carrier_freq > 3000.0f) {
             return Error(ErrorCode::INVALID_CARRIER_FREQ,
@@ -162,9 +171,8 @@ struct RxConfig {
      * Validate configuration
      */
     Result<void> validate() const {
-        if (sample_rate != 8000.0f && sample_rate != 48000.0f) {
-            return Error(ErrorCode::INVALID_SAMPLE_RATE,
-                        "Sample rate must be 8000 or 48000 Hz");
+        if (sample_rate != 48000.0f) {
+            return Error(ErrorCode::INVALID_SAMPLE_RATE, SAMPLE_RATE_RULE);
         }
         if (carrier_freq < 500.0f || carrier_freq > 3000.0f) {
             return Error(ErrorCode::INVALID_CARRIER_FREQ,

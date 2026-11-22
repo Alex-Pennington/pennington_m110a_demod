@@ -60,6 +60,8 @@ public:
     
     Result<Samples> encode(const std::vector<uint8_t>& data) {
         std::lock_guard<std::mutex> lock(mutex_);
+        auto valid = config_.validate();  // the constructor takes the config unchecked
+        if (!valid.ok()) return valid.error();
         
         if (data.empty()) {
             return Error(ErrorCode::TX_DATA_EMPTY);
@@ -98,32 +100,27 @@ public:
             output.insert(output.end(), leading_audio.begin(), leading_audio.end());
         }
         
-        // Generate preamble if requested
-        if (config_.include_preamble) {
-            auto preamble_symbols = generate_preamble(mode_id);
-            auto preamble_audio = config_.use_pulse_shaping ? 
-                                  modulate_with_rrc(preamble_symbols) :
-                                  modulate_simple(preamble_symbols);
-            output.insert(output.end(), preamble_audio.begin(), preamble_audio.end());
-        }
-        
-        // Encode data to symbols using M110ACodec with probes integrated
-        auto symbols_with_probes = codec_.encode_with_probes(data);
-        
-        // Modulate to audio (with or without RRC pulse shaping)
-        auto data_audio = config_.use_pulse_shaping ?
-                          modulate_with_rrc(symbols_with_probes) :
-                          modulate_simple(symbols_with_probes);
-        output.insert(output.end(), data_audio.begin(), data_audio.end());
-        
-        // Generate EOM (End of Message) if requested
-        if (config_.include_eom) {
-            auto eom_symbols = generate_eom(mode_id, symbols_with_probes.size());
-            auto eom_audio = config_.use_pulse_shaping ?
-                             modulate_with_rrc(eom_symbols) :
-                             modulate_simple(eom_symbols);
-            output.insert(output.end(), eom_audio.begin(), eom_audio.end());
-        }
+        // Preamble and data + probes go out as ONE symbol stream, modulated once.
+        // modulate_with_rrc() appends the filter's 2*RRC_SPAN symbols of tail to
+        // whatever it is given, so shaping the parts one by one would put 12 symbols of
+        // extra samples between preamble and data, and the receiver, which takes the
+        // data to start on the symbol after the preamble, would read the whole message
+        // 12 symbols out of step.
+        std::vector<complex_t> stream;
+        if (config_.include_preamble) stream = generate_preamble(mode_id);
+
+        // Data, then with include_eom the 110A message end: EOM 4B65A5B2, 144 flush
+        // bits, zeros to the end of the interleaver block (M110ACodec). Without
+        // include_eom the data ends at its interleaver block, with no EOM at all.
+        std::vector<int> bits;
+        bits.reserve(data.size() * 8);
+        for (uint8_t b : data)
+            for (int i = 0; i < 8; i++) bits.push_back((b >> i) & 1);  // LSB first
+        auto symbols_with_probes = codec_.encode_bits_with_probes(std::move(bits), config_.include_eom);
+        stream.insert(stream.end(), symbols_with_probes.begin(), symbols_with_probes.end());
+
+        auto audio = config_.use_pulse_shaping ? modulate_with_rrc(stream) : modulate_simple(stream);
+        output.insert(output.end(), audio.begin(), audio.end());
         
         // Apply soft ramp-up envelope if configured
         if (config_.soft_ramp_ms > 0.0f && !output.empty()) {
@@ -139,6 +136,8 @@ public:
     
     Result<Samples> encode_bits(const std::vector<uint8_t>& bits, std::vector<int>* symbols) {
         std::lock_guard<std::mutex> lock(mutex_);
+        auto valid = config_.validate();
+        if (!valid.ok()) return valid.error();
         if (bits.empty()) return Error(ErrorCode::TX_DATA_EMPTY);
         if (!is_bits_mode(api_to_internal_mode(config_.mode))) {
             return Error(ErrorCode::NOT_IMPLEMENTED, "encode_bits: 600H and 1200H only");
@@ -148,6 +147,8 @@ public:
 
     Result<Samples> generate_preamble() {
         std::lock_guard<std::mutex> lock(mutex_);
+        auto valid = config_.validate();
+        if (!valid.ok()) return valid.error();
         ModeId mode_id = api_to_internal_mode(config_.mode);
         auto symbols = generate_preamble(mode_id);
         return config_.use_pulse_shaping ? 
@@ -263,6 +264,13 @@ private:
     void init_pulse_shaping() {
         sps_ = static_cast<int>(config_.sample_rate / 2400.0f);
         rrc_taps_ = generate_srrc_taps(RRC_ALPHA, RRC_SPAN, static_cast<float>(sps_));
+        // generate_srrc_taps() gives unit-energy taps, so one symbol's pulse spreads
+        // energy 1 over sps samples and the shaped output would sit 10*log10(sps) dB
+        // (13 dB at 48 kHz) below rectangular pulses. Scaled by sqrt(sps), the shaped
+        // baseband has the mean power of a unit symbol, as rectangular pulses do: at
+        // the same amplitude both have the same RMS (amplitude / sqrt(2)).
+        const float g = std::sqrt(static_cast<float>(sps_));
+        for (auto& t : rrc_taps_) t *= g;
     }
     
     static ModeId api_to_internal_mode(Mode mode) {
@@ -406,78 +414,6 @@ private:
             float envelope = 0.5f * (1.0f - std::cos(M_PI * t));
             samples[i] *= envelope;
         }
-    }
-    
-    /**
-     * Generate EOM (End of Message) marker
-     * 
-     * EOM consists of 4 flush frames with:
-     * - Data portion: all zeros (tribit 0 â†’ gray â†’ scramble)
-     * - Probe portion: normal scrambled probes
-     * 
-     * The scrambler continues from where data encoding left off,
-     * which is why we need data_symbol_count to sync.
-     * 
-     * @param mode_id Current mode
-     * @param data_symbol_count Number of data+probe symbols already sent
-     * @return EOM symbols (4 frames)
-     */
-    std::vector<complex_t> generate_eom(ModeId mode_id, size_t data_symbol_count) {
-        const auto& mode_cfg = ModeDatabase::get(mode_id);
-        
-        int unknown_len = mode_cfg.unknown_data_len;
-        int known_len = mode_cfg.known_data_len;
-        
-        // M75 modes have no probes/EOM structure
-        if (unknown_len == 0 || known_len == 0) {
-            return {};
-        }
-        
-        // 8-PSK constellation
-        static const std::array<complex_t, 8> PSK8 = {{
-            complex_t( 1.000f,  0.000f),
-            complex_t( 0.707f,  0.707f),
-            complex_t( 0.000f,  1.000f),
-            complex_t(-0.707f,  0.707f),
-            complex_t(-1.000f,  0.000f),
-            complex_t(-0.707f, -0.707f),
-            complex_t( 0.000f, -1.000f),
-            complex_t( 0.707f, -0.707f)
-        }};
-        
-        // MGD3[0] = 0 - zero data maps to symbol 0 before scrambling
-        static const int ZERO_GRAY = 0;
-        
-        // EOM = 4 flush frames
-        static const int EOM_FRAMES = 4;
-        
-        int pattern_len = unknown_len + known_len;
-        std::vector<complex_t> output;
-        output.reserve(EOM_FRAMES * pattern_len);
-        
-        // Continue scrambler from where data encoding left off
-        DataScramblerFixed scrambler;
-        for (size_t i = 0; i < data_symbol_count; i++) {
-            scrambler.next();
-        }
-        
-        // Generate 4 flush frames
-        for (int frame = 0; frame < EOM_FRAMES; frame++) {
-            // Data portion: all zeros (tribit 0 â†’ gray 0 â†’ scrambled)
-            for (int i = 0; i < unknown_len; i++) {
-                int scr = scrambler.next();
-                int sym_idx = (ZERO_GRAY + scr) & 7;
-                output.push_back(PSK8[sym_idx]);
-            }
-            
-            // Probe portion: scrambler only (same as normal probes)
-            for (int i = 0; i < known_len; i++) {
-                int sym_idx = scrambler.next();
-                output.push_back(PSK8[sym_idx]);
-            }
-        }
-        
-        return output;
     }
     
     /**
