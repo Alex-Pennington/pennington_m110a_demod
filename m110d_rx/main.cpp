@@ -1,6 +1,8 @@
 // m110d_rx: decode one MIL-STD-188-110D Appendix D (3 kHz) transmission from a WAV file.
 //
-// Usage: m110d_rx [options] <file.wav>
+// Usage: m110d_rx [options] <file.wav | - | --stdin>
+//   -, --stdin                     read the WAV from stdin (streamed WAV with 0/0xFFFFFFFF lengths read to EOF)
+//   --resampler-report FS          print the measured response of the FS -> 48000 Hz input resampler and exit
 //   --pn restart|continuous|auto   preamble PN alignment (default auto)
 //   --bpsk-scr-shifts N            data scrambler iterations per BPSK symbol (default 3)
 //   --code d9|alt|auto             K=7 tap reading: Figure D-9 (default), time-reversed, or best
@@ -9,8 +11,12 @@
 //   --selftest                     check generated tables against the standard and exit
 //   -v                             diagnostics on stderr
 //
+// Input rates: any multiple of 2400 Hz as is; any other rate from 6840 Hz (8000 Hz, 44100 Hz, ...)
+// resampled to 48000 Hz first (src/m110d/appd_input.h).
+//
 // Output is one key=value per line on stdout; test/110d/score.py parses it.
 #include "m110d/appd_rx.h"
+#include "m110d/appd_input.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +61,11 @@ int main(int argc, char** argv) {
             return bad ? 1 : 0;
         } else if (a == "-v") {
             opt.verbose = true;
+        } else if (a == "-" || a == "--stdin") {
+            path = "-";
+        } else if (a == "--resampler-report") {
+            resampler_report(std::atoi(next().c_str()));
+            return 0;
         } else if (!a.empty() && a[0] == '-') {
             std::fprintf(stderr, "unknown option %s\n", a.c_str());
             return 2;
@@ -64,13 +75,13 @@ int main(int argc, char** argv) {
     }
     if (path.empty()) {
         std::fprintf(stderr, "usage: m110d_rx [--pn restart|continuous|auto] [--bpsk-scr-shifts N] "
-                             "[--code d9|alt|auto] [-v] <file.wav>\n");
+                             "[--code d9|alt|auto] [-v] <file.wav | ->\n");
         return 2;
     }
     std::vector<double> audio;
     int fs = 0;
     std::string err;
-    if (!read_wav(path, audio, fs, err)) {
+    if (!read_wav_any(path, audio, fs, err) || !to_internal_rate(audio, fs, err, opt.verbose)) {
         std::fprintf(stderr, "%s: %s\n", path.c_str(), err.c_str());
         return 2;
     }
