@@ -50,7 +50,11 @@ add_executable(m110d_chan m110d_chan/main.cpp)
 # test_gui is Windows-only (test/test_gui/brain_client.h uses winsock without a
 # POSIX fallback); build.ps1 builds it on Windows.
 
-set_target_properties(m110a_server hfchansim m110a_rx m110d_rx m110d_chan PROPERTIES
+# Waveform candidate scorer for recorded 110A messages (test/harris/score.py drives it
+# over the Harris MELP test set; docs/harris-melpe.md)
+add_executable(harris_score test/harris/harris_score.cpp)
+
+set_target_properties(m110a_server hfchansim m110a_rx m110d_rx m110d_chan harris_score PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----
