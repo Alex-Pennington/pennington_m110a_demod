@@ -247,12 +247,219 @@ Each item below is a single decode run on the named file.
 
 The TLC section (D.5.2.1.2) is not used. The receiver neither checks it nor counts its blocks.
 
+## Channel testing
+
+`m110d_chan` impairs one test WAV with a channel after Appendix E and writes a new 16-bit WAV
+at the same rate. `test/110d/channel.py` runs a matrix of files x conditions x seeds through
+it and `m110d_rx`. It scores each decode with the `score.py` rule: the text must start with
+the README's expected text.
+
+### How to run
+
+```sh
+cmake --build build-110d --target m110d_rx m110d_chan -j2
+
+# simulator self-test after E.7 (SNR calibration, fading power and spectrum, shift, clock)
+build-110d/bin/m110d_chan --selftest
+
+# one file
+build-110d/bin/m110d_chan --seed 1 --snr 10 --preset poor --foff 5 in.wav out.wav
+
+# the default matrix: WID 0, 3, 13, 7 and 10 SHORT (rows 1, 13, 53, 29, 41), 3 seeds, ~45 s
+python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan \
+    --set <test-set dir> --jobs 2
+
+# other matrices: awgn, foff, drift, ppm, fading, static, or all; any README rows
+python3 -I test/110d/channel.py ... --matrix awgn,ppm --files 1,13,53,29,41 --seeds 3 --csv runs.csv
+```
+
+Impaired WAVs are written under `$TMPDIR` (or `--work`) and deleted after each decode unless
+`--keep` is given. A cell of the table is passes/seeds. Seed k gives the same noise and
+fading draws for every file and condition, and the same impaired file on every run.
+
+### Channel definitions
+
+The chain, in order (`src/channel/appe_channel.h`):
+
+| Step | Definition | Standard |
+|---|---|---|
+| Clock | Re-sampled on the receiver's clock, error `ppm + ppm_per_s * t`. Positive ppm: more samples per second, so the burst is longer and the carrier and symbol rate are lower by the same fraction. Kaiser-windowed sinc, 32 taps. | E.5.1 names 500 ppm as the simulator's own crystal limit |
+| Analytic signal | FFT Hilbert transform | E.4.2 note, E.6.2 |
+| Paths | Delay rounded to whole samples; power shares scaled to a total gain of 1 | E.5.2, E.5.4 (k) |
+| Fading | Complex white Gaussian noise through `f(t) = exp(-pi^2 t^2 d^2)`, truncated at 1% of peak; Gaussian spectrum, sigma = d/2, so d is the two-sigma fading bandwidth. Taps computed at 128 d, cubic-interpolated to the sample rate. d = 0 is a static path. | E.5.4, Figure E-2 |
+| Frequency offset | Constant, linear drift, or a triangle sweep, applied to the analytic signal (a shift, no image) | D.6.4, D.6.5 |
+| Output | Real part | E.4.2 note |
+| Noise | White Gaussian over 0 to fs/2. The variance puts `P / SNR` in the stated bandwidth (default 3000 Hz), where P is the input's average power over the burst. The burst runs from the first to the last 10 ms window within 30 dB of the strongest. | E.5.3, E.5.5; D.6.1 "measured in the specified bandwidth" |
+| Level | Scaled down to a -1 dBFS peak only when it would clip (`out_gain_db`); `--gain` sets it instead | none |
+
+Presets (`m110d_chan --list-presets`):
+
+| Preset | Paths | Source |
+|---|---|---|
+| `awgn` | one static path | Table D-LXIV, AWGN channel |
+| `poor` | 2 equal, 0 and 2 ms, d = 1 Hz | D.6.1 and Table D-LXIV notes ("ITU-R F.1487 Mid-Latitude-Disturbed") |
+| `moderate` | 2 equal, 0 and 1 ms, d = 0.5 Hz | ITU-R F.1487 mid-latitude moderate. Not filed in this repo; the values are not checked against a copy |
+| `good` | 2 equal, 0 and 0.5 ms, d = 0.1 Hz | ITU-R F.1487 mid-latitude quiet. Not filed in this repo; the values are not checked against a copy |
+| `static-wid2`, `static-wid10`, `static-wid12` | static, equal power, (0, 3, 9), (0, 2, 4.5) and (0, 1.5) ms | Table D-LXV, 3 kHz rows |
+
+`--path D:G[:F[:S]]` adds a custom path (delay ms, power dB, fading Hz, shift Hz).
+
+Matrix conditions (`test/110d/channel.py`). "@30" is 30 dB SNR in 3 kHz, the D.6.4 SNR. It is
+used to isolate the other impairments:
+
+| Matrix | Conditions |
+|---|---|
+| `default` | clean; AWGN at D-LXIV+0, +6 and +12 dB; +10 and -30 Hz; +100 ppm; Poor |
+| `awgn` | SNR at the file's Table D-LXIV AWGN value -9, -6, -3, 0, +3, +6, +9, +12, +15 and +20 dB |
+| `foff` | +-2, 5, 10, 20, 30, 35, 40 and 75 Hz |
+| `drift` | 0.5, 1, 2 and +-3.5 Hz/s; the D.6.5 triangle (+-75 Hz at 3.5 Hz/s, starting at 0 Hz rising, at t = 0 of the file) at 30 and 24 dB |
+| `ppm` | +-10, 20, 30, 50, 100, 200, 300 and 500 ppm; 10 and 100 ppm/s drift |
+| `fading` | good, moderate, Poor at 30 dB; Poor at the file's Table D-LXIV Poor value and +10 dB; Poor with no noise; D.6.4 (Poor, +-75 Hz, 30 dB) |
+| `static` | the three Table D-LXV channels at 50 dB (D.6.2's SNR), each run on every file |
+
+### Standard performance targets
+
+Table D-LXIV gives the average SNR in 3 kHz for a coded BER of 1.0E-5. It applies with the
+Long interleaver and a 20-super-frame preamble (D.6.1), measured over at least 60 minutes
+(AWGN) or 5 hours (Poor). The matrix prints these values per file in its second header line.
+Table D-LXV and D.6.2 ask for a BER of 1.0E-5 at 50 dB on the static channels. D.6.4 asks for
+synchronisation held for 5 minutes at +-75 Hz on Poor at 30 dB. D.6.5 asks for a BER of 1.0E-5
+at 24 dB under the +-75 Hz, 3.5 Hz/s sweep.
+
+A pass here is one decode of a SHORT-interleaver burst of about 100 characters (about 800
+bits), with a 3-super-frame preamble. Each file carries 3 s of silence around the burst
+(test-set README). It is not a BER measurement and is not
+comparable with these targets one for one. The matrix shows where a receiver breaks, and
+whether a change moves that point.
+
+### Baseline (measured)
+
+These are the runner's own tables. They were run at commit `c10b5da`, whose receiver sources
+(`src/m110d/`, `m110d_rx/`) are identical to master `32d4424`, with
+`--matrix default,awgn,foff,drift,ppm,static --seeds 3` and `--matrix fading --seeds 10`,
+both at `--jobs 2`. Both exited 0; they took 5 min 43 s and 2 min 52 s.
+
+```
+condition                 #1 W0 SH   #13 W3 SH  #53 W13 SH   #29 W7 SH  #41 W10 SH
+D-LXIV AWGN / Poor dB      -6 / -1       3 / 7      6 / 11     13 / 19     21 / 31
+----------------------------------------------------------------------------------
+clean                          1/1         1/1         1/1         1/1         1/1
+awgn D-LXIV+0             -6dB 0/3     3dB 3/3     6dB 3/3    13dB 3/3    21dB 3/3
+awgn D-LXIV+6              0dB 1/3     9dB 3/3    12dB 3/3    19dB 3/3    27dB 3/3
+awgn D-LXIV+12             6dB 3/3    15dB 3/3    18dB 3/3    25dB 3/3    33dB 3/3
+foff +10 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -30 Hz @30                3/3         3/3         3/3         3/3         3/3
+ppm +100 @30                   0/3         3/3         3/3         3/3         0/3
+poor @30                       0/3         1/3         1/3         1/3         0/3
+awgn D-LXIV-9            -15dB 0/3    -6dB 0/3    -3dB 0/3     4dB 0/3    12dB 0/3
+awgn D-LXIV-6            -12dB 0/3    -3dB 0/3     0dB 0/3     7dB 1/3    15dB 0/3
+awgn D-LXIV-3             -9dB 0/3     0dB 3/3     3dB 2/3    10dB 3/3    18dB 3/3
+awgn D-LXIV+3             -3dB 0/3     6dB 3/3     9dB 3/3    16dB 3/3    24dB 3/3
+awgn D-LXIV+9              3dB 3/3    12dB 3/3    15dB 3/3    22dB 3/3    30dB 3/3
+awgn D-LXIV+15             9dB 3/3    18dB 3/3    21dB 3/3    28dB 3/3    36dB 3/3
+awgn D-LXIV+20            14dB 3/3    23dB 3/3    26dB 3/3    33dB 3/3    41dB 3/3
+foff -75 Hz @30                0/3         0/3         0/3         0/3         0/3
+foff -40 Hz @30                0/3         0/3         0/3         0/3         0/3
+foff -35 Hz @30                0/3         0/3         0/3         0/3         0/3
+foff -20 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -10 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff -5 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff -2 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff +2 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff +5 Hz @30                 3/3         3/3         3/3         3/3         3/3
+foff +20 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff +30 Hz @30                3/3         3/3         3/3         3/3         3/3
+foff +35 Hz @30                0/3         0/3         0/3         0/3         0/3
+foff +40 Hz @30                0/3         0/3         0/3         0/3         0/3
+foff +75 Hz @30                0/3         0/3         0/3         0/3         0/3
+fdrift +0.5 Hz/s @30           3/3         3/3         3/3         3/3         3/3
+fdrift +1 Hz/s @30             0/3         3/3         3/3         3/3         3/3
+fdrift +2 Hz/s @30             0/3         3/3         3/3         3/3         0/3
+fdrift +3.5 Hz/s @30           0/3         3/3         3/3         0/3         0/3
+fdrift -3.5 Hz/s @30           0/3         3/3         3/3         0/3         0/3
+sweep D.6.5 from 0 @30         0/3         3/3         3/3         0/3         0/3
+sweep D.6.5 from 0 @24         0/3         3/3         3/3         0/3         0/3
+ppm -500 @30                   0/3         0/3         0/3         0/3         0/3
+ppm -300 @30                   0/3         0/3         0/3         0/3         0/3
+ppm -200 @30                   0/3         0/3         3/3         3/3         0/3
+ppm -100 @30                   0/3         3/3         3/3         3/3         0/3
+ppm -50 @30                    0/3         3/3         3/3         3/3         0/3
+ppm -30 @30                    0/3         3/3         3/3         3/3         3/3
+ppm -20 @30                    3/3         3/3         3/3         3/3         3/3
+ppm -10 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +10 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +20 @30                    3/3         3/3         3/3         3/3         3/3
+ppm +30 @30                    0/3         3/3         3/3         3/3         3/3
+ppm +50 @30                    0/3         3/3         3/3         3/3         0/3
+ppm +200 @30                   0/3         0/3         3/3         3/3         0/3
+ppm +300 @30                   0/3         0/3         0/3         0/3         0/3
+ppm +500 @30                   0/3         0/3         0/3         0/3         0/3
+ppm-drift +10/s @30            0/3         3/3         3/3         3/3         3/3
+ppm-drift +100/s @30           0/3         0/3         0/3         0/3         0/3
+static-wid2 @50                0/3         0/3         0/3         0/3         0/3
+static-wid10 @50               0/3         0/3         0/3         0/3         0/3
+static-wid12 @50               3/3         3/3         0/3         0/3         0/3
+----------------------------------------------------------------------------------
+runs: 830, text PASS: 477
+
+condition                #1 W0 SH   #13 W3 SH  #53 W13 SH   #29 W7 SH  #41 W10 SH
+D-LXIV AWGN / Poor dB     -6 / -1       3 / 7      6 / 11     13 / 19     21 / 31
+---------------------------------------------------------------------------------
+good @30                     3/10        9/10        8/10        4/10        1/10
+moderate @30                 0/10        4/10        5/10        2/10        0/10
+poor @30                     0/10        2/10        5/10        2/10        0/10
+poor @D-LXIV poor       -1dB 0/10    7dB 2/10   11dB 4/10   19dB 2/10   31dB 0/10
+poor @D-LXIV poor+10     9dB 0/10   17dB 2/10   21dB 4/10   29dB 2/10   41dB 0/10
+poor noiseless               0/10        2/10        5/10        2/10        0/10
+D.6.4 poor +75 Hz @30        0/10        0/10        0/10        0/10        0/10
+D.6.4 poor -75 Hz @30        0/10        0/10        0/10        0/10        0/10
+---------------------------------------------------------------------------------
+runs: 400, text PASS: 70
+```
+
+Where each file breaks, read from the tables above:
+
+| File | AWGN: lowest SNR with 3/3 and every step above | Frequency offset passes | Clock offset passes (both signs) | Drift passes | Poor, 10 seeds |
+|---|---|---|---|---|---|
+| 1, WID 0 | 3 dB (D-LXIV -6) | +-30 Hz | 20 ppm | 0.5 Hz/s | 0/10 at every SNR |
+| 13, WID 3 | 0 dB (D-LXIV 3) | +-30 Hz | 100 ppm | 3.5 Hz/s, sweep | 2/10 |
+| 53, WID 13 | 6 dB (D-LXIV 6) | +-30 Hz | 200 ppm | 3.5 Hz/s, sweep | 4/10 to 5/10 |
+| 29, WID 7 | 10 dB (D-LXIV 13) | +-30 Hz | 200 ppm | 2 Hz/s | 2/10 |
+| 41, WID 10 | 18 dB (D-LXIV 21) | +-30 Hz | 30 ppm | 1 Hz/s | 0/10 |
+
+Measured detail behind the table. The acquisition, WID and probe-quality figures come from the
+CSV (`--csv`) of an earlier `--matrix all --seeds 3` run of commit `12ca9dc`. That run used
+coarser AWGN, offset and ppm steps; its conditions in common with the tables above give the
+same cells.
+
+- **Frequency offset.** Every file passes at +-30 Hz and fails at +-35 Hz and beyond, including
+  the D.6.4 +-75 Hz condition. At +-40 and +-75 Hz each run reports `acquired=1`, a frequency
+  estimate of 0.00 Hz, and a wrong WID or interleaver. The estimate comes from the phase step
+  between 32-chip Walsh symbols at 2400 Bd (`src/m110d/appd_rx.h:424-431`). That step is
+  ambiguous beyond +-37.5 Hz (inference from the code, not measured separately).
+- **Poor channel.** The pass count is the same with no noise as at 30 dB, and the same at the
+  D-LXIV Poor SNR and 10 dB above it, except WID 13 (4/10 against 5/10). So on Poor the fading
+  realisation decides the result, not the noise. In the 3-seed run every failure on good,
+  moderate and Poor acquired and read the WID correctly; the payload failed.
+- **Clock offset.** The receiver's frequency estimate follows the carrier shift the clock error
+  causes (-0.56 Hz at +300 ppm, 1800 Hz x 300e-6 = 0.54 Hz). Failures acquire and read the WID
+  correctly, and mean probe quality falls (0.95 at +-100 ppm on WID 10, 0.22 to 0.26 at
+  +-500 ppm on WID 3 to 13). This is consistent with the receiver having no symbol-timing tracking (see
+  below; inferred).
+- **Drift.** The estimate is the offset at the preamble (2.12 Hz at +1 Hz/s, burst at 2 s).
+  Failing runs read the WID correctly.
+- **Static multipath at 50 dB.** Table D-LXV's WID 2 and WID 10 channels fail on every file.
+  The two-path WID 12 channel passes only the WID 0 and WID 3 files. Mean probe quality is
+  0.15 to 0.24 on the three-path channels.
+- **WID 0** needs 3 dB in AWGN, 9 dB above its Table D-LXIV value, and fails the Poor channel
+  with no noise.
+
 ## Limits of what was tested
 
-- The test set is clean digital audio straight from the transmitter. Every file has a
-  probe quality of 1.000 and a frequency offset estimate of 0.00 Hz (or -0.01 Hz on the
-  continuous-PN files). No noise, multipath, frequency offset or sample-clock offset was
-  tested.
+- The interop test set itself is clean digital audio straight from the transmitter. Every
+  file has a probe quality of 1.000 and a frequency offset estimate of 0.00 Hz (or -0.01 Hz on
+  the continuous-PN files). Channel testing above measures noise, fading, multipath, frequency
+  offset and clock offset on five SHORT files only.
 - Channel estimation is a single complex gain per mini-probe, linearly interpolated across
   each data block. There is no equaliser and no symbol-timing tracking. On this set that is
   enough for 256QAM (EVM -54 dB). Over a channel with multipath or clock offset the QAM
