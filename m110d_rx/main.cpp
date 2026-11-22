@@ -159,7 +159,8 @@ int main(int argc, char** argv) {
     if (stream) return run_stream(opt, max_message_s);
     if (path.empty()) {
         std::fprintf(stderr, "usage: m110d_rx [--pn restart|continuous|auto] [--bpsk-scr-shifts N] "
-                             "[--code d9|alt|auto] [-v] <file.wav | ->\n");
+                             "[--code d9|alt|auto] [-v] <file.wav | ->\n"
+                             "       m110d_rx [options] --stream [--max-message S] < feed.wav\n");
         return 2;
     }
     std::vector<double> audio;
