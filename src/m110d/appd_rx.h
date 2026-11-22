@@ -334,25 +334,36 @@ private:
     int sf_len_ = 0;    // super-frame length in symbols
     int nfixed_ = 0;    // Walsh symbols in the fixed subsection
     double fo_ = 0;     // frequency offset, Hz
+    double rate_ = 1;   // receive samples per nominal sample (clock ratio, 1 + ppm*1e-6)
     cplx h0_ = 1.0;     // channel gain from the fixed subsection
 
-    cplx sample(double sym_pos) const {
-        // symbol-spaced sample at t0_ + sym_pos*sps, frequency-corrected
-        long n = t0_ + (long)std::llround(sym_pos * sps_);
-        if (n < 0 || n >= (long)y_.size()) return 0.0;
-        return y_[n] * std::polar(1.0, -2 * M_PI * fo_ * (double)n / fs_);
+    // y_ at fractional sample index n (linear interpolation), frequency-corrected.
+    cplx at(double n) const {
+        if (n < 0 || n > (double)(y_.size() - 1)) return 0.0;
+        long i = (long)n;
+        double f = n - (double)i;
+        cplx v = f > 0 && i + 1 < (long)y_.size() ? y_[i] * (1 - f) + y_[i + 1] * f : y_[i];
+        if (fo_ == 0) return v;
+        return v * std::polar(1.0, -2 * M_PI * fo_ * n / fs_);
     }
 
-    // Normalised non-coherent correlation of chips against y_ starting at sample t.
-    double corr_at(long t, const std::vector<int>& chips, std::vector<cplx>* parts = nullptr) const {
+    // Sample index of symbol position sym_pos (from t0_) under the clock ratio, plus tau samples.
+    double spos(double sym_pos, double tau = 0) const { return (double)t0_ + sym_pos * sps_ * rate_ + tau; }
+
+    cplx sample(double sym_pos, double tau = 0) const { return at(spos(sym_pos, tau)); }
+
+    // Normalised non-coherent correlation of chips, 32-chip coherent parts, starting at
+    // sample t (fractional), frequency-corrected by fo_.
+    double corr_at(double t, const std::vector<int>& chips, std::vector<cplx>* parts = nullptr,
+                   int part_len = kWalshLen) const {
         int N = (int)chips.size();
-        if (t < 0 || t + (long)(N - 1) * sps_ >= (long)y_.size()) return 0;
+        if (t < 0 || t + (double)(N - 1) * sps_ * rate_ >= (double)y_.size()) return 0;
         double num = 0, e = 0;
         if (parts) parts->clear();
-        for (int c = 0; c < N; c += kWalshLen) {
+        for (int c = 0; c < N; c += part_len) {
             cplx acc = 0;
-            for (int j = c; j < std::min(N, c + kWalshLen); j++) {
-                cplx v = y_[t + (long)j * sps_];
+            for (int j = c; j < std::min(N, c + part_len); j++) {
+                cplx v = at(t + (double)j * sps_ * rate_);
                 acc += v * std::conj(psk8(chips[j]));
                 e += std::norm(v);
             }
@@ -362,16 +373,75 @@ private:
         return e > 0 ? num / std::sqrt(e * N) : 0;
     }
 
-    // Coarse search over every sample, decimated energy gate first.
-    long search(const std::vector<int>& chips, double& best) const {
-        best = 0;
-        long bt = -1;
-        long span = (long)(chips.size() - 1) * sps_;
-        for (long t = 0; t + span < (long)y_.size(); t++) {
-            double m = corr_at(t, chips);
-            if (m > best) { best = m; bt = t; }
+    // Preamble search over time and frequency. Each frequency bin applies a phase ramp to the
+    // chip reference, so a 32-chip part stays coherent at the bin's offset; bins are kAcqBinHz
+    // apart over +-kAcqBins*kAcqBinHz. Time is searched on a grid of sps/4 samples, then the
+    // best cell is refined at every sample over the neighbouring bins.
+    static constexpr double kAcqBinHz = 25.0;
+    static constexpr int kAcqBins = 4;  // bins -100..+100 Hz: coverage +-112.5 Hz
+
+    long search(const std::vector<int>& chips, double& best, double& best_f) const {
+        const int N = (int)chips.size(), NB = 2 * kAcqBins + 1;
+        std::vector<std::vector<cplx>> ref(NB, std::vector<cplx>(N));
+        for (int b = 0; b < NB; b++) {
+            double f = (b - kAcqBins) * kAcqBinHz;
+            for (int j = 0; j < N; j++)
+                ref[b][j] = std::conj(psk8(chips[j])) * std::polar(1.0, -2 * M_PI * f * (j % kWalshLen) / kSymbolRate);
         }
+        const long span = (long)(N - 1) * sps_;
+        auto eval = [&](long t, int b0, int b1, double& m, int& bb) {
+            double e = 0;
+            for (int j = 0; j < N; j++) e += std::norm(y_[t + (long)j * sps_]);
+            m = 0; bb = b0;
+            if (e <= 0) return;
+            for (int b = b0; b <= b1; b++) {
+                double num = 0;
+                for (int c = 0; c < N; c += kWalshLen) {
+                    cplx acc = 0;
+                    for (int j = c; j < std::min(N, c + kWalshLen); j++) acc += y_[t + (long)j * sps_] * ref[b][j];
+                    num += std::abs(acc);
+                }
+                double v = num / std::sqrt(e * N);
+                if (v > m) { m = v; bb = b; }
+            }
+        };
+        best = 0;
+        best_f = 0;
+        long bt = -1;
+        int bbin = kAcqBins;
+        const long step = std::max(1, sps_ / 4);
+        for (long t = 0; t + span < (long)y_.size(); t += step) {
+            double m; int b;
+            eval(t, 0, NB - 1, m, b);
+            if (m > best) { best = m; bt = t; bbin = b; }
+        }
+        if (bt < 0) return bt;
+        long c = bt;
+        int cb = bbin;
+        for (long t = std::max(0L, c - step); t <= c + step && t + span < (long)y_.size(); t++) {
+            double m; int b;
+            eval(t, std::max(0, cb - 1), std::min(NB - 1, cb + 1), m, b);
+            if (m > best) { best = m; bt = t; bbin = b; }
+        }
+        best_f = (bbin - kAcqBins) * kAcqBinHz;
         return bt;
+    }
+
+    // Frequency offset at sample t: the bin offset f0 plus the residual from the phase step
+    // between 8-chip parts (unambiguous to +-150 Hz), then between 32-chip parts (+-37.5 Hz)
+    // once the 8-chip residual is removed. Returns f0 when there is only one 32-chip part.
+    double estimate_freq(long t, const std::vector<int>& chips, double f0) {
+        auto step = [&](int len) {
+            std::vector<cplx> parts;
+            corr_at((double)t, chips, &parts, len);
+            cplx d = 0;
+            for (size_t k = 1; k < parts.size(); k++) d += parts[k] * std::conj(parts[k - 1]);
+            return parts.size() > 1 ? std::arg(d) / (2 * M_PI * len / kSymbolRate) : 0.0;
+        };
+        fo_ = f0;
+        fo_ += step(8);
+        if (chips.size() > (size_t)kWalshLen) fo_ += step(kWalshLen);
+        return fo_;
     }
 
     bool acquire(RxResult& r) {
@@ -381,15 +451,15 @@ private:
             if (opt_.pn_mode >= 0 && rs != opt_.pn_mode) continue;
             cands.push_back({"nine-fixed", rs == 1, walsh_section(kFixedPN, kFixedNine, 9, rs == 1), 9});
         }
-        double best = 0;
+        double best = 0, bf = 0;
         long bt = -1;
         const Cand* bc = nullptr;
         for (auto& c : cands) {
-            double m;
-            long t = search(c.chips, m);
-            if (opt_.verbose) std::fprintf(stderr, "acq %s pn=%s metric=%.3f t=%ld\n", c.shape,
-                                           c.restart ? "restart" : "continuous", m, t);
-            if (m > best) { best = m; bt = t; bc = &c; }
+            double m, f;
+            long t = search(c.chips, m, f);
+            if (opt_.verbose) std::fprintf(stderr, "acq %s pn=%s metric=%.3f t=%ld bin=%+.0f Hz\n", c.shape,
+                                           c.restart ? "restart" : "continuous", m, t, f);
+            if (m > best) { best = m; bt = t; bc = &c; bf = f; }
         }
         // Single-symbol fixed subsection (D.5.2.1.3): tried when the nine-symbol shape is not
         // present. The single fixed symbol is followed by count and WID; search on the fixed
@@ -398,12 +468,12 @@ private:
             for (int rs = 1; rs >= 0; rs--) {
                 if (opt_.pn_mode >= 0 && rs != opt_.pn_mode) continue;
                 std::vector<int> ch = walsh_section(kFixedPN, kFixedSingle, 1, rs == 1);
-                double m;
-                long t = search(ch, m);
-                if (opt_.verbose) std::fprintf(stderr, "acq single-fixed pn=%s metric=%.3f t=%ld\n",
-                                               rs ? "restart" : "continuous", m, t);
+                double m, f;
+                long t = search(ch, m, f);
+                if (opt_.verbose) std::fprintf(stderr, "acq single-fixed pn=%s metric=%.3f t=%ld bin=%+.0f Hz\n",
+                                               rs ? "restart" : "continuous", m, t, f);
                 if (m > best) {
-                    best = m; bt = t;
+                    best = m; bt = t; bf = f;
                     static Cand single[2];
                     single[rs] = {"single-fixed", rs == 1, ch, 1};
                     bc = &single[rs];
@@ -421,14 +491,7 @@ private:
         fixed_chips_ = bc->chips;
         restart_ = bc->restart;
         r.acq_time = (double)bt / fs_;
-        // frequency offset from chunk phases of the fixed subsection (nine-fixed only)
-        std::vector<cplx> parts;
-        corr_at(bt, bc->chips, &parts);
-        if (parts.size() > 1) {
-            cplx d = 0;
-            for (size_t k = 1; k < parts.size(); k++) d += parts[k] * std::conj(parts[k - 1]);
-            fo_ = std::arg(d) / (2 * M_PI * kWalshLen / kSymbolRate);
-        }
+        estimate_freq(bt, bc->chips, bf);
         r.freq_offset_hz = fo_;
         return true;
     }
@@ -471,8 +534,8 @@ private:
         std::vector<std::pair<long, int>> seen;
         for (long m = -31; m <= 31; m++) {
             long sf = m * (long)sf_len_;
-            long t = t0_ + sf * sps_;
-            if (t < 0 || t + (long)sf_len_ * sps_ >= (long)y_.size()) continue;
+            double t = spos((double)sf);
+            if (t < 0 || spos((double)(sf + sf_len_)) >= (double)y_.size()) continue;
             double q = corr_at(t, fixed_chips_);
             if (q < 0.5) continue;
             cplx h = fixed_gain(sf);
