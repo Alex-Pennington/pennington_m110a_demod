@@ -1,6 +1,7 @@
 """Bits around the header end and around the end-of-voice trailer, per stream.
 
-TRAILER is the 54-bit word every 600H and 1200H stream ends with (twice, then zeros).
+TRAILER is the first 54-bit end-of-voice word of every 600_x and 1200_x stream. It is
+followed by the same word with its last bit cleared, then zeros.
 
 python3 -I -B test/harris/harris600/edges.py PAYLOAD_DIR
 """

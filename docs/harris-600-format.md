@@ -71,36 +71,46 @@ Every statement carries one label:
 
 ### Header, blocks, trailer
 
-[measured] Every 600H and 1200H stream has the same shape: the common 54-bit header, a
-whole number of vocoder units, then an end-of-voice trailer, then zeros up to the byte the
-EOM search stopped at. The trailer begins exactly on a unit boundary counted from bit 54 in
-all 11 streams.
+[measured] Every stream has the same shape: the common 54-bit header, a whole number of
+vocoder units, then a 108-bit end-of-voice trailer, then zeros up to the byte the EOM search
+stopped at. In the nine 600_x and 1200_x streams, and in melp600, the trailer begins exactly
+on a unit boundary counted from bit 54.
+
+[measured] In melp2400 the final run of ones is 109 bits long (bits 15173-15281). Taking
+the trailer to start at 15174 assumes that it falls on the 54-bit grid from bit 54, as in
+the other ten streams. So the melp2400 row below is [inferred], and the 109th one is the
+last bit of the frame before it.
 
 | Stream | Unit | Units from bit 54 | Duration | Trailer at bit | Trailer |
 |---|---|---|---|---|---|
-| 600_1 | 60 | 56 | 5.6 s | 3414 = 54 + 56·60 | W, W |
-| 600_2 | 60 | 53 | 5.3 s | 3234 = 54 + 53·60 | W, W |
-| 600_3 m1 to m4 | 60 | 39, 27, 16, 8 | 3.9, 2.7, 1.6, 0.8 s | 54 + N·60 | W, W |
+| 600_1 | 60 | 56 | 5.6 s | 3414 = 54 + 56·60 | W, W' |
+| 600_2 | 60 | 53 | 5.3 s | 3234 = 54 + 53·60 | W, W' |
+| 600_3 m1 to m4 | 60 | 39, 27, 16, 8 | 3.9, 2.7, 1.6, 0.8 s | 54 + N·60 | W, W' |
 | melp600 | 60 | 81 | 8.1 s | 4914 = 54 + 81·60 | 108 ones |
-| 1200_1 | 81 | 112 | 7.6 s | 9126 = 54 + 112·81 | W, W |
-| 1200_2 | 81 | 71 | 4.8 s | 5805 = 54 + 71·81 | W, W |
-| 1200_3 | 81 | 73 | 4.9 s | 5967 = 54 + 73·81 | W, W |
-| melp2400 | 54 | 280 | 6.3 s | 15174 = 54 + 280·54 | 108 ones |
+| 1200_1 | 81 | 112 | 7.6 s | 9126 = 54 + 112·81 | W, W' |
+| 1200_2 | 81 | 71 | 4.8 s | 5805 = 54 + 71·81 | W, W' |
+| 1200_3 | 81 | 73 | 4.9 s | 5967 = 54 + 73·81 | W, W' |
+| melp2400 | 54 | 280 [inferred] | 6.3 s | 15174 = 54 + 280·54 [inferred] | ones (109-bit run) |
 
 - Header (stream order):
   `011111011010100110011010100100000100111110000011110010`
-- Trailer word W (54 bits), sent twice:
+- First trailer word W (54 bits):
   `101001010010100010100000000100010101000101110011111101`
+- Second trailer word W' (54 bits), W with its last bit cleared:
+  `101001010010100010100000000100010101000101110011111100`
+
+[measured] In all nine W-streams the second word differs from W in the last bit only.
+W followed by W occurs in none of them.
 
 [measured] The streams fall into two groups:
 
-- 600_x and 1200_x end in W, W, and stream bit 54 is 1.
-- melp600 and melp2400 end in 108 ones, and stream bit 54 is 0.
+- 600_x and 1200_x end in W, W', and stream bit 54 is 1.
+- melp600 ends in 108 ones and melp2400 in a 109-bit run of ones, and stream bit 54 is 0.
 
 [inferred] So the set was recorded in two sessions or radio settings. The modem stage's
 audio passband and carrier offset split the files the same way (`docs/harris-melpe.md`).
 
-[inferred] The header and trailer are 54 bits whatever the voice rate, which is the
+[inferred] The header and each trailer word are 54 bits whatever the voice rate, which is the
 2400 bps frame size. They look like start- and end-of-voice framing words written by the
 radio, outside the vocoder. NOT DETERMINABLE: whether they are STANAG 4591 Annex O
 framing or Harris's own. Annex O is not in the edition at hand.
@@ -144,13 +154,27 @@ the 199 whole blocks of the six 600_x messages, and melp600 (81 blocks) checks i
 | Columns | Bits | Field [inferred] | Evidence [measured] |
 |---|---|---|---|
 | 0-18 | 19 | Spectrum, part A | Same bias profile as cols 41-59 (below). Weakly tied to the excitation fields (mean \|r\| 0.105 with 19-22, 0.107 with 30-40). |
-| 19-22 | 4 | Band-pass voicing | Internally dependent (mean \|r\| 0.204, null 0.057). Holds from block to block more than chance (36 against 24). Leans to 0000 in pauses (18 of 34). Tied to cols 30-40 (0.160) and to cols 23-29 (MI 0.27 bit). |
-| 23-29 | 7 | Pitch | The slowest, most repeating field: same value as the previous block 48 times against 13 by chance. Mean \|r\| 0.209. Only 39 of 128 values seen (entropy 4.5 bits). One fixed value in pause blocks. |
-| 30-40 | 11 | Energy (both gains, four frames) | Internally dependent (0.142). Leans toward zeros in pauses (cols 31-40: z -0.6 to -3.0, nine of ten below -1.2). Holds 5 against 1.7. Most common pause value is all zeros. |
+| 19-22 | 4 | Band-pass voicing | Internally dependent (mean \|r\| 0.204, null 0.057). Holds from block to block more than chance: 36 against 24 over all blocks, 21 against 15.7 over non-pause blocks only. Leans to 0000 in pauses (18 of 34). Tied to cols 30-40 (0.160) and to cols 23-29 (MI 0.27 bit). |
+| 23-29 | 7 | Pitch | The slowest, most repeating field: same value as the previous block 48 times against 13 by chance. 28 of those 48 are the pause value; over non-pause blocks only, 20 against 7.4. Mean \|r\| 0.209. Only 39 of 128 values seen (entropy 4.5 bits). One fixed value in pause blocks (partly circular: pause blocks are defined by that value). |
+| 30-40 | 11 | Energy (both gains, four frames) | Internally dependent (0.142). Leans toward zeros in pauses (cols 31-40: z -0.6 to -3.0, nine of ten below -1.2). Holds 5 against 1.7 (non-pause only: 3 against 1.2, too few to carry weight). Most common pause value is all zeros (5 of 34). |
 | 41-59 | 19 | Spectrum, part B | Bias profile matches cols 0-18 at r = 0.91 (melp600: 0.86), best at an offset of exactly 41. |
 
 [inferred] The widths 4, 7 and 11 are exactly [1]'s band-pass voicing, pitch and energy,
 and 19 + 19 = 38 is its spectrum. Naming each field by its width is the main inference.
+
+[measured] Limits of the evidence for the three middle fields:
+
+- **Voicing and gain rest mostly on pauses.** Their hold excess and their zero lean come
+  largely from pause blocks. The gain counts are too small to carry weight.
+- **The pause definition is partly circular.** Pause blocks are defined by the value of
+  cols 22-29, so "one fixed pitch value in pauses" holds by construction. Only the
+  behaviour of the other columns in those blocks is independent evidence.
+- **The pitch start at 23 is not pinned.** Over non-pause blocks, 7-bit windows starting at
+  20, 21, 22 and 23 hold 14, 14, 15 and 20 times, against 4.3, 4.0, 5.5 and 7.4 by chance.
+  That is nearly the same excess for each start.
+- **The voicing window is not confirmed either.** The best 4-bit hold window starts at 23,
+  inside the pitch candidate, not at 19 (`windows.py 4`). The 19-22 boundary rests on
+  internal dependence and the 41-column offset of the outer chunks, not on the repeat test.
 
 [inferred] Inside the two 19-bit chunks the stage boundaries are not resolved:
 
@@ -226,8 +250,10 @@ talker. They do not show that the same phrases were spoken.
 | Test | Share-of-ones profile | Lag-1 profile |
 |---|---|---|
 | Harris 1200H against the coder | +0.69 | +0.61 |
-| Random frames against the coder | +0.11 | -0.05 |
+| Random frames against the coder, 200 draws of 256 frames | mean -0.01, sd 0.11, max +0.29 | mean -0.01, sd 0.11, max +0.25 |
 | The coder against itself, on different speech | +0.41 | +0.30 |
+
+  Harris 1200H sits about 6 sd above the random spread on both profiles.
 
 - **Time structure:** each decode, in original frame order against 12 decodes of the same
   frames shuffled (sync re-set) (`timestruct.py`):
@@ -238,12 +264,15 @@ talker. They do not show that the same phrases were spoken.
 | 1200_2 | 0.392 (0.273, z +4.6) | 0.923 (0.664, z +9.6) | 0.264 (0.198, z +4.8) |
 | 1200_3 | 0.174 (0.110, z +4.0) | 0.921 (0.690, z +8.3) | 0.394 (0.311, z +5.3) |
 | Coder on speech, 1200 (2 files) | z +2.8, +5.0 | z +3.9, +8.4 | z +5.1, +8.2 |
-| Random frames, 1200 | z -0.6 | z +1.0 | z -0.0 |
+| Random frames, 1200 (one draw of 110 frames) | z -0.6 | z +1.0 | z -0.0 |
 
   1200_3 passes on order (z +4.0 to +8.3) even though its track is low. So its low score
   in `docs/harris-melpe.md` is the measure, not the frames.
-- **The talker:** the decoded 1200H audio has its f0 median at 99, 105 and 110 Hz (10th to
-  90th percentile 93-145 Hz), and phrase-length bursts separated by pauses (`timeline.py`).
+- **The talker:** the decoded 1200H audio has its f0 median at 99, 105 and 110 Hz
+  (1200_1, 1200_2, 1200_3). The 10th to 90th percentiles are 93-121 Hz for 1200_1,
+  98-121 Hz for 1200_2 and 96-145 Hz for 1200_3. So 93-121 Hz covers 1200_1 and 1200_2,
+  and 93-145 Hz covers all three. The decodes show phrase-length bursts separated by pauses
+  (`timeline.py`).
   [inferred] One male talker.
 - The syllabic-band share of the energy modulation spectrum (2-8 Hz) did not separate
   speech from shuffles on these short files: 1200_1 reads 0.17 against 0.57 shuffled. It
@@ -261,21 +290,27 @@ frames. But the contents fail the standard tests (`check2400.py`):
 | melp2400, from bit 5, each frame reversed | 15.2 % | 0/2, 1/4, 1/3, 0/3 |
 | melp2400, from bit 6, inverted | 8.8 % | 1/1, 1/1, 0/1, 0/0 |
 | melp2400, from bit 54, 6-bit words last first | 13.6 % | 0/3, 0/4, 1/4, 0/4 |
-| Random frames | 18.7 % | 0/3, 0/5, 0/4, 0/3 |
+| Random frames | expected 21/128 = 16.4 % (one draw of 300: 18.7 %) | 0/3, 0/5, 0/4, 0/3 (one draw) |
 
 - The per-column profile matches the coder's own 2400 output at only +0.19 (share of ones)
-  and +0.28 (lag-1). The coder against itself on different speech gives +0.72 and +0.75.
+  and +0.28 (lag-1). That is inside the random spread: 200 draws of 283 random frames give
+  mean -0.01, sd 0.14, max +0.39 (share of ones) and mean +0.00, sd 0.14, max +0.37
+  (lag-1). The coder against itself on different speech gives +0.72 and +0.75.
 - Decoded as standard, the original order beats the shuffles only weakly: z +2.1 on track
   and on energy lag-1. Calibration speech reaches z +7 to +14.
 - It is not keystream-scrambled. Outside the alternating column it is strongly structured:
   share-of-ones chi-square z 112, 20 of 53 columns with a significant lag-1, col 4 at 0.75.
-  It is more biased than standard MELPe output (col 16 is 6 % ones).
 
-[inferred] melp2400 is Harris's own 2400 bps layout, or a MELP variant, inside 54-bit
-22.5 ms frames.
+[inferred] melp2400 is a 54-bit, 22.5 ms frame with one alternating bit. Three things are
+not excluded:
 
-[inferred] On the grid from bit 54, where the 108-ones trailer falls on a frame boundary as
-in every other stream, the alternating bit is frame column 5, not 53. NOT DETERMINABLE
+- Harris's own 2400 bps MELP layout;
+- an arbitrary bit permutation of standard MELPe 2400, beyond the serialisations tested;
+- LPC-10e (FED-STD-1015), which has the same 54-bit, 22.5 ms geometry with a sync bit. No
+  LPC-10e encoder is at hand to test it.
+
+[inferred] On the grid from bit 54, where the trailer is taken to fall on a frame boundary
+as in the other ten streams, the alternating bit is frame column 5, not 53. NOT DETERMINABLE
 here: the layout. The same known audio at 2400V would settle it (section 6).
 
 ### What the header does to alignment
