@@ -133,7 +133,7 @@ for (symbol : symbols) {
 }
 ```
 
-**With RRC Pulse Shaping** (`use_pulse_shaping`):
+**With RRC Pulse Shaping** (`use_pulse_shaping`, the default, and what m110a_server sends):
 - SRRC filter (alpha 0.35, 6 symbols each side), the receiver's matched filter
   (`SRRC_ALPHA`, `SRRC_SPAN_SYMBOLS`, src/common/constants.h)
 - The filter adds 12 symbols of tail to each stream it shapes. Shaping the preamble, the data
@@ -158,14 +158,17 @@ These figures are ModemTX to `m110a_rx` (AUTO) at 48 kHz, through test/tx/tx_loo
 (2/3)·Q(sqrt(2·Es/N0)·sin(pi/8)). That gives 8e-4 at 14 dB, 4.5e-5 at 16 dB and 1e-5 at
 16.8 dB. MIL-STD-188-110 Table XVI asks 1e-3 at 17 dB on the fixed channel.
 
-ModemTX to ModemRX at 4800S, 14,400 bits per point:
+ModemTX to ModemRX at 4800S, 48 kHz, 14,400 bits per point (3 seeds of 600 bytes).
+DFE is ModemRX's default equalizer:
 
-| SNR | RRC, DFE | RRC, no EQ | rect, DFE | rect, no EQ |
-|---|---|---|---|---|
-| 14 dB | 1.7e-3 | 4.2e-3 | 1.7e-2 | 2.3e-2 |
-| 16 dB | 1.4e-4 | 4.2e-4 | 9.0e-3 | 1.5e-2 |
-| 18 dB | 0 | 7e-5 | 5.0e-3 | 1.0e-2 |
-| 30 dB | 0 | 0 | 5.6e-4 | 3.1e-3 |
+| SNR | Theory | RRC, DFE | RRC, no EQ | rect, DFE | rect, no EQ |
+|---|---|---|---|---|---|
+| 14 dB | 8e-4 | 1.7e-3 | 4.2e-3 | 1.7e-2 | 2.3e-2 |
+| 16 dB | 4.5e-5 | 1.4e-4 | 4.2e-4 | 9.0e-3 | 1.5e-2 |
+| 18 dB | 5e-7 | 0 | 7e-5 | 5.0e-3 | 1.0e-2 |
+| 20 dB | <1e-9 | 0 | 0 | 3.1e-3 | 7.6e-3 |
+| 25 dB | | 0 | 0 | 1.2e-3 | 4.0e-3 |
+| 30 dB | | 0 | 0 | 5.6e-4 | 3.1e-3 |
 
 With RRC pulses the modem is within about 0.7 dB of theory and meets Table XVI. With
 rectangular pulses it has a BER floor near 5e-4, and 4800S needs about 30 dB to come back
@@ -181,7 +184,7 @@ tx_cfg.carrier_freq = 1800.0f;     // 500-3000 Hz
 tx_cfg.amplitude = 0.8f;           // 0.0-1.0
 tx_cfg.include_preamble = true;    // Add sync preamble
 tx_cfg.include_eom = true;         // EOM 4B65A5B2 + flush (section 8)
-tx_cfg.use_pulse_shaping = false;  // RRC filtering
+tx_cfg.use_pulse_shaping = true;   // RRC pulses (default); false = rectangular
 ```
 
 ## Timing

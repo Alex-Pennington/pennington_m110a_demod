@@ -38,8 +38,10 @@ struct TxConfig {
     /// End the message with the EOM 4B65A5B2 and the 144-bit flush (false: no EOM)
     bool include_eom = true;
     
-    /// Use RRC pulse shaping (improves spectrum, requires RX matched filter)
-    bool use_pulse_shaping = false;
+    /// Root-raised-cosine pulses (alpha 0.35), matched to the receiver's SRRC filter.
+    /// false sends rectangular pulses, which leave ISI after any matched receiver and
+    /// cost 4800S about 12 dB (docs/TX_CHAIN.md, Measured performance)
+    bool use_pulse_shaping = true;
     
     /// Add calibration burst for Brain Modem compatibility
     /// Brain TX starts with: 2 symbols burst + 8 symbols silence + ramp into preamble
