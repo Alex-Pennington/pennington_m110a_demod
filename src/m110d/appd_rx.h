@@ -879,7 +879,7 @@ private:
 
         // Pass 2: channel estimate and equaliser (appd_eq.h), or the one-tap estimate. The
         // signal ends where the equaliser's CIR fit stops explaining the probes; for the one-tap
-        // estimate, at the first probe whose correlation is below 0.5.
+        // estimate, at the first probe whose correlation is below the noise cutoff (probe_q_end).
         EqState eqs;
         const bool use_eq = opt_.eq != 0 && setup_eq(*wp, K, probe, probe_b, recs, eqs, r);
         size_t nprobes = recs.size();
@@ -887,7 +887,7 @@ private:
         if (use_eq) nprobes = (size_t)eqs.nprobes;
         else
             for (size_t j = 1; j < recs.size(); j++)
-                if (recs[j].q < 0.5) { nprobes = j; lost_b = recs[j].b; break; }
+                if (recs[j].q < probe_q_end(K)) { nprobes = j; lost_b = recs[j].b; break; }
         r.end_by_input = nprobes == recs.size();
         recs.resize(nprobes);
         const int nframes = (int)recs.size() - 1;
@@ -1091,6 +1091,22 @@ private:
 
     static int probe_base_len(int K) { return K == 24 ? 13 : K == 32 ? 16 : K == 48 ? 25 : 0; }
 
+    // End-of-signal cutoffs, set from each score's noise distribution ("Presence gates and
+    // WID 0", "Probe end checks" in docs/110d-appd.md). These checks decide where a signal
+    // already acquired ends: a probe left in costs one noise frame, a probe cut costs the
+    // message, so each cutoff is the noise p90 of one probe.
+    // One-tap probe correlation (ProbeRec::q, the better of the two probe variants) on noise
+    // is X / sqrt(K): X has mean 1.15, sd 0.42, p90 1.70 to 1.73 at K = 24, 32 and 48
+    // (measured, 300 s of noise after a burst, 6 seeds per K).
+    static double probe_q_end(int K) { return 1.75 / std::sqrt((double)K); }
+    // Equaliser fit quality on noise: the fraction a T-tap fit explains of N observations is
+    // Beta(T, N - T), so qfit has mean 0 and sd sqrt(T / ((N - T)(N + 1))); its p90 is 1.32
+    // to 1.38 sd for N = 12 to 48, T = 1 to 6 (Monte Carlo). Measured on noise: sd 0.023 at
+    // K = 48 and 0.034 at K = 32 with one tap, where the expression gives 0.021 and 0.031.
+    static double probe_fit_end(int T, int N) {
+        return N > T ? 1.4 * std::sqrt((double)T / ((double)(N - T) * (double)(N + 1))) : 0.2;
+    }
+
     // Received probe-relative symbol n of probe rec, with the probe's residual frequency
     // removed about its centre (as probe_gain does).
     cplx probe_rx(const ProbeRec& rec, int n, int K) const {
@@ -1129,11 +1145,12 @@ private:
         if (!L || M < 2) return false;
         eq.L = L;
         // The support is measured on the probes up to the first two in a row whose one-tap
-        // correlation is below 0.3 (no-signal correlation is about 0.2 at K = 24 to 48; equal
-        // paths keep it near 0.6, measured).
+        // correlation is below the noise cutoff (probe_q_end; equal paths keep it near 0.6,
+        // measured).
+        const double q_end = probe_q_end(K);
         int Ms = M;
         for (int j = 1; j + 1 < M; j++)
-            if (recs[j].q < 0.3 && recs[j + 1].q < 0.3) { Ms = j; break; }
+            if (recs[j].q < q_end && recs[j + 1].q < q_end) { Ms = j; break; }
         if (Ms < 2) return false;
         const std::vector<ProbeRec> sub(recs.begin(), recs.begin() + Ms);
         // Probe-averaged periodic power-delay profile over L delays (centred window).
@@ -1301,7 +1318,8 @@ private:
         // Per-probe CIR, the fraction of probe energy it explains, and the CIR-based rotation
         // between probe centres. The signal ends at the first two probes in a row where the
         // explained fraction, less what a fit to noise alone explains (taps / observations),
-        // is below 0.2 of the possible: a probe correlation of about 0.45 on one path.
+        // is below the noise cutoff probe_fit_end of the possible.
+        const double fit_end = probe_fit_end((int)taps.size(), eq.fit_a.nobs());
         eq.h.resize(M);
         eq.th.assign(M, 0.0);
         std::vector<double> qfit(M, 0.0);
@@ -1324,11 +1342,11 @@ private:
         }
         eq.nprobes = M;
         for (int j = 1; j < M; j++)
-            if (qfit[j] < 0.2 && (j + 1 >= M || qfit[j + 1] < 0.2)) { eq.nprobes = j; break; }
+            if (qfit[j] < fit_end && (j + 1 >= M || qfit[j + 1] < fit_end)) { eq.nprobes = j; break; }
         if (opt_.verbose) {
             std::fprintf(stderr, "eq fit quality:");
             for (int j = 0; j < M; j++) std::fprintf(stderr, " %.2f", qfit[j]);
-            std::fprintf(stderr, "  -> %d probes\n", eq.nprobes);
+            std::fprintf(stderr, "  -> %d probes (cutoff %.3f)\n", eq.nprobes, fit_end);
         }
         if (eq.nprobes < 2) return false;
         double ph = 0;
