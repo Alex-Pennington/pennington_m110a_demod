@@ -97,6 +97,12 @@ foreach(t test_mode_detect test_decode_quality)
   set_tests_properties(${t} PROPERTIES LABELS "rx")
 endforeach()
 
+# ModemTX output level and configuration checks (docs/TX_CHAIN.md)
+add_executable(test_modem_tx test/test_modem_tx.cpp)
+target_link_libraries(test_modem_tx PRIVATE m110a_modem)
+add_test(NAME test_modem_tx COMMAND test_modem_tx)
+set_tests_properties(test_modem_tx PROPERTIES LABELS "fast;tx")
+
 # Table XI codes 7,7 (2400 digital voice), 7,5 / 5,5 (75 bps) and the Harris
 # application-specific codes 5,7 / 5,6: own TX -> AUTO RX
 add_executable(test_table_xi_modes test/test_table_xi_modes.cpp)

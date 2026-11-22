@@ -28,7 +28,9 @@ struct TxConfig {
     /// Carrier frequency in Hz
     float carrier_freq = CARRIER_FREQ_DEFAULT;
     
-    /// Output amplitude (0.0 to 1.0)
+    /// Output amplitude (0.0 to 1.0): the carrier peak of a unit 8PSK symbol, so the
+    /// signal RMS is amplitude / sqrt(2) with or without pulse shaping. RRC pulses
+    /// peak higher than that (about 1.5 x amplitude).
     /// Default 0.32 matches MS-DMT reference output levels (~7000 RMS)
     float amplitude = 0.32f;
     

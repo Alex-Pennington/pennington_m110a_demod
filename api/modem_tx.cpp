@@ -258,6 +258,13 @@ private:
     void init_pulse_shaping() {
         sps_ = static_cast<int>(config_.sample_rate / 2400.0f);
         rrc_taps_ = generate_srrc_taps(RRC_ALPHA, RRC_SPAN, static_cast<float>(sps_));
+        // generate_srrc_taps() gives unit-energy taps, so one symbol's pulse spreads
+        // energy 1 over sps samples and the shaped output would sit 10*log10(sps) dB
+        // (13 dB at 48 kHz) below rectangular pulses. Scaled by sqrt(sps), the shaped
+        // baseband has the mean power of a unit symbol, as rectangular pulses do: at
+        // the same amplitude both have the same RMS (amplitude / sqrt(2)).
+        const float g = std::sqrt(static_cast<float>(sps_));
+        for (auto& t : rrc_taps_) t *= g;
     }
     
     static ModeId api_to_internal_mode(Mode mode) {
