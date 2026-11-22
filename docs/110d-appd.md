@@ -1,5 +1,129 @@
 # MIL-STD-188-110D Appendix D receiver (3 kHz)
 
+## Handoff
+
+This section describes the receiver as merged at master `0914cb4`, the equaliser merge. The
+sections below it hold the detail and the full measured tables.
+
+### State of the receiver
+
+- **Clean interop set** (60 files from another transmitter, every 3 kHz waveform, WID 0-13,
+  four interleavers, five variants). It passes 60/60 on WID and interleaver and 60/60 on text
+  with EOM as expected. It passes at 48 kHz, at 8 kHz from a file, and at 8 kHz through stdin
+  (measured on a fresh build of `0914cb4`, and through stdin at `4e43f17`).
+- **Implemented:**
+  - preamble acquisition over +-112.5 Hz;
+  - WID, interleaver and constraint-length detection;
+  - payload decode for Walsh, BPSK, QPSK, 8PSK and 16/32/64/256QAM, with K=7 coding;
+  - frequency tracking and symbol-timing tracking;
+  - a probe-aided block MMSE-DFE equaliser for WID 1-13;
+  - any input rate from 6840 Hz up, and a WAV on stdin.
+- **Not implemented:** K=9 coding, and streaming input (the whole input is read before
+  decoding).
+- **STD-AMB-001:** files 56 and 57 acquire only with the PN running continuously across the
+  section. The main matrix acquires only with PN restarting per Walsh symbol. The receiver
+  finds whichever is in use.
+
+### Channel matrix as it stands (measured)
+
+Default files: WID 0, 3, 13, 7 and 10, all SHORT. Seeds: 3, and 10 for fading. Each cell is
+one decode of a burst, not a BER figure.
+
+| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser (`2d66ba3`; default at `c5e4eb7`) |
+|---|---|---|---|
+| default (110) | 87 | 95 | 104 |
+| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 |
+| foff (240) | 135 | 240 | 240 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 105 |
+| ppm and ppm drift (270) | 144 | 270 | 270 |
+| static (45) | 6 | 6 | 36 |
+| fading, 10 seeds (400) | 70 | 93 | 310 |
+
+- The equaliser columns are from the worker's runs. The coordinator reran the default matrix
+  on the merged build and got 104/110.
+- At the equaliser's final commit (`c5e4eb7`), only default and awgn were rerun in full,
+  scoring 104/110 and 116/150. foff, drift, ppm, static and fading were not.
+
+### Branches and worktrees
+
+- **Merged to master and pushed as branches:** `feat/110d-rx`, `feat/110d-walsh`,
+  `feat/110d-qam`, `feat/110d-integrate`, `docs/110d-std-pdf`, `feat/110d-chan`,
+  `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`. None holds anything
+  that master lacks.
+- **Worktree left in place:** `m110a-wt-110d-proofs` (`feat/110d-proofs`, merged). It holds
+  an untracked `test/110d/__pycache__/`. Deleting that folder was refused by a permission
+  denial, so the worktree was not removed. Nothing in it is unmerged.
+- **Worktrees of other work:** `m110a-wt-rx-path`, `m110a-wt-mode-detect` and
+  `m110a-wt-harris-*`. They do not belong to 110D work.
+
+### Rebuild and rerun
+
+The test set is not in the repository. It lives in the main checkout, in the ignored
+`interop-110D-AppD-2026-09-08/` folder, called `<set>` below. Its `README.md` holds the
+expected text.
+
+```sh
+cmake -S . -B build-110d -DCMAKE_BUILD_TYPE=Release
+cmake --build build-110d --target m110d_rx m110d_chan -j2
+build-110d/bin/m110d_rx --selftest            # selftest_mismatches=0
+build-110d/bin/m110d_chan --selftest          # selftest: PASS
+
+# clean 60 at 48 kHz, at 8 kHz, and at 8 kHz through stdin
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --resample 8000 --workdir <scratch>/wav8k
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --resample 8000 --workdir <scratch>/wav8k --stdin
+
+# channel matrices: default, or awgn, foff, drift, ppm, static, fading, all
+python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan --set <set> --jobs 2 --work <scratch>/chan [--matrix X] [--seeds N]
+
+# proofs files for the report page (t5.json, t6.json), from a verified master build
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --jobs 2 --proofs <inbox> --decoder-label "m110d_rx master @<commit>"
+python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan --set <set> --jobs 2 --work <scratch>/chan --proofs <inbox> --decoder-label "m110d_rx master @<commit>"
+```
+
+`<inbox>` is the greybeard-ale proofs inbox, `~/.local/share/greybeard-ale/proofs-inbox/`. Set
+`TMPDIR` and `<scratch>` to a directory outside `/tmp`. `m110d_rx --eq off` gives the
+pre-equaliser one-tap path.
+
+### Unfinished
+
+- The full foff, drift, ppm, static and fading matrices at `c5e4eb7`, the equaliser's final
+  commit. That commit's default and awgn runs are done.
+- WID 0 has no equaliser (it has no probes). It still fails fading: 0/10 on Poor.
+- WID 12 (256QAM) fails Poor at 30 dB. Table D-LXIV sets no Poor requirement for WID 11-12.
+- static-wid2 fails on WID 7, 10 and 13. Its 9 ms spread exceeds what the K=32 probes cover.
+  Table D-LXV pairs that channel with WID 2, which decodes.
+- The equaliser thresholds were set on named cases, not swept. Fractional (T/2) spacing was
+  not tried.
+
+### Open questions
+
+1. **WID 0 needs about 9 dB more than Table D-LXIV in AWGN** (measured; cause not
+   determined). The tracking and equaliser work did not explain it.
+2. **ITU good at 30 dB, WID 7.** On multipath the preamble clock fit is off by tens of ppm
+   (measured). After tracking this cell fell from 4/10 to 3/10. The equaliser absorbs the
+   error, and the cell now passes 10/10 (measured). The fit itself is unchanged.
+3. **Streaming input.** stdin reads the whole input before decoding. A real-time feed needs
+   acquisition that runs on a sliding window. That is demod-core work.
+4. **Band-limited channel.** The waveform occupies about 180-3420 Hz. A radio SSB audio
+   filter narrower than that was not tested. It needs a band-limiting condition in
+   `m110d_chan` and `channel.py`.
+5. **STD-AMB-001 fixed symbol 8.** On the continuous-PN files, PN index 256-287 matches no
+   offset: 29/288 chips wrong (measured). This is a question for the transmitter's author.
+
+### Next steps, in order
+
+1. Finish the equaliser's full matrices at master and record them in this doc.
+2. Add a band-limiting condition (SSB filter shapes) to `m110d_chan` and `channel.py`, and
+   measure the receiver against it.
+3. Streaming acquisition, so that `m110d_rx` can decode a live 8 kHz feed.
+4. WID 0 in noise and fading: find the 9 dB.
+5. A BER-style measurement (long runs, LONG interleaver) to compare with Table D-LXIV
+   properly.
+6. K=9 coding.
+
+## Overview
+
 `m110d_rx` decodes one 3 kHz Appendix D single-tone transmission from a WAV file [1]. It
 reports the Waveform ID (WID), the interleaver, the constraint length, acquisition and EOM
 status. It decodes the payload text for every waveform, WID 0 to 13: Walsh (WID 0), BPSK
