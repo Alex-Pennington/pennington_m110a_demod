@@ -108,7 +108,14 @@ python3 -I -B test/harris/score.py --melpe <reference coder> --calibrate <8 kHz 
 ```
 
 `--proofs DIR` writes `DIR/t7.json` and the audio it names under `DIR/t7-audio/`: the
-decoded speech, and the recording resampled to 8 kHz. Text fields carry no file paths,
+decoded speech, and the recording resampled to 8 kHz.
+
+A recording with several preambles ("600 #3 multiples" has four) has one payload file per
+message, `<slug>_m<N>.bin`. Each message is searched and scored on its own and gets its
+own table row. The recording keeps one proof item: `decoded` and `detail` give each
+message's result in order, and the decoded speech is the messages joined with 0.5 s of
+silence between them. The item is "pass" when every message passes, "partial" when every
+message is at least partial, and "fail" otherwise. Text fields carry no file paths,
 host names or frequencies. `ctest -L fast` runs `test/harris/test_harris.py` (packing, sync
 search, the speech measure on synthetic signals, and the proof output), which needs no
 MELPe coder.

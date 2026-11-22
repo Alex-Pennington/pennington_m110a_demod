@@ -13,7 +13,11 @@ The MELPe program is the STANAG 4591 reference coder's command line
 program and is not part of this repo.
 
 Inputs, per file of the test set (slugs in FILES below):
-  <payload>/<slug>.bin   payload bytes from the 110A receiver
+  <payload>/<slug>.bin   payload bytes from the 110A receiver, or, for a recording with
+                         several preambles, one <slug>_m<N>.bin per message (N = 1, 2, ...),
+                         each scored on its own with its own <slug>_m<N>.json; the proof
+                         item stays one per recording, its decoded speech the messages
+                         joined in order with 0.5 s of silence between them
   <payload>/<slug>.json  optional: {"preamble": ..., "mode": ..., "bit_order": "msb"|"lsb",
                           "rate": 600|1200|2400, "offset": int, "reverse": bool,
                           "invert": bool, "verified": bool, "decoder": str, "d1": int,
@@ -209,6 +213,116 @@ def score_file(melpe, payload, meta, rate_hint, search, work, slug, jobs, wide=F
     return keys[i], d, results[i][1]
 
 
+# ---- per-recording payloads --------------------------------------------------------
+
+GAP_S = 0.5  # silence between messages in a recording's joined decoded speech
+
+
+def load_meta(payload_dir, part):
+    p = os.path.join(payload_dir, part + ".json")
+    if not os.path.exists(p):
+        return {}
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def payload_parts(payload_dir, slug):
+    """A recording's payload files: <slug>.bin, or one <slug>_m<N>.bin per preamble
+    (message), in message order. Returns [(part slug, message number or None)]."""
+    if os.path.exists(os.path.join(payload_dir, slug + ".bin")):
+        return [(slug, None)]
+    parts = []
+    pre = slug + "_m"
+    if os.path.isdir(payload_dir):
+        for fn in os.listdir(payload_dir):
+            if fn.startswith(pre) and fn.endswith(".bin") and fn[len(pre):-4].isdigit():
+                parts.append((fn[:-4], int(fn[len(pre):-4])))
+    return sorted(parts, key=lambda p: p[1])
+
+
+def combine_status(statuses):
+    """One status for a recording from its messages' statuses."""
+    if not statuses:
+        return "none"
+    if all(s == "pass" for s in statuses):
+        return "pass"
+    if all(s in ("pass", "partial") for s in statuses):
+        return "partial"
+    return "fail"
+
+
+def score_part(a, part, meta, rate_hint):
+    """Score one payload file. Returns a dict with bytes, d (best choice or None), x, status."""
+    with open(os.path.join(a.payload, part + ".bin"), "rb") as f:
+        payload = f.read()
+    r = {"part": part, "bytes": len(payload), "d": None, "x": None, "status": "fail"}
+    best = score_file(a.melpe, payload, meta, rate_hint, a.search, a.work, part, a.jobs,
+                      a.search_all)
+    if best is None:
+        return r
+    _, d, x = best
+    ok = d["m"]["track"] >= PASS_TRACK and d["m"]["track"] - d["second"] >= PASS_MARGIN
+    verified = bool(meta.get("verified")) or (d["sync"] is not None and d["sync"] >= SYNC_TRUST)
+    r.update(d=d, x=x, ok=ok, status=proofs.status_for(True, verified, ok))
+    return r
+
+
+def print_row(part, meta, r=None):
+    pre = str(meta.get("preamble", "-"))[:9]
+    mode = str(meta.get("mode", "-"))[:10]
+    head = f"{part:<20} {pre:<9} {mode:<10}"
+    if r is None:
+        print(f"{head} {'-':>6}  {'NO PAYLOAD':>78}")
+        return
+    d = r["d"]
+    if d is None:
+        print(f"{head} {r['bytes']:>6}  too short for one frame")
+        return
+    sync = "-" if d["sync"] is None else f"{d['sync']:.2f}"
+    print(f"{head} {r['bytes']:>6}  {d['rate']:>4} {d['order']:<5} "
+          f"{d['offset']:>3} {'y' if d['reverse'] else 'n':<3} {'y' if d['invert'] else 'n':<3} "
+          f"{d['frames']:>6} {sync:>5}  {d['m']['voiced']:>6.3f} {d['m']['track']:>6.3f} "
+          f"{d['second']:>5.3f} {d['m']['f0_median']:>5.0f}  {'PASS' if r['ok'] else 'FAIL'}")
+
+
+def describe(r):
+    """(decoded, detail) text for one message."""
+    d = r["d"]
+    if d is None:
+        return f"{r['bytes']} payload bytes, too short for one MELPe frame", None
+    decoded = (f"{r['bytes']} payload bytes, {d['frames']} MELPe {d['rate']} bps frames, "
+               f"speech measure {d['m']['track']:.2f} (next best reading {d['second']:.2f})")
+    detail = (f"bit order {d['order']}-first, frame offset {d['offset']} bits"
+              + (", frames reversed" if d["reverse"] else "")
+              + (", bits inverted" if d["invert"] else "")
+              + ("" if d["sync"] is None else
+                 f", sync bit alternates in {100 * d['sync']:.0f} % of frames"))
+    return decoded, detail
+
+
+def recording_item(label, mode, results, audio, proofs_root, slug):
+    """One proof item for a recording from its messages' results; writes its decoded audio."""
+    status = combine_status([r["status"] for r in results])
+    texts = [describe(r) for r in results]
+    if len(results) == 1:
+        decoded = texts[0][0] + f"; speech from {PASS_TRACK:.2f}."
+        detail = (texts[0][1][0].upper() + texts[0][1][1:] + ".") if texts[0][1] else None
+    else:
+        decoded = (f"{len(results)} messages, one per preamble; speech from {PASS_TRACK:.2f}. "
+                   + " ".join(f"Message {i + 1}: {t[0]}." for i, t in enumerate(texts)))
+        detail = " ".join(f"Message {i + 1}: {t[1]}." for i, t in enumerate(texts) if t[1]) or None
+    xs = [r["x"] for r in results if r["x"] is not None]
+    if xs:
+        gap = np.zeros(int(GAP_S * mf.FS), dtype=np.int16)
+        joined = xs[0]
+        for x in xs[1:]:
+            joined = np.concatenate([joined, gap, x])
+        rel = f"{proofs.AUDIO_DIR}/{slug}.wav"
+        mf.write_wav(os.path.join(proofs_root, rel), joined)
+        audio = [{"label": "Decoded speech", "file": rel}] + audio
+    return proofs.item(label, mode, status, decoded, detail, audio)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--melpe", required=True, help="MELPe reference coder program")
@@ -245,74 +359,47 @@ def main():
         os.makedirs(pdir, exist_ok=True)
     items = []
     decoders = set()
-    hdr =(f"{'file':<17} {'preamble':<9} {'mode':<10} {'bytes':>6}  {'rate':>4} {'order':<5} "
+    hdr = (f"{'payload':<20} {'preamble':<9} {'mode':<10} {'bytes':>6}  {'rate':>4} {'order':<5} "
            f"{'off':>3} {'rev':<3} {'inv':<3} {'frames':>6} {'sync':>5}  {'voiced':>6} "
            f"{'track':>6} {'2nd':>5} {'f0':>5}  result")
     print(hdr)
     print("-" * len(hdr))
     n_have = n_pass = 0
     for slug, name, rate_hint in FILES:
-        pb = os.path.join(a.payload, slug + ".bin")
-        pj = os.path.join(a.payload, slug + ".json")
-        meta = {}
-        if os.path.exists(pj):
-            with open(pj, encoding="utf-8") as f:
-                meta = json.load(f)
-        pre = str(meta.get("preamble", "-"))[:9]
-        mode = str(meta.get("mode", "-"))[:10]
-        if meta.get("decoder"):
-            decoders.add(str(meta["decoder"]))
+        parts = payload_parts(a.payload, slug)
+        # the recording's sidecar, else its first message's, gives the preamble reading
+        meta = load_meta(a.payload, slug) or (load_meta(a.payload, parts[0][0]) if parts else {})
+        label = name[:-4]
         audio = []
         if pdir and a.set:
             rel = f"{proofs.AUDIO_DIR}/{slug}_channel.wav"
             mf.write_wav(os.path.join(a.proofs, rel), channel_8k(os.path.join(a.set, name)))
             audio.append({"label": "On the channel", "file": rel})
-        label = name[:-4]
-        if not os.path.exists(pb):
-            print(f"{slug:<17} {pre:<9} {mode:<10} {'-':>6}  {'':>4} {'':<5} {'':>3} {'':<3} "
-                  f"{'':<3} {'':>6} {'':>5}  {'':>6} {'':>6} {'':>5} {'':>5}  NO PAYLOAD")
+        if not parts:
+            print_row(slug, meta)
             items.append(proofs.item(label, proofs.mode_text(label, meta), "none",
                                      "Not decoded yet: no payload bits from the modem.",
                                      audio=audio))
             continue
         n_have += 1
-        with open(pb, "rb") as f:
-            payload = f.read()
-        best = score_file(a.melpe, payload, meta, rate_hint, a.search, a.work, slug, a.jobs,
-                          a.search_all)
-        if best is None:
-            print(f"{slug:<17} {pre:<9} {mode:<10} {len(payload):>6}  too short for one frame")
-            items.append(proofs.item(label, proofs.mode_text(label, meta), "fail",
-                                     f"{len(payload)} payload bytes: too short for one MELPe frame.",
-                                     audio=audio))
-            continue
-        _, d, x = best
-        mf.write_wav(os.path.join(a.audio, slug + ".wav"), x)
-        ok = d["m"]["track"] >= PASS_TRACK and d["m"]["track"] - d["second"] >= PASS_MARGIN
-        n_pass += ok
-        sync = "-" if d["sync"] is None else f"{d['sync']:.2f}"
-        print(f"{slug:<17} {pre:<9} {mode:<10} {len(payload):>6}  {d['rate']:>4} {d['order']:<5} "
-              f"{d['offset']:>3} {'y' if d['reverse'] else 'n':<3} {'y' if d['invert'] else 'n':<3} "
-              f"{d['frames']:>6} {sync:>5}  {d['m']['voiced']:>6.3f} {d['m']['track']:>6.3f} "
-              f"{d['second']:>5.3f} {d['m']['f0_median']:>5.0f}  {'PASS' if ok else 'FAIL'}")
-        if pdir:
-            rel = f"{proofs.AUDIO_DIR}/{slug}.wav"
-            mf.write_wav(os.path.join(a.proofs, rel), x)
-            audio.insert(0, {"label": "Decoded speech", "file": rel})
-            verified = bool(meta.get("verified")) or (d["sync"] is not None and d["sync"] >= SYNC_TRUST)
-            decoded = (f"{len(payload)} payload bytes, {d['frames']} MELPe {d['rate']} bps frames; "
-                       f"speech measure {d['m']['track']:.2f} (speech from {PASS_TRACK:.2f}, "
-                       f"next best reading {d['second']:.2f}).")
-            detail = (f"Bit order {d['order']}-first, frame offset {d['offset']} bits"
-                      + (", frames reversed" if d["reverse"] else "")
-                      + (", bits inverted" if d["invert"] else "")
-                      + ("" if d["sync"] is None else
-                         f"; sync bit alternates in {100 * d['sync']:.0f} % of frames") + ".")
-            items.append(proofs.item(label, proofs.mode_text(label, meta),
-                                     proofs.status_for(True, verified, ok), decoded, detail, audio))
+        results = []
+        for part, _ in parts:
+            pmeta = load_meta(a.payload, part) if part != slug else meta
+            if pmeta.get("decoder"):
+                decoders.add(str(pmeta["decoder"]))
+            r = score_part(a, part, pmeta, rate_hint)
+            print_row(part, pmeta, r)
+            if r["x"] is not None:
+                mf.write_wav(os.path.join(a.audio, part + ".wav"), r["x"])
+            results.append(r)
+        item = recording_item(label, proofs.mode_text(label, meta), results, audio,
+                              a.proofs, slug) if pdir else None
+        if item:
+            items.append(item)
+        n_pass += combine_status([r["status"] for r in results]) == "pass"
     print("-" * len(hdr))
-    print(f"speech PASS (track >= {PASS_TRACK}, {PASS_MARGIN} over the next choice): {n_pass}/{n_have} files with a payload, "
-          f"{len(FILES)} in the set")
+    print(f"speech PASS (track >= {PASS_TRACK}, {PASS_MARGIN} over the next choice, every "
+          f"message): {n_pass}/{n_have} recordings with a payload, {len(FILES)} in the set")
     if pdir:
         decoder = a.decoder or (" ; ".join(sorted(decoders)) if decoders else
                                 "m110a_rx: not run on these files yet")

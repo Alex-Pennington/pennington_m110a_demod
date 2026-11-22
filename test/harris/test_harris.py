@@ -13,6 +13,9 @@ Usage: python3 -I -B test/harris/test_harris.py <work dir>
   score low
 - proofs: text-field check, status rule, and an end-to-end score.py --proofs run with no
   payloads (every item "none")
+- messages: a recording with one payload per preamble (<slug>_m<N>.bin) stays one proof
+  item, with per-message results and the messages' audio joined; run with a stub coder
+  that synthesises silence
 """
 import json
 import os
@@ -193,6 +196,70 @@ def test_proofs(work):
               "channel audio named for every item")
 
 
+STUB_CODER = """#!{py} -IB
+# Stand-in for the MELPe coder in tests: synthesis writes 100 zero samples per input byte.
+import sys
+a = sys.argv
+src, dst = a[a.index("-i") + 1], a[a.index("-o") + 1]
+n = len(open(src, "rb").read())
+open(dst, "wb").write(bytes(200 * n))
+"""
+
+
+def test_multiples(work):
+    import score
+    pay = os.path.join(work, "payload_multi")
+    os.makedirs(pay, exist_ok=True)
+    for n, size in ((2, 30), (10, 20), (1, 40)):
+        with open(os.path.join(pay, f"600_3_multiples_m{n}.bin"), "wb") as f:
+            f.write(bytes(size))
+    with open(os.path.join(pay, "600_3_multiples_mx.bin"), "wb") as f:
+        f.write(bytes(5))
+    with open(os.path.join(pay, "melp600.bin"), "wb") as f:
+        f.write(bytes(25))
+    with open(os.path.join(pay, "melp600_m1.bin"), "wb") as f:
+        f.write(bytes(25))
+    check(score.payload_parts(pay, "600_3_multiples")
+          == [("600_3_multiples_m1", 1), ("600_3_multiples_m2", 2), ("600_3_multiples_m10", 10)],
+          "messages found in number order, other names ignored")
+    check(score.payload_parts(pay, "melp600") == [("melp600", None)], "a whole-recording payload wins")
+    check(score.payload_parts(pay, "600_1") == [], "no payload: no parts")
+    check([score.combine_status(s) for s in (["pass", "pass"], ["pass", "partial"], ["pass", "fail"], [])]
+          == ["pass", "partial", "fail", "none"], "recording status from message statuses")
+
+    stub = os.path.join(work, "stub_melpe.py")
+    with open(stub, "w", encoding="utf-8") as f:
+        f.write(STUB_CODER.format(py=sys.executable))
+    os.chmod(stub, 0o755)
+    pdir = os.path.join(work, "proofs_multi")
+    os.makedirs(pdir, exist_ok=True)
+    p = subprocess.run([sys.executable, "-I", "-B", os.path.join(HERE, "score.py"), "--melpe", stub,
+                        "--payload", pay, "--audio", os.path.join(work, "audio_multi"), "--work", work,
+                        "--proofs", pdir, "--decoder", "m110a_rx master @0000000"],
+                       capture_output=True, text=True, timeout=120)
+    path = os.path.join(pdir, "t7.json")
+    check(os.path.exists(path), f"multi-message run writes t7.json (rc {p.returncode})")
+    if not os.path.exists(path):
+        print(p.stdout, p.stderr)
+        return
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    check(len(doc["items"]) == 8, "still eight items, one per recording")
+    it = {i["name"]: i for i in doc["items"]}["600 #3 multiples"]
+    check(it["decoded"].startswith("3 messages, one per preamble")
+          and "Message 3: 20 payload bytes" in it["decoded"], "per-message results in decoded")
+    check(it["status"] == "fail", "silence decodes to fail, not pass")
+    check([a["label"] for a in it["audio"]] == ["Decoded speech"], "one decoded speech file")
+    with wave.open(os.path.join(pdir, it["audio"][0]["file"]), "rb") as w:
+        n = w.getnframes()
+    frames = [len(mf.cut_frames(mf.bytes_to_bits(bytes(s)), 600)) for s in (40, 30, 20)]
+    want = sum(100 * 7 * k for k in frames) + 2 * int(score.GAP_S * mf.FS)
+    check(n == want, f"messages joined with gaps ({n} samples, want {want})")
+    check(proofs.check_text(doc) == [], "multi-message text has no paths, hosts or frequencies")
+    check("600_3_multiples_m1" in p.stdout and "600_3_multiples_m10" in p.stdout,
+          "one table row per message")
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__)
@@ -204,6 +271,7 @@ def main():
     test_sync()
     test_measure()
     test_proofs(work)
+    test_multiples(work)
     print(f"{len(FAILS)} failed")
     return 1 if FAILS else 0
 
