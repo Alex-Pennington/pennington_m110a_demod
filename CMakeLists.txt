@@ -144,6 +144,14 @@ if(M110A_HAVE_SCIPY)
   endforeach()
   set_tests_properties(iq_frontend_vs_scipy PROPERTIES LABELS "iq")
 
+  # Harris-mode TX: payload -> m110a_tx -> WAV -> m110a_rx, byte-exact with EOM
+  # (600H, 1200H; test/harris/tx_loopback.py, docs/harris-tx.md)
+  add_test(NAME harris_tx_loopback
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/harris/tx_loopback.py
+                   --rx $<TARGET_FILE:m110a_rx> --tx $<TARGET_FILE:m110a_tx>
+                   --work ${CMAKE_BINARY_DIR}/rx_work/harris_tx_loopback)
+  set_tests_properties(harris_tx_loopback PROPERTIES LABELS "iq")
+
   # long sweeps: ctest -L slow
   set(_all_modes 150S,150L,300S,300L,600S,600L,1200S,1200L,2400L)
   set(_slow

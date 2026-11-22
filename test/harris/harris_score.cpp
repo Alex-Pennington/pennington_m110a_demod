@@ -6,6 +6,7 @@
  * @brief Score MIL-STD-188-110A waveform candidates on one recorded message.
  *
  *   harris_score WAV START_S END_S [--eq L MU_TRAIN MU_DATA] [--dump CAND OUT.bin]
+ *                [--compare SYMS]
  *
  * WAV is 48 kHz 16-bit audio; START_S..END_S brackets one message (m110a_rx's
  * start_s, and the next message's start or the end of the file). It finds the
@@ -29,6 +30,10 @@
  * --dump CAND OUT writes CAND's decoded bits up to the EOM, in the order they leave
  * the Viterbi decoder, packed LSB first (bit k -> byte k/8, bit k%8), the packing of
  * m110a_rx hex=. A final "summary" line gives the dumped candidate's figures.
+ *
+ * --compare SYMS compares the receiver's hard decisions on every symbol from the first
+ * preamble symbol with a transmitter's symbol stream (one byte per symbol, 8PSK position
+ * 0-7, as m110a_tx --symbols writes), with --eq's L (default 0: one tap), and exits.
  *
  * test/harris/score.py drives it over the Harris test set (docs/harris-melpe.md).
  */
@@ -381,17 +386,164 @@ static Tracked fse(const std::vector<float>& seg, double foff, int start, int d1
     return t;
 }
 
+// --compare: the receiver's own hard decisions on every symbol from the first preamble
+// symbol, against a transmitter's symbol stream REF (8PSK positions 0-7, preamble first,
+// as m110a_tx --symbols writes). The front end is fse()'s: T/2 NLMS equalizer (2L+1 taps;
+// L = 0 is one tap, gain and phase only) and PLL, trained on the known preamble and the
+// probes (zeros; D1/D2 in the last two segments of each block). Decisions never look at
+// REF: preamble and probe symbols are hard 8-ary decisions, data symbols the nearest
+// point of the mode's constellation. Before deciding, the front end adapts once on the
+// 288-symbol common segment (known to any receiver). Prints agreement per region and per 1440-symbol
+// block, the best symbol lag in -3..3 and the first disagreements.
+static void compare_syms(const std::vector<float>& seg, double foff, int start, int d1, int d2,
+                         const Structure& st, int bps, int L, float mu_t, float mu_d,
+                         const std::vector<int>& ref) {
+    const int sps = 20;
+    std::vector<cf> bb(seg.size());
+    double ph = 0, inc = 2 * M_PI * (1800.0 + foff) / 48000.0;
+    for (size_t i = 0; i < seg.size(); i++) { bb[i] = cf(seg[i] * std::cos(ph), -seg[i] * std::sin(ph)); ph += inc; }
+    auto taps = generate_srrc_taps(0.35f, 6, float(sps));
+    int half = taps.size() / 2;
+    auto filt = [&](long n) {
+        cf a(0, 0);
+        for (size_t j = 0; j < taps.size(); j++) { long k = n - half + j; if (k >= 0 && k < (long)bb.size()) a += bb[k] * taps[j]; }
+        return a;
+    };
+    const int N = 2 * L + 1;
+    std::vector<cf> w(N, cf(0, 0)), x(N);
+    w[L] = cf(1, 0);
+    auto input = [&](long n) { for (int k = 0; k < N; k++) x[k] = filt(start + n * sps + (k - L) * (sps / 2)); };
+    DataScramblerFixed scr;
+    std::vector<int> sq(160);
+    for (int i = 0; i < 160; i++) sq[i] = scr.next();
+    float theta = 0, nu = 0;
+    const float pll_a = 0.03f, pll_b = 0.0005f;
+    auto adapt = [&](const cf& r, const cf& yr, float mu) {
+        float e_ph = std::arg(yr * std::conj(r));
+        nu += pll_b * e_ph; theta += pll_a * e_ph + nu;
+        cf e = (r - yr) * std::polar(1.0f, theta);
+        float p = 1e-6f; for (auto& v : x) p += std::norm(v);
+        for (int k = 0; k < N; k++) w[k] += mu / p * e * std::conj(x[k]);
+    };
+    auto out = [&]() { cf y(0, 0); for (int k = 0; k < N; k++) y += w[k] * x[k]; return y * std::polar(1.0f, -theta); };
+    auto pos8 = [](cf v) { return ((int)std::lround(std::arg(v) * 4 / M_PI) + 8) % 8; };
+    std::vector<int> pre;
+    for (int c = 2; c >= 0; c--) { auto f = preamble_frame(d1, d2, c); pre.insert(pre.end(), f.begin(), f.end()); }
+    double pr = 0;
+    for (int n = 0; n < 288; n++) { input(n); pr += std::norm(x[L]); }
+    float amp = std::sqrt(pr / 288);
+    for (auto& v : w) v /= amp;
+    // kind: 0 preamble, 1 data, 2 zero probe, 3 D probe
+    // warm-up: adapt on the known 288-symbol common segment once before deciding, so
+    // the first decisions are not the equalizer's and PLL's acquisition
+    for (int n = 0; n < 288; n++) { input(n); adapt(PSK8[pre[n]], out(), mu_t); }
+    std::vector<int> dec, kind;
+    std::vector<float> mag;
+    for (int n = 0; n < (int)pre.size(); n++) {
+        input(n); cf y = out();
+        dec.push_back(pos8(y)); kind.push_back(0); mag.push_back(std::abs(y));
+        adapt(PSK8[pre[n]], y, mu_t);
+    }
+    const long data0 = 1440;
+    const long nsym = (long(seg.size()) - start) / sps - data0 - 8;
+    const int Lf = st.U + st.K, blk_frames = 1440 / Lf, step = bps == 1 ? 4 : bps == 2 ? 2 : 1;
+    for (long n = 0; n < nsym; n++) {
+        input(data0 + n); cf y = out();
+        int f = n / Lf, i = n % Lf, s = sq[n % 160];
+        if (i >= st.U) {
+            int k = i - st.U, fb = f % blk_frames, d = 0;
+            if (fb == blk_frames - 2) d = dpat(d1, k); else if (fb == blk_frames - 1) d = dpat(d2, k);
+            dec.push_back(pos8(y)); kind.push_back((fb >= blk_frames - 2 && k < 16) ? 3 : 2);
+            mag.push_back(std::abs(y));
+            adapt(PSK8[(s + d) & 7], y, mu_t);
+        } else {
+            cf z = y * std::conj(PSK8[s]);
+            int p = ((int)std::lround(std::arg(z) * 4 / M_PI / step) * step + 8) % 8;
+            dec.push_back((p + s) & 7); kind.push_back(1); mag.push_back(std::abs(y));
+            adapt(PSK8[(p + s) & 7], y, mu_d);
+        }
+    }
+    // best lag: ref[n] against dec[n + lag]
+    int best_lag = 0; long best_agree = -1;
+    for (int lag = -3; lag <= 3; lag++) {
+        long a = 0;
+        for (size_t n = 0; n < ref.size(); n++) { long m = long(n) + lag; if (m >= 0 && m < (long)dec.size() && dec[m] == ref[n]) a++; }
+        if (a > best_agree) { best_agree = a; best_lag = lag; }
+    }
+    const char* kn[4] = {"preamble", "data", "zero probes", "D1/D2 probes"};
+    long agree[4] = {0}, tot[4] = {0};
+    std::vector<long> first_bad, last_bad;
+    size_t nblk = (ref.size() + 1439) / 1440;
+    std::vector<long> ba(nblk, 0), bt(nblk, 0);
+    for (size_t n = 0; n < ref.size(); n++) {
+        long m = long(n) + best_lag;
+        if (m < 0 || m >= (long)dec.size()) continue;
+        int k = kind[m];
+        tot[k]++; bt[n / 1440]++;
+        if (dec[m] == ref[n]) { agree[k]++; ba[n / 1440]++; }
+        else {
+            if (first_bad.size() < 12) first_bad.push_back(long(n));
+            last_bad.push_back(long(n));
+            if (last_bad.size() > 12) last_bad.erase(last_bad.begin());
+        }
+    }
+    long A = 0, T = 0;
+    for (int k = 0; k < 4; k++) { A += agree[k]; T += tot[k]; }
+    printf("compare: %d T/2 taps, lag %+d, %zu reference symbols, received %zu: agree %ld/%ld (%.3f%%)\n",
+           N, best_lag, ref.size(), dec.size(), A, T, T ? 100.0 * A / T : 0.0);
+    for (int k = 0; k < 4; k++)
+        printf("  %-13s %6ld/%-6ld %.3f%%\n", kn[k], agree[k], tot[k], tot[k] ? 100.0 * agree[k] / tot[k] : 0.0);
+    printf("  per 1440-symbol block (block 0 = preamble):");
+    for (size_t b = 0; b < nblk; b++) printf(" %.1f", bt[b] ? 100.0 * ba[b] / bt[b] : 0.0);
+    printf("\n  first disagreements (symbol index from the preamble start):");
+    for (long v : first_bad) printf(" %ld", v);
+    // where the rest fall: disagreements per 96-symbol stretch, wherever there are any
+    printf("\n  last 6 symbols (ref/decision/|y|):");
+    for (long n = long(ref.size()) - 6; n < (long)ref.size(); n++) {
+        long m = n + best_lag;
+        if (n >= 0 && m >= 0 && m < (long)dec.size()) printf(" %d/%d/%.2f", ref[n], dec[m], mag[m]);
+    }
+    printf("\n  last disagreements:");
+    for (long v : last_bad) printf(" %ld", v);
+    printf("\n  disagreements per 96-symbol stretch (start:count):");
+    for (size_t b = 0; b * 96 < ref.size(); b++) {
+        int c = 0;
+        for (size_t n = b * 96; n < (b + 1) * 96 && n < ref.size(); n++) {
+            long m = long(n) + best_lag;
+            if (m >= 0 && m < (long)dec.size() && dec[m] != ref[n]) c++;
+        }
+        if (c) printf(" %zu:%d", b * 96, c);
+    }
+    // signal after the reference ends: mean |y| over the next 1440 symbols vs the last block
+    long e = long(ref.size()) + best_lag;
+    double m_in = 0, m_out = 0; int c_in = 0, c_out = 0;
+    for (long m = e - 1440; m < e && m < (long)mag.size(); m++) if (m >= 0) { m_in += mag[m]; c_in++; }
+    for (long m = e; m < e + 1440 && m < (long)mag.size(); m++) { m_out += mag[m]; c_out++; }
+    printf("\n  mean |y| in 8-symbol steps around the end (-16..+40):");
+    for (long m0 = e - 16; m0 < e + 40; m0 += 8) {
+        double a = 0; int c = 0;
+        for (long m = m0; m < m0 + 8 && m < (long)mag.size(); m++) if (m >= 0) { a += mag[m]; c++; }
+        printf(" %.2f", c ? a / c : 0.0);
+    }
+    printf("\n  after the reference ends: mean |y| %.3f over %d symbols (last block %.3f)\n",
+           c_out ? m_out / c_out : 0.0, c_out, c_in ? m_in / c_in : 0.0);
+    printf("compare_summary taps=%d lag=%d ref=%zu agree=%ld total=%ld preamble=%ld/%ld data=%ld/%ld "
+           "zero_probes=%ld/%ld d_probes=%ld/%ld\n", N, best_lag, ref.size(), A, T,
+           agree[0], tot[0], agree[1], tot[1], agree[2], tot[2], agree[3], tot[3]);
+}
+
 int main(int argc, char** argv) {
-    if (argc < 4) { fprintf(stderr, "usage: harris_score WAV START_S END_S [--eq L MU_TRAIN MU_DATA] [--dump CAND OUT] [--frames N]\n"); return 2; }
+    if (argc < 4) { fprintf(stderr, "usage: harris_score WAV START_S END_S [--eq L MU_TRAIN MU_DATA] [--dump CAND OUT] [--frames N] [--compare SYMS]\n"); return 2; }
     std::vector<float> x; int rate;
     if (!read_wav(argv[1], x, rate) || rate != 48000) { fprintf(stderr, "bad wav\n"); return 2; }
     double t0 = atof(argv[2]), t1 = atof(argv[3]);
-    std::string dump_cand, dump_out;
+    std::string dump_cand, dump_out, compare_path;
     int max_frames = 1 << 30;
     int eq_L = 0; float eq_mu_t = 0.02f, eq_mu_d = 0.005f;
     for (int i = 4; i < argc; i++) {
         if (!strcmp(argv[i], "--dump") && i + 2 < argc) { dump_cand = argv[i + 1]; dump_out = argv[i + 2]; i += 2; }
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--compare") && i + 1 < argc) compare_path = argv[++i];
         else if (!strcmp(argv[i], "--eq") && i + 3 < argc) {
             eq_L = atoi(argv[i + 1]); eq_mu_t = atof(argv[i + 2]); eq_mu_d = atof(argv[i + 3]); i += 3;
         }
@@ -417,6 +569,18 @@ int main(int argc, char** argv) {
     const Structure S20{20, 20, "20/20"}, S32{32, 16, "32/16"};
     Tracked t20 = track(r.data_symbols, S20, true, max_frames);
     Tracked t32 = track(r.data_symbols, S32, true, max_frames);
+    if (!compare_path.empty()) {
+        std::ifstream cf_in(compare_path, std::ios::binary);
+        std::vector<int> ref;
+        for (int c; (c = cf_in.get()) != EOF;) ref.push_back(c & 7);
+        if (ref.empty()) { fprintf(stderr, "empty --compare file\n"); return 2; }
+        bool is32 = (r.d1 == 7 && r.d2 == 7);
+        const Structure& st = is32 ? S32 : S20;
+        double foff = r.freq_offset_hz + probe_slope_hz(is32 ? t32 : t20, st);
+        int bps = is32 ? 3 : (r.d2 == 6 ? 2 : 1);
+        compare_syms(seg, foff, r.start_sample, r.d1, r.d2, st, bps, eq_L, eq_mu_t, eq_mu_d, ref);
+        return 0;
+    }
     if (eq_L > 0) {
         bool is32 = (r.d1 == 7 && r.d2 == 7);
         const Structure& st = is32 ? S32 : S20;
