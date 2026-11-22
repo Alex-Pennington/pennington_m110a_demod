@@ -4,6 +4,7 @@
 Usage:
   python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <test-set dir> [--jobs N]
       [--resample RATE --workdir DIR] [--stdin [--stream-sizes keep|zero|ff]]
+      [--proofs DIR [--decoder-label TEXT] [--proofs-note TEXT]]
 
 --resample RATE resamples each test file to RATE Hz (16-bit PCM WAV under --workdir) before
 decoding. The resampler is scipy's resample_poly with its own Kaiser FIR, independent of the
@@ -22,6 +23,11 @@ the zero padding of the last interleaver block; the prefix match passes that by 
 Text is scored for every waveform, WID 0-13: WID 0 (Walsh), WID 1-5 (BPSK) and WID 6-13
 (QPSK, 8PSK, 16/32/64/256QAM).
 
+--proofs DIR also writes DIR/t5.json, one item per file (name, mode, status pass / partial /
+fail / none, decoded text, detail), for a report page. The file is written through a temp file
+and a rename. A text field holding a path or host name is refused: nothing is written and the
+exit status is 3.
+
 Exit status: 0 when every file reports the expected WID and interleaver and every
 file passes the text check, 1 otherwise.
 """
@@ -35,8 +41,16 @@ import subprocess
 import sys
 import tempfile
 import wave
+import json
 
 IL_NAMES = {"ultra-short", "short", "medium", "long"}
+VARIANT_WORDS = {
+    "STD-AMB-001": "continuous preamble scrambling (STD-AMB-001)",
+    "single-fixed": "single-symbol fixed preamble section",
+    "long-preamble": "long preamble (8 super-frames)",
+    "no-EOM": "no end of message",
+}
+FORBIDDEN = ("/home", "/tmp", ".internal", "saga")  # never in a proofs text field
 TEXT_WIDS = range(0, 14)  # waveforms whose payload text is scored
 
 
@@ -56,6 +70,8 @@ def parse_readme(path):
                 "num": int(cells[0]),
                 "file": cells[1].strip("`"),
                 "wid": int(cells[2]),
+                "rate": cells[3],
+                "mod": cells[4],
                 "il": cells[5],
                 "eom": cells[8],
                 "variant": cells[9],
@@ -125,6 +141,102 @@ def run_one(rx, path, stdin=False, sizes="ff"):
     return kv
 
 
+def default_decoder_label():
+    """"m110d_rx @<short commit of this repo's HEAD>", or "m110d_rx" if git cannot say."""
+    try:
+        p = subprocess.run(["git", "-C", os.path.dirname(os.path.abspath(__file__)), "rev-parse", "--short", "HEAD"],
+                           capture_output=True, text=True, timeout=30)
+        sha = p.stdout.strip()
+        if p.returncode == 0 and re.fullmatch(r"[0-9a-f]{4,40}", sha):
+            return f"m110d_rx @{sha}"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "m110d_rx"
+
+
+def proofs_strings(v):
+    """Every string in a JSON-able value, keys included."""
+    if isinstance(v, str):
+        yield v
+    elif isinstance(v, dict):
+        for k, x in v.items():
+            yield from proofs_strings(k)
+            yield from proofs_strings(x)
+    elif isinstance(v, (list, tuple)):
+        for x in v:
+            yield from proofs_strings(x)
+
+
+def write_proofs(outdir, fname, doc):
+    """Write doc as JSON to outdir/fname through a temp file and a rename.
+
+    Returns 0, or 3 (nothing written) when a text field holds a path or host name.
+    """
+    for s in proofs_strings(doc):
+        low = s.lower()
+        for bad in FORBIDDEN:
+            if bad in low:
+                print(f"--proofs: refusing to write {fname}: a field contains {bad!r}: {s[:80]!r}", file=sys.stderr)
+                return 3
+    os.makedirs(outdir, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=outdir, prefix="." + fname + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(doc, f, indent=1, ensure_ascii=True)
+            f.write("\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, os.path.join(outdir, fname))
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return 0
+
+
+def proof_mode(r):
+    s = f"{r['rate']} bps {r['mod']}, {r['il']} interleaver"
+    if r["variant"]:
+        s += ", " + VARIANT_WORDS.get(r["variant"], r["variant"])
+    return s
+
+
+def proof_item(r, k, id_ok, t_ok, how):
+    """One t5.json item for README row r and receiver output k."""
+    raw = k.get("text", "")
+    m = re.search(r"(?:\\x00)+$", raw)
+    decoded = raw
+    if m:
+        decoded = raw[:m.start()] + f" [+ {len(m.group(0)) // 4} padding bytes]"
+    if "wid" not in k and "text" not in k:
+        status = "none"
+    elif id_ok and t_ok:
+        status = "pass"
+    elif id_ok:
+        status = "partial"
+    else:
+        status = "fail"
+    if r["eom"] == "off":
+        eom = "no end of message, as sent" if k.get("eom") != "1" else "end of message seen although none was sent"
+    else:
+        eom = "end of message seen" if k.get("eom") == "1" else "end of message not seen"
+    if status == "none":
+        detail = "no output from the decoder (no acquisition)"
+    else:
+        detail = f"waveform {k.get('wid', '-')}, {k.get('interleaver', '-')} interleaver, {eom}"
+        if k.get("bytes"):
+            detail += f", {k['bytes']} bytes"
+    if how:
+        detail += ", " + how
+    item = {"name": os.path.splitext(r["file"])[0], "mode": proof_mode(r), "status": status,
+            "decoded": decoded}
+    if status != "pass":
+        item["expected"] = r["text"]
+    item["detail"] = detail
+    return item
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rx", required=True)
@@ -136,6 +248,9 @@ def main():
     ap.add_argument("--stdin", action="store_true", help="feed each WAV to the receiver on stdin")
     ap.add_argument("--stream-sizes", choices=("keep", "zero", "ff"), default="ff",
                     help="RIFF/data length fields of the WAV sent on stdin (default ff = 0xFFFFFFFF)")
+    ap.add_argument("--proofs", metavar="DIR", help="also write DIR/t5.json, the per-file results for the report page")
+    ap.add_argument("--decoder-label", help="decoder label for --proofs (default: m110d_rx @<short commit>)")
+    ap.add_argument("--proofs-note", help="note text for --proofs")
     a = ap.parse_args()
 
     rows = parse_readme(os.path.join(a.set, "README.md"))
@@ -170,6 +285,11 @@ def main():
     n_id = n_text = n_text_scope = n_text_eom = 0
     n_text_by, n_scope_by = [0, 0, 0], [0, 0, 0]  # [WID 0, WID 1-5, WID 6-13]
     failed = []
+    items = []
+    how = ("decoded from %g kHz audio" % (a.resample / 1000) if a.resample else
+           "via stdin" if a.stdin else "")
+    if a.resample and a.stdin:
+        how = "decoded from %g kHz audio, via stdin" % (a.resample / 1000)
     for r in rows:
         k = res[r["num"]]
         gw = k.get("wid", "-")
@@ -193,6 +313,7 @@ def main():
             t_ok = True
         if not (id_ok and t_ok):
             failed.append(r["num"])
+        items.append(proof_item(r, k, id_ok, t_ok, how))
         note = r["variant"] or ""
         if k.get("payload_note") and r["wid"] in TEXT_WIDS:
             note = (note + " " + k["payload_note"]).strip()
@@ -214,7 +335,19 @@ def main():
     print(f"text PASS (WID 1-5):     {n_text_by[1]}/{n_scope_by[1]}")
     print(f"text PASS (WID 6-13):    {n_text_by[2]}/{n_scope_by[2]}")
     print(f"text PASS, EOM as expected (WID 0-13): {n_text_eom}/{n_text_scope}")
-    return 0 if n_id == 60 and n_text == n_text_scope else 1
+    rc = 0 if n_id == 60 and n_text == n_text_scope else 1
+    if a.proofs:
+        doc = {"id": "T5", "order": 60, "title": "110D Appendix D interop set",
+               "what": "60 recordings from another transmitter: every 3 kHz waveform from 75 to 16000 bps, "
+                       "each with a known message.",
+               "decoder": a.decoder_label or default_decoder_label(),
+               "note": a.proofs_note or "Clean audio straight from the sender's files; every file is decoded "
+                                        "with no knowledge of which waveform it holds.",
+               "items": items}
+        prc = write_proofs(a.proofs, "t5.json", doc)
+        if prc:
+            return prc
+    return rc
 
 
 if __name__ == "__main__":
