@@ -454,6 +454,56 @@ same cells.
 - **WID 0** needs 3 dB in AWGN, 9 dB above its Table D-LXIV value, and fails the Poor channel
   with no noise.
 
+## Input formats
+
+- **WAV**: PCM 16, 24 or 32-bit, or IEEE float 32-bit; `WAVE_FORMAT_EXTENSIBLE` accepted;
+  any channel count, channel 0 used. The sample rate is read from the `fmt ` chunk.
+- **stdin**: `m110d_rx -` (or `--stdin`) reads the WAV from stdin. A data chunk whose length
+  field is 0 or 0xFFFFFFFF, or runs past the end of the input (a streamed WAV), is read to
+  EOF; the RIFF length field is ignored. The whole input is read before decoding starts. The
+  output is the same as for a file, with `file=-`.
+- **Rates**: a multiple of 2400 Hz (9600, 48000, 96000, ...) goes to the demodulator as is.
+  Any other rate from 6840 Hz up (8000, 11025, 16000, 44100, ...) is resampled to 48000 Hz
+  first. Below 6840 Hz the 110D band (180-3420 Hz) does not fit, and the file is refused.
+- **Resampler** (`src/m110d/appd_input.h`): rational polyphase FIR, L/M = 48000/fs reduced by
+  their gcd, Kaiser-windowed sinc, delay-compensated. With fmin = min(fs, 48000), the
+  passband is 0-0.4375 fmin and the stopband starts at 0.5 fmin, with at least 100 dB of
+  attenuation. `m110d_rx --resampler-report FS` measures the designed filter:
+
+  | input | L/M | taps | passband | deviation | stopband | attenuation |
+  |---|---|---|---|---|---|---|
+  | 8000 Hz | 6/1 | 625 | 0-3500 Hz | 0.0001 dB | 4000-24000 Hz | 100.3 dB |
+  | 16000 Hz | 3/1 | 313 | 0-7000 Hz | 0.0001 dB | 8000-24000 Hz | 100.4 dB |
+  | 44100 Hz | 160/147 | 16641 | 0-19294 Hz | 0.0001 dB | 22050 Hz up | 102.8 dB |
+
+  At 3420 Hz, the top of the 110D band, the 8 kHz filter loses 0.0001 dB.
+
+### 8 kHz measurement
+
+`score.py --resample 8000` resamples each clean file 48 -> 8 kHz with scipy `resample_poly`
+and a separately designed Kaiser FIR (515 taps, passband 0-3400 Hz within 0.0001 dB,
+stopband 4000 Hz up at 100.2 dB, 0.002 dB down at 3420 Hz), writes 16-bit PCM (0 samples
+clipped) and decodes that. `--stdin` pipes each WAV to `m110d_rx -` with its RIFF and data
+length fields set to 0xFFFFFFFF (`--stream-sizes ff`, the default) or 0 (`zero`).
+
+Receiver at 4e43f17, scorer at 6a7f4f2:
+
+| input | WID+interleaver | text WID 0 | text WID 1-5 | text WID 6-13 | text + EOM |
+|---|---|---|---|---|---|
+| 48 kHz file | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+| 8 kHz file | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+| 8 kHz stdin, lengths 0xFFFFFFFF | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+| 8 kHz stdin, lengths 0 | 60/60 | 3/3 | 24/24 | 33/33 | 60/60 |
+
+The 48 kHz table is byte-identical to the one before the input stage was added. At 8 kHz every
+WID 6-13 file keeps its 48 kHz EVM to 0.1 dB (-53.9 to -54.7 dB, 256QAM included), and every
+file keeps probe quality 1.000 and re-encode agreement 1.0000.
+
+```
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <dir>
+python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resample 8000 --workdir <dir> --stdin
+```
+
 ## Limits of what was tested
 
 - The interop test set itself is clean digital audio straight from the transmitter. Every
@@ -467,11 +517,24 @@ same cells.
 - The WID 6-13 soft bits are max-log distances with no noise-variance estimate. On a clean
   set that costs nothing; its effect at low SNR was not measured.
 - Acquisition searches the whole file, offline, at every sample. It does not stream.
+- 8 kHz input was measured on the clean set resampled from 48 kHz only. A radio audio path
+  whose passband is narrower than the 180-3420 Hz the waveform occupies was not tested.
 
 ## Open questions
 
 1. What the STD-AMB-001 transmitter sends in fixed symbol 8, where the continuous index runs
    past 255 (measured above; not chased).
+
+## Proofs files for a report page
+
+`score.py --proofs DIR` writes `DIR/t5.json` and `channel.py --proofs DIR` writes
+`DIR/t6.json`. Each holds a title, a decoder label (`m110d_rx @<short commit>` by default,
+or `--decoder-label`), a note (`--proofs-note`) and a list of items with a name, a mode in
+plain words, a status (`pass`, `partial`, `fail`, `none`), the decoded text and a one-line
+detail. `t5.json` has one item per file of the 60-file set, with trailing zero padding
+summarised as `[+ N padding bytes]`. `t6.json` has one item per channel condition, summed
+over the files and seeds run. A text field that holds a path or host name is refused: the
+script exits 3 and writes nothing. The tables and exit status of both scripts are unchanged.
 
 ## Credits
 
