@@ -41,7 +41,7 @@ add_executable(hfchansim hfchansim/main.cpp)
 add_executable(m110a_rx m110a_rx/main.cpp)
 target_link_libraries(m110a_rx PRIVATE m110a_modem)
 
-# MIL-STD-188-110D Appendix D (3 kHz) receiver, phase 1: WAV -> WID, interleaver, text
+# MIL-STD-188-110D Appendix D (3 kHz) receiver: WAV -> WID, interleaver, text
 add_executable(m110d_rx m110d_rx/main.cpp)
 
 # test_gui is Windows-only (test/test_gui/brain_client.h uses winsock without a

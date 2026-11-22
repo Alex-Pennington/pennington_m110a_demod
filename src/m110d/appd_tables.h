@@ -96,6 +96,12 @@ inline std::vector<cplx> frank_base(int n) {
 inline std::vector<cplx> mini_probe(int K, bool boundary) {
     int n = 0, shift = 0;
     switch (K) {  // Table D-XXI rows used at 3 kHz
+        case 24: {  // base 13, Table D-XXII(a); shift 6
+            static const int b13[13] = {1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, -1, 1};
+            std::vector<cplx> p(K);
+            for (int i = 0; i < K; i++) p[i] = b13[((boundary ? 6 : 0) + i) % 13];
+            return p;
+        }
         case 32: n = 4; shift = 8; break;   // base 16
         case 48: n = 5; shift = 12; break;  // base 25
         default: return {};
@@ -123,7 +129,7 @@ struct WaveformParams {
 // Tables D-XI, D-XII (3 kHz row), D-XLIX (3 kHz row) and D-L.
 inline const WaveformParams* waveform_params(int wid) {
     static const WaveformParams tab[] = {
-        {0, 0, 0, 0, 1, "1", "1", "1/2"},  // Walsh: not decoded in phase 1
+        {0, 0, 0, 0, 1, "1", "1", "1/2"},  // Walsh: no data frames; decoded by appd_walsh.h
         {1, 1, 48, 48, 4, "1", "1", "1/8"},
         {2, 1, 48, 48, 2, "1", "1", "1/4"},
         {3, 1, 96, 32, 2, "11", "10", "1/3"},  // 2/3 repeated 2x
