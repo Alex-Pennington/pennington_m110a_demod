@@ -121,10 +121,13 @@ by zero bytes to the end of the 4096-bit long block (512 bytes), as its README r
 
 Each item below is a single decode run on the named file.
 
-- **Preamble PN alignment, main matrix.** Files 1-55 and 58-60 acquire only with the
-  scrambling index restarting at 0 for each Walsh channel symbol (D.5.2.1.1, D.5.2.1.4).
-  Every chip of the acquired super-frame matches (`pn_chip_errors=fixed:0/288,count:0/128,wid:0/160`
-  on file 15). Under the continuous reading the best metric is 0.323 (file 15).
+- **Preamble PN alignment, main matrix.** The receiver tries both readings and keeps the
+  better. For files 1-55 and 58-60 that is the reading where the scrambling index restarts at
+  0 for each Walsh channel symbol (D.5.2.1.1, D.5.2.1.4; the PN column above). On file 15
+  every chip of the acquired super-frame matches
+  (`pn_chip_errors=fixed:0/288,count:0/128,wid:0/160`). The continuous reading scores 0.323
+  on files 13, 15 and 59. On file 58 the single fixed symbol uses PN indices 0 to 31 under
+  either reading, so both score 1.000 and that file does not tell the two apart.
 - **Files 56 and 57 (STD-AMB-001, continuous).** Both acquire only under the continuous
   reading, with metric 0.890; the restart reading gives 0.302. Fixed symbols 0 to 7 match
   fixedPN at offsets 0, 32, ..., 224 with no chip errors. Fixed symbol 8, which needs PN
