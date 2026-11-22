@@ -582,7 +582,7 @@ private:
     void decode_payload(RxResult& r) {
         const WidField& w = r.wid;
         if (!w.checksum_ok) { r.payload_skip_reason = "WID checksum failed"; return; }
-        if (w.constraint != 7) { r.payload_skip_reason = "K=9 not in phase 1"; return; }
+        if (w.constraint != 7) { r.payload_skip_reason = "K=9 not implemented"; return; }
         const WaveformParams* wp = waveform_params(w.waveform);
         const InterleaverParams* ip = interleaver_params(w.waveform, w.interleaver);
         if (!wp || !ip) { r.payload_skip_reason = "waveform/interleaver not defined at 3 kHz"; return; }

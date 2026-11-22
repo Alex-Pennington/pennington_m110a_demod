@@ -129,7 +129,7 @@ struct WaveformParams {
 // Tables D-XI, D-XII (3 kHz row), D-XLIX (3 kHz row) and D-L.
 inline const WaveformParams* waveform_params(int wid) {
     static const WaveformParams tab[] = {
-        {0, 0, 0, 0, 1, "1", "1", "1/2"},  // Walsh: not decoded in phase 1
+        {0, 0, 0, 0, 1, "1", "1", "1/2"},  // Walsh: no data frames; decoded by appd_walsh.h
         {1, 1, 48, 48, 4, "1", "1", "1/8"},
         {2, 1, 48, 48, 2, "1", "1", "1/4"},
         {3, 1, 96, 32, 2, "11", "10", "1/3"},  // 2/3 repeated 2x
