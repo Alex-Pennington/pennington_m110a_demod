@@ -525,6 +525,17 @@ python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <set> --resampl
 1. What the STD-AMB-001 transmitter sends in fixed symbol 8, where the continuous index runs
    past 255 (measured above; not chased).
 
+## Proofs files for a report page
+
+`score.py --proofs DIR` writes `DIR/t5.json` and `channel.py --proofs DIR` writes
+`DIR/t6.json`. Each holds a title, a decoder label (`m110d_rx @<short commit>` by default,
+or `--decoder-label`), a note (`--proofs-note`) and a list of items with a name, a mode in
+plain words, a status (`pass`, `partial`, `fail`, `none`), the decoded text and a one-line
+detail. `t5.json` has one item per file of the 60-file set, with trailing zero padding
+summarised as `[+ N padding bytes]`. `t6.json` has one item per channel condition, summed
+over the files and seeds run. A text field that holds a path or host name is refused: the
+script exits 3 and writes nothing. The tables and exit status of both scripts are unchanged.
+
 ## Credits
 
 No code was taken from another project. The read-only reference
