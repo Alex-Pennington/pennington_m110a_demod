@@ -1084,10 +1084,15 @@ private:
         for (int k = 0; k < L; k++)
             if (k == kmax || Pc[k] > std::max(4 * floor0, 1e-5 * Pmax)) sig.push_back(k);
         // Unwrap: cut the circle in one of the gaps between significant delays, and place the
-        // resulting arc at any offset that overlaps +-(K-L); keep the lowest residual.
+        // resulting arc at any offset that overlaps +-(K-L). Inside the periodic part of the
+        // probe a delay d and d +- L fit alike, and a hypothesis that scores on fewer, more
+        // central observations escapes more of the pulse tails: residuals within 2.5 x the
+        // lowest are a tie, and the tie goes to the shortest span. Misplacing a main path costs
+        // one to three orders of magnitude (ITU Poor and Table D-LXV channels, measured with -v);
+        // misplacing a weak tail tap cost 1.4 x on ITU Poor (measured).
         const int ns = (int)sig.size();
-        double best = 1e300;
-        std::vector<int> best_taps;
+        struct Hyp { std::vector<int> taps; double v; };
+        std::vector<Hyp> hyps;
         for (int g = 0; g < ns; g++) {
             const int b0 = sig[(g + 1) % ns];
             for (int m = -2; m <= 2; m++) {
@@ -1096,16 +1101,44 @@ private:
                 for (int k : sig) taps.push_back(ds + ((k - b0) % L + L) % L);
                 std::sort(taps.begin(), taps.end());
                 if (taps.front() > K - L || taps.back() < -(K - L)) continue;
+                // Pulse tails just outside the arc would pollute the edge observations of one
+                // hypothesis and not another: every hypothesis is scored with two delays of
+                // margin each side (classes not already used), when the probe allows it.
+                std::vector<int> wide = taps;
+                {
+                    std::vector<int> cls(L, 0);
+                    for (int d : taps) cls[((d % L) + L) % L] = 1;
+                    for (int e = 1; e <= 2; e++)
+                        for (int d : {taps.front() - e, taps.back() + e}) {
+                            int k = ((d % L) + L) % L;
+                            if (!cls[k]) { wide.push_back(d); cls[k] = 1; }
+                        }
+                    std::sort(wide.begin(), wide.end());
+                }
                 ProbeFit fa, fb;
-                double v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
+                double v = support_residual(wide, K, L, probe, probe_b, sub, fa, fb);
+                if (v >= 1e300) v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
                 if (opt_.verbose) {
                     std::fprintf(stderr, "eq hypothesis [%d..%d] %zu taps: residual %.3e\n", taps.front(), taps.back(),
                                  taps.size(), v);
                 }
-                if (v < best) { best = v; best_taps = taps; }
+                if (v < 1e300) hyps.push_back({taps, v});
             }
         }
-        if (best_taps.empty()) return false;
+        if (hyps.empty()) return false;
+        double best = 1e300;
+        for (const Hyp& h : hyps) best = std::min(best, h.v);
+        std::vector<int> best_taps;
+        int best_span = 1 << 30;
+        double best_v = 1e300;
+        for (const Hyp& h : hyps) {
+            if (h.v > 2.5 * best) continue;
+            const int span = h.taps.back() - h.taps.front();
+            if (span < best_span || (span == best_span && h.v < best_v)) {
+                best_span = span; best_v = h.v; best_taps = h.taps;
+            }
+        }
+        best = best_v;
         // Refine the support on the chosen arc (+-2 delays) with the noise level just measured:
         // a delay is kept when its averaged power exceeds 2.5 x the periodic estimate's noise.
         double sigma2 = best;
