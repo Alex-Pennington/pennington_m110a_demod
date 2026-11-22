@@ -83,7 +83,7 @@ inline int walsh_selftest() {
 }
 
 struct WalshInput {
-    std::function<cplx(long)> sample;  // symbol-spaced, frequency-corrected, sym index from t0
+    std::function<cplx(double, double)> sample;  // (symbol index from t0, timing offset in samples)
     long start_sym;                    // first data channel symbol
     cplx h0;                           // channel gain from the preamble fixed subsection
     long max_sym;                      // symbols available after t0
@@ -104,12 +104,19 @@ inline bool walsh_find_eom(const std::vector<int>& bits, RxResult& r) {
     return false;
 }
 
-// Coherent correlation of one 32-chip channel symbol against the 4 di-bit hypotheses.
-inline void walsh_corr(const WalshInput& in, long pos, int scr_off, bool alt, cplx acc[4], double* energy) {
+// Coherent correlation of one 32-chip channel symbol against the 4 di-bit hypotheses. w is the
+// residual frequency in radians per chip, removed about the symbol centre; tau the timing
+// offset in samples.
+inline void walsh_corr(const WalshInput& in, long pos, int scr_off, bool alt, cplx acc[4], double* energy,
+                       double w = 0, double tau = 0) {
     const auto& scr = walsh_scrambler();
     double e = 0;
     cplx v[kWalshLen];
-    for (int j = 0; j < kWalshLen; j++) { v[j] = in.sample(pos + j); e += std::norm(v[j]); }
+    for (int j = 0; j < kWalshLen; j++) {
+        v[j] = in.sample((double)(pos + j), tau);
+        e += std::norm(v[j]);
+        if (w != 0) v[j] *= std::polar(1.0, -w * (j - 0.5 * (kWalshLen - 1)));
+    }
     for (int d = 0; d < 4; d++) {
         cplx a = 0;
         for (int j = 0; j < kWalshLen; j++)
@@ -134,6 +141,11 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
     std::vector<int> outbits;
     long pos = in.start_sym;
     cplx h = in.h0;
+    // Decision-directed carrier tracking, second order: h is the gain at the symbol centre,
+    // wr the residual frequency in radians per chip. The phase error is taken from the
+    // hypothesis with the largest |correlation|, so it does not depend on the phase of h.
+    double wr = 0;
+    const double kPllA = 0.21, kPllB = 0.0225;  // per channel symbol: wn 0.15, zeta 0.707
     double agree_sum = 0, qsum = 0;
     long qn = 0;
     r.walsh_alt_blocks = 0;
@@ -147,13 +159,19 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
             int off = (int)(((long)i * kWalshLen) % kWalshScrLen);
             cplx acc[4];
             double e;
-            walsh_corr(in, pos + (long)i * kWalshLen, off, alt, acc, &e);
+            walsh_corr(in, pos + (long)i * kWalshLen, off, alt, acc, &e, wr);
             double m[4];
             for (int d = 0; d < 4; d++) m[d] = std::real(acc[d] * std::conj(h)) / (std::abs(h) + 1e-12);
             int dh = (int)(std::max_element(m, m + 4) - m);
+            int dn = 0;
+            for (int d = 1; d < 4; d++) if (std::abs(acc[d]) > std::abs(acc[dn])) dn = d;
             bq += e > 0 ? std::abs(acc[dh]) / std::sqrt(e * kWalshLen) : 0;
-            // decision-directed gain tracking
-            h = 0.8 * h + 0.2 * (acc[dh] / (double)kWalshLen);
+            // carrier loop update, then predict the gain at the next symbol centre
+            cplx meas = acc[dn] / (double)kWalshLen;
+            double pe = std::arg(meas * std::conj(h));
+            double mag = 0.8 * std::abs(h) + 0.2 * std::abs(meas);
+            wr += kPllB * pe / kWalshLen;
+            h = std::polar(mag, std::arg(h) + kPllA * pe + wr * kWalshLen);
             // soft bits, positive = bit 0; first bit (MSB) is fetched first (D.5.1.2.3.1)
             double b1_0 = std::max(m[0], m[1]), b1_1 = std::max(m[2], m[3]);
             double b0_0 = std::max(m[0], m[2]), b0_1 = std::max(m[1], m[3]);

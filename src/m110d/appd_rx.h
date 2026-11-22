@@ -318,7 +318,7 @@ public:
         if (!acquire(r)) return r;
         if (!read_preamble(r)) return r;
         if (r.wid.waveform == 0) {  // WID 0: Walsh data, no frames or probes (Tables D-XI, D-XII)
-            decode_walsh({[this](long n) { return sample((double)n); }, data_start_sym_, h0_,
+            decode_walsh({[this](double n, double tau) { return sample(n, tau); }, data_start_sym_, h_last_,
                           ((long)y_.size() - t0_) / sps_, opt_.verbose}, r);
             return r;
         }
@@ -336,6 +336,7 @@ private:
     double fo_ = 0;     // frequency offset, Hz
     double rate_ = 1;   // receive samples per nominal sample (clock ratio, 1 + ppm*1e-6)
     cplx h0_ = 1.0;     // channel gain from the fixed subsection
+    cplx h_last_ = 1.0;  // fixed-subsection gain of the last super-frame read
 
     // y_ at fractional sample index n (linear interpolation), frequency-corrected.
     cplx at(double n) const {
@@ -558,6 +559,7 @@ private:
             if (first_c < 0) first_c = cnt;
             last_c = cnt;
             last_sf = sf;
+            h_last_ = h;
             if (m == 0) { h0_ = h; count_bits0_ = b; }
         }
         r.superframes_seen = (int)seen.size();
@@ -629,13 +631,18 @@ private:
         }
     }
 
-    // Normalised correlation of a mini-probe at symbol offset pos; returns complex gain.
-    cplx probe_gain(long pos, const std::vector<cplx>& p, double* q) const {
+    // Normalised correlation of a mini-probe at symbol offset pos; returns the complex gain
+    // at the probe centre. fr is the residual frequency in cycles per symbol, removed about the
+    // centre; tau is the timing offset in samples.
+    cplx probe_gain(long pos, const std::vector<cplx>& p, double* q, double fr = 0, double tau = 0) const {
         cplx acc = 0;
         double e = 0;
+        const double c = 0.5 * (double)(p.size() - 1);
         for (size_t i = 0; i < p.size(); i++) {
-            cplx v = sample((double)(pos + (long)i));
-            acc += v * std::conj(p[i]);
+            cplx v = sample((double)(pos + (long)i), tau);
+            cplx t = v * std::conj(p[i]);
+            if (fr != 0) t *= std::polar(1.0, -2 * M_PI * fr * ((double)i - c));
+            acc += t;
             e += std::norm(v);
         }
         if (q) *q = e > 0 ? std::abs(acc) / std::sqrt(e * p.size()) : 0;
@@ -668,23 +675,41 @@ private:
         pos += K;
         int code_rev = opt_.code_reversed;
         double agree_sum = 0;
+        // Residual frequency tracking on the mini-probes (D.5.2.2). fr is the residual in cycles
+        // per symbol after fo_, dfr its change per frame (drift). Each probe gain is referred to
+        // the probe centre; the rotation from one centre to the next is predicted from fr and
+        // the measured rotation is unwrapped about that prediction, so it may exceed pi.
+        const double Tf = (double)(U + K);  // symbols between probe centres
+        double fr = 0, dfr = 0;
+        const double kFrA = 0.5, kFrB = 0.15;
         for (int frame = 0;; frame++) {
             long next_probe = pos + U;
-            if (t0_ + (next_probe + K) * sps_ >= (long)y_.size()) break;
+            if (spos((double)(next_probe + K)) >= (double)y_.size()) break;
+            const double fr_pred = fr + dfr;
+            const double th_pred = 2 * M_PI * 0.5 * (fr + fr_pred) * Tf;
             double qa, qb;
-            cplx ha = probe_gain(next_probe, probe, &qa);
-            cplx hb = probe_gain(next_probe, probe_b, &qb);
+            cplx ha = probe_gain(next_probe, probe, &qa, fr_pred);
+            cplx hb = probe_gain(next_probe, probe_b, &qb, fr_pred);
             cplx h_next = qa >= qb ? ha : hb;
             if (qb > qa) r.boundary_frames.push_back(frame);
             double qn_ = std::max(qa, qb);
             if (qn_ < 0.5) break;  // signal gone: no mini-probe where one is due
             qsum += qn_;
             qn++;
+            // unwrapped rotation from the previous probe centre to this one
+            double th = th_pred + std::arg(h_next * std::conj(h_prev) * std::polar(1.0, -th_pred));
+            double fr_meas = th / (2 * M_PI * Tf);
+            double ef = fr_meas - fr_pred;
+            fr = fr_pred + kFrA * ef;
+            dfr += kFrB * ef;
+            // interpolate: magnitude and the rotation-removed gain linearly, phase ramp on top
+            const cplx hn0 = h_next * std::polar(1.0, -th);
+            const double c_prev = -0.5 * (K + 1);  // previous probe centre, from data symbol 0
             DataScrambler scr;  // D.5.1.3: initialised at the start of each data frame
             std::vector<cplx> zf;
             for (int i = 0; i < U; i++) {
-                double a = (i + 0.5) / U;
-                cplx h = h_prev * (1 - a) + h_next * a;
+                double a = ((double)i - c_prev) / Tf;
+                cplx h = (h_prev * (1 - a) + hn0 * a) * std::polar(1.0, th * a);
                 cplx z = sample((double)(pos + i)) * std::conj(h) / (std::norm(h) + 1e-12);
                 if (wp->bits_per_sym > 1) { zf.push_back(z); continue; }
                 z *= std::conj(psk8(scr.value3()));
