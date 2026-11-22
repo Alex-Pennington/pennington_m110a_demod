@@ -161,6 +161,8 @@ public:
             return result;
         }
         
+        block_frames_ = interleaver_block_frames(mode_cfg);
+
         // Bring symbols to the nominal level. The LMS DFE uses fixed step sizes,
         // so its convergence rate scales with input power: below about 2500 RMS
         // (int16) it never trained and the codec decoded garbage.
@@ -267,7 +269,8 @@ public:
                 
                 result.quality_db = probe_snr_db(phase_corrected,
                                                  mode_cfg.unknown_data_len,
-                                                 mode_cfg.known_data_len);
+                                                 mode_cfg.known_data_len,
+                                                 block_frames_);
                 result.quality_threshold_db = quality_threshold_db(mode_id);
                 result.success = result.quality_db >= result.quality_threshold_db;
                 if (!result.success) result.error = low_quality_error(result);
@@ -330,7 +333,8 @@ public:
         } else {
             result.quality_db = probe_snr_db(equalized_symbols,
                                              mode_cfg.unknown_data_len,
-                                             mode_cfg.known_data_len);
+                                             mode_cfg.known_data_len,
+                                             block_frames_);
         }
         result.quality_threshold_db = quality_threshold_db(mode_id);
         result.success = result.quality_db >= result.quality_threshold_db;
@@ -606,9 +610,36 @@ private:
         }
     }
     
+    /// Frames (data + probe patterns) per interleaver block, or 0 when unknown.
+    /// Each block is rows x cols coded bits, carried unknown_len data symbols
+    /// per frame at bits_per_symbol each: 30 frames at 2400 and 4800 short,
+    /// 36 at 150-1200 short, 240 / 288 long.
+    static int interleaver_block_frames(const ModeConfig& m) {
+        const int per_frame = m.bits_per_symbol * m.unknown_data_len;
+        if (per_frame <= 0 || m.known_data_len <= 0) return 0;
+        const int bits = m.interleaver.rows * m.interleaver.cols;
+        return bits % per_frame == 0 ? bits / per_frame : 0;
+    }
+
+    /// True for the probe of the last two frames of an interleaver block.
+    /// MIL-STD-188-110C 5.3.2.3.7.1.2: the two known-symbol patterns before
+    /// each new interleaver block carry D1 and D2 (Walsh patterns) instead of
+    /// zeros. A transmitter that follows it (the Harris RT-1694D does) sends
+    /// them; this modem's TX sends zeros. These probes are left out of probe
+    /// training and of the quality figure, so either kind of transmitter is
+    /// read the same way.
+    static bool block_boundary_probe(int frame, int block_frames) {
+        return block_frames > 2 && (frame % block_frames) >= block_frames - 2;
+    }
+
+    /// Frames per interleaver block of the mode being decoded (see above).
+    int block_frames_ = 0;
+
     /// SNR in dB of the probe symbols in a data+probe stream over the quality
     /// span, after a least-squares complex gain fit to the known probe values.
-    static float probe_snr_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len) {
+    /// Probes at interleaver block boundaries are skipped (block_boundary_probe).
+    static float probe_snr_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len,
+                              int block_frames = 0) {
         if (unknown_len <= 0 || known_len <= 0) return -99.0f;
         int pattern_len = unknown_len + known_len;
         int span = std::min<int>(QUALITY_SPAN_SYMBOLS, static_cast<int>(symbols.size()));
@@ -616,6 +647,10 @@ private:
         std::vector<complex_t> rx, ref;
         for (int f = 0; (f + 1) * pattern_len <= span; f++) {
             for (int i = 0; i < unknown_len; i++) scrambler.next();
+            if (block_boundary_probe(f, block_frames)) {
+                for (int i = 0; i < known_len; i++) scrambler.next();
+                continue;
+            }
             for (int i = 0; i < known_len; i++) {
                 int scr = scrambler.next();
                 float ph = scr * static_cast<float>(PI) / 4.0f;
@@ -1063,8 +1098,10 @@ private:
                 dfe.equalize(data_in, output);
             } else {
                 // With preamble or subsequent frames: equalize first, then update
+                // (not on a block-boundary probe, which may carry D1/D2)
                 dfe.equalize(data_in, output);
-                accumulate_probe_quality(dfe, probe_in, probe_ref, idx + pattern_len);
+                if (!block_boundary_probe(frame, block_frames_))
+                    accumulate_probe_quality(dfe, probe_in, probe_ref, idx + pattern_len);
             }
             
             // Pass through original probes
@@ -1592,8 +1629,10 @@ private:
                 auto corrected_probes = tracker.process(probe_in);
                 output.insert(output.end(), corrected_probes.begin(), corrected_probes.end());
                 
-                // Train for next frame
-                tracker.train(probe_in, probe_ref);
+                // Train for next frame (not on a block-boundary probe,
+                // which may carry D1/D2)
+                if (!block_boundary_probe(frame, block_frames_))
+                    tracker.train(probe_in, probe_ref);
             }
             
             idx += pattern_len;
