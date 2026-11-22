@@ -96,6 +96,12 @@ inline std::vector<cplx> frank_base(int n) {
 inline std::vector<cplx> mini_probe(int K, bool boundary) {
     int n = 0, shift = 0;
     switch (K) {  // Table D-XXI rows used at 3 kHz
+        case 24: {  // base 13, Table D-XXII(a); shift 6
+            static const int b13[13] = {1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, -1, 1};
+            std::vector<cplx> p(K);
+            for (int i = 0; i < K; i++) p[i] = b13[((boundary ? 6 : 0) + i) % 13];
+            return p;
+        }
         case 32: n = 4; shift = 8; break;   // base 16
         case 48: n = 5; shift = 12; break;  // base 25
         default: return {};

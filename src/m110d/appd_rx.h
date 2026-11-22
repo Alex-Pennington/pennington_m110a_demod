@@ -11,6 +11,7 @@
 #define M110D_APPD_RX_H
 
 #include "m110d/appd_tables.h"
+#include "m110d/appd_qam.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -256,6 +257,8 @@ struct RxOptions {
     int pn_mode = -1;          // -1 auto, 1 restart-per-Walsh-symbol, 0 continuous
     int bpsk_scr_shifts = 3;   // scrambler iterations per BPSK symbol (D.5.1.3), measured
     int code_reversed = 0;     // 0 Figure D-9 reading (default), 1 time-reversed (diagnostic), -1 pick best
+    int psk_scr_shifts = 3;    // scrambler iterations per QPSK/8PSK symbol (D.5.1.3), see appd_qam.h
+    double qam_scale = 1.0;    // QAM constellation scale vs mini-probe; 0 = per-frame RMS match (appd_qam.h)
     bool verbose = false;
 };
 
@@ -287,6 +290,8 @@ struct RxResult {
     int chips_wid = 0, chip_err_wid = 0;
     std::vector<int> fixed_sym_err;  // chip errors per fixed Walsh symbol
     std::vector<int> boundary_frames;  // data frames followed by the cyclically shifted probe
+    int bits_per_sym = 0;
+    QamStats qam;  // WID 6-13 demapper statistics (appd_qam.h)
 };
 
 class AppDRx {
@@ -565,7 +570,8 @@ private:
         const WaveformParams* wp = waveform_params(w.waveform);
         const InterleaverParams* ip = interleaver_params(w.waveform, w.interleaver);
         if (!wp || !ip) { r.payload_skip_reason = "waveform/interleaver not defined at 3 kHz"; return; }
-        if (wp->bits_per_sym != 1) { r.payload_skip_reason = "not BPSK: phase 1 decodes WID 1-5 only"; return; }
+        if (wp->bits_per_sym == 0) { r.payload_skip_reason = "Walsh data not decoded"; return; }
+        r.bits_per_sym = wp->bits_per_sym;
         r.payload_attempted = true;
 
         const int U = wp->U, K = wp->K;
@@ -596,14 +602,18 @@ private:
             qsum += qn_;
             qn++;
             DataScrambler scr;  // D.5.1.3: initialised at the start of each data frame
+            std::vector<cplx> zf;
             for (int i = 0; i < U; i++) {
                 double a = (i + 0.5) / U;
                 cplx h = h_prev * (1 - a) + h_next * a;
                 cplx z = sample((double)(pos + i)) * std::conj(h) / (std::norm(h) + 1e-12);
+                if (wp->bits_per_sym > 1) { zf.push_back(z); continue; }
                 z *= std::conj(psk8(scr.value3()));
                 scr.shift(opt_.bpsk_scr_shifts);
                 blk.push_back(std::real(z));  // Table D-III: bit 0 -> symbol 0, bit 1 -> symbol 4
             }
+            if (wp->bits_per_sym > 1)  // WID 6-13: appd_qam.h
+                demap_frame(wp->bits_per_sym, zf, opt_.psk_scr_shifts, opt_.qam_scale, blk, r.qam);
             h_prev = h_next;
             pos = next_probe + K;
             if ((int)blk.size() == nbits) {

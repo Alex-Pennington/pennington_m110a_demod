@@ -4,6 +4,8 @@
 //   --pn restart|continuous|auto   preamble PN alignment (default auto)
 //   --bpsk-scr-shifts N            data scrambler iterations per BPSK symbol (default 3)
 //   --code d9|alt|auto             K=7 tap reading: Figure D-9 (default), time-reversed, or best
+//   --psk-scr-shifts N             data scrambler iterations per QPSK/8PSK symbol (default 3)
+//   --qam-scale X                  QAM constellation scale vs the mini-probe (default 1; 0 = per-frame RMS)
 //   --selftest                     check generated tables against the standard and exit
 //   -v                             diagnostics on stderr
 //
@@ -43,8 +45,12 @@ int main(int argc, char** argv) {
         } else if (a == "--code") {
             std::string v = next();
             opt.code_reversed = v == "d9" ? 0 : v == "alt" ? 1 : -1;
+        } else if (a == "--psk-scr-shifts") {
+            opt.psk_scr_shifts = std::atoi(next().c_str());
+        } else if (a == "--qam-scale") {
+            opt.qam_scale = std::atof(next().c_str());
         } else if (a == "--selftest") {
-            int bad = tables_selftest();
+            int bad = tables_selftest() + tables_selftest_qam();
             std::printf("selftest_mismatches=%d\n", bad);
             return bad ? 1 : 0;
         } else if (a == "-v") {
@@ -102,6 +108,11 @@ int main(int argc, char** argv) {
         std::printf("code=%s\n", r.code_reversed == 1 ? "alt" : "d9");
         std::printf("reencode_agree=%.4f\n", r.reencode_agree);
         std::printf("probe_quality=%.3f\n", r.probe_quality);
+        if (r.bits_per_sym > 1) {  // WID 6-13 demapper (appd_qam.h)
+            std::printf("bits_per_symbol=%d\n", r.bits_per_sym);
+            std::printf("evm_db=%.1f\n", r.qam.evm_db());
+            std::printf("qam_scale=%.4f\n", r.qam.mean_scale());
+        }
         std::printf("boundary_probe_after_frames=");
         for (size_t i = 0; i < r.boundary_frames.size(); i++) std::printf("%s%d", i ? "," : "", r.boundary_frames[i]);
         std::printf("\n");
