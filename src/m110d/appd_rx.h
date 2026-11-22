@@ -355,7 +355,7 @@ public:
     }
 
     // Preamble detector for the streaming front end (appd_stream.h). Searches the input as run()
-    // does, then reads the preamble at each lock: the nine-symbol shape from metric 0.5, the
+    // does, then reads the preamble at each lock: the nine-symbol shape from kNineMin, the
     // single-symbol shape from single_min (its 32 chips reach 0.5 on noise several times a
     // second). Returns 1 when a lock reads a valid down-count and WID checksum, with t its
     // sample index; 2 when a lock's super-frame is not complete in the input yet (t its index:
@@ -373,11 +373,11 @@ public:
         metric = r.acq_metric;
         if (!any) return 0;
         std::vector<Lock> order;
-        if (single.c && single.metric > nine.metric) order = {single, nine};
+        if (single.c && sig(single) > sig(nine)) order = {single, nine};
         else order = {nine, single};
         int st = 0;
         for (const Lock& lk : order) {
-            if (!lk.c || lk.metric < (lk.c->nfix == 1 ? single_min : 0.5)) continue;
+            if (!lk.c || lk.metric < (lk.c->nfix == 1 ? single_min : kNineMin)) continue;
             RxResult rt;
             lock_on(lk, rt);
             if ((double)lk.t + (double)(sf_len_ + 8) * sps_ >= (double)y_.size()) {
@@ -510,20 +510,37 @@ private:
         return fo_;
     }
 
+    // Presence gates on the normalised correlation (corr_at, search). A section matched at chip
+    // SNR rho scores about sqrt((rho + 1/32) / (rho + 1)): 0.51 at a 3 kHz SNR of -6 dB (Table
+    // D-LXIV, WID 0), 0.40 at -9 dB. On noise or unmatched chips the 288-chip nine-symbol
+    // section scores 0.157 +- 0.027 (p99.99 0.27) and the 32-chip single-symbol section
+    // 0.157 +- 0.080 (p99.99 0.49), so each shape gets its own gate.
+    static constexpr double kNineMin = 0.35;
+    static constexpr double kSingleMin = 0.5;
+    static double gate(int nfix) { return nfix == 1 ? kSingleMin : kNineMin; }
+
     struct Cand { const char* shape; bool restart; std::vector<int> chips; int nfix; };
     struct Lock { const Cand* c = nullptr; double metric = 0; long t = -1; double f = 0; };
 
+    // Significance of a lock: standard deviations above the noise mean of its shape. The raw
+    // metrics do not compare: the best 32-chip position in a second of noise reaches 0.6,
+    // above a nine-symbol lock on a signal at -9 dB (0.40).
+    static double sig(const Lock& lk) {
+        if (!lk.c) return -1e9;
+        return (lk.metric - 0.157) / (lk.c->nfix == 1 ? 0.080 : 0.027);
+    }
+
     // Acquisition and preamble read. The nine-symbol fixed shape is tried first when it
     // correlates; the single-symbol shape is tried when the nine-symbol shape is weak
-    // (metric < 0.7) and is used when it scores higher, or when the nine-symbol lock gives no
-    // valid down-count and WID. On a channel of equal-power paths the nine-symbol metric
-    // drops to about 0.6 (Table D-LXV channels, measured), where a 32-chip single-symbol
-    // correlation on the same signal can score higher by chance.
+    // (metric < 0.7) and is used first when it is the more significant (sig), or when the
+    // nine-symbol lock gives no valid down-count and WID. On a channel of equal-power paths
+    // the nine-symbol metric drops to about 0.6 (Table D-LXV channels, measured), where a
+    // 32-chip single-symbol correlation on the same signal can score higher by chance.
     bool acquire_and_read(RxResult& r) {
         Lock nine, single;
         if (!acquire(r, nine, single)) return false;
         std::vector<Lock> order;
-        if (single.c && single.metric > nine.metric) order = {single, nine};
+        if (single.c && sig(single) > sig(nine)) order = {single, nine};
         else order = {nine, single};
         // The first lock tried is the one the result reports unless a later one reads a valid
         // preamble; its state is restored before returning.
@@ -532,7 +549,7 @@ private:
         bool first_ok = false;
         Lock first_lk;
         for (const Lock& lk : order) {
-            if (!lk.c || lk.metric < 0.5) continue;
+            if (!lk.c || lk.metric < gate(lk.c->nfix)) continue;
             RxResult rt = r0;
             lock_on(lk, rt);
             bool ok = read_preamble(rt);
@@ -600,7 +617,7 @@ private:
             }
         }
         r.acq_metric = std::max(nine.metric, single.metric);
-        if (r.acq_metric < 0.5) { r.payload_skip_reason = "no preamble found"; return false; }
+        if (nine.metric < kNineMin && single.metric < kSingleMin) { r.payload_skip_reason = "no preamble found"; return false; }
         return true;
     }
 
@@ -682,7 +699,7 @@ private:
                 qv[d + W] = corr_at(tp + d, fixed_chips_);
                 if (qv[d + W] > bq) { bq = qv[d + W]; bk = d; }
             }
-            if (bq < 0.5) return false;
+            if (bq < gate(nfixed_)) return false;
             peak = tp + bk + peak_offset(qv, bk + W);
             return true;
         };
@@ -721,7 +738,7 @@ private:
             double t = spos((double)sf);
             if (t < 0 || spos((double)(sf + sf_len_)) >= (double)y_.size()) continue;
             double q = corr_at(t, fixed_chips_);
-            if (q < 0.5) continue;
+            if (q < gate(nfixed_)) continue;
             cplx h = fixed_gain(sf);
             int b = 0;
             for (int s = 0; s < kCountSyms; s++) {

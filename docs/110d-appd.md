@@ -2,19 +2,20 @@
 
 ## Handoff
 
-This section describes the receiver on `feat/110d-stream`, cut from master `db8329a`: the
-equaliser receiver, plus streaming input (`m110d_rx --stream`) and a band-limiting condition
-in the channel simulator (`m110d_chan --bandpass`). The sections below it hold the detail and
-the full measured tables.
+This section describes the receiver on `fix/110d-wid0`, cut from master `40683df`: the
+equaliser receiver with streaming input (`m110d_rx --stream`) and the band-limiting channel
+condition (`m110d_chan --bandpass`), plus presence gates sized to each correlation's noise
+floor, which take WID 0 to its Table D-LXIV AWGN value (see "Presence gates and WID 0"). The
+sections below it hold the detail and the full measured tables.
 
 ### State of the receiver
 
 - **Clean interop set** (60 files from another transmitter, every 3 kHz waveform, WID 0-13,
   four interleavers, five variants). It passes 60/60 on WID and interleaver and 60/60 on text
-  with EOM as expected, at 48 kHz and at 8 kHz from a file and through stdin (measured on
-  `feat/110d-stream`). As one continuous `--stream` feed with gaps it gives the 60
-  messages in order, none doubled. That holds at 48 and 8 kHz, at real-time pace and as fast
-  as the receiver reads (measured; see "Streaming input").
+  with EOM as expected, at 48 kHz and at 8 kHz (measured on `fix/110d-wid0`). As one
+  continuous `--stream` feed it gives the 60 messages in order, none doubled, at 48 and 8 kHz,
+  and at 8 kHz inside 1 h of noise with no extra message (measured on `fix/110d-wid0`; see
+  "Streaming input").
 - **Implemented:**
   - preamble acquisition over +-112.5 Hz;
   - WID, interleaver and constraint-length detection;
@@ -25,6 +26,9 @@ the full measured tables.
   - streaming: `--stream` decodes a continuous feed on stdin and prints each transmission
     when it completes, with memory bounded by `--max-message` (default 120 s).
 - **Not implemented:** K=9 coding.
+- **WID 0 in AWGN** (file 1, SHORT, 10 seeds per SNR): 10/10 from -6 dB up, the Table D-LXIV
+  value; 8/10 at -7 and -8 dB, 7/10 at -9 dB. Master `40683df` gave 0/10 at -6 dB and below,
+  and 9/10 from -5 to -2 dB (measured).
 - **Checks on this branch:** `m110d_rx --selftest` gives `selftest_mismatches=0`;
   `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 24/24
   (measured).
@@ -37,15 +41,23 @@ the full measured tables.
 Default files: WID 0, 3, 13, 7 and 10, all SHORT. Seeds: 3, and 10 for fading. Each cell is
 one decode of a burst, not a BER figure.
 
-| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` | master `db8329a` | `feat/110d-stream` |
-|---|---|---|---|---|---|---|
-| default (110) | 87 | 95 | 104 | 104 | 104 | 104 |
-| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 | 116 | 116 |
-| foff (240) | 135 | 240 | 240 | 240 | 240 | 240 |
-| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 | 105 | 105 |
-| ppm and ppm drift (270) | 144 | 270 | 270 | 270 | 270 | 270 |
-| static (45) | 6 | 6 | 36 | 36 | 36 | 36 |
-| fading, 10 seeds (400) | 70 | 93 | 322 | 322 | 322 | 322 |
+| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` | master `db8329a` | `feat/110d-stream` | `fix/110d-wid0` |
+|---|---|---|---|---|---|---|---|
+| default (110) | 87 | 95 | 104 | 104 | 104 | 104 | 109 |
+| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 | 116 | 116 | 121 |
+| foff (240) | 135 | 240 | 240 | 240 | 240 | 240 | 240 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 | 105 | 105 | 105 |
+| ppm and ppm drift (270) | 144 | 270 | 270 | 270 | 270 | 270 | 270 |
+| static (45) | 6 | 6 | 36 | 36 | 36 | 36 | 36 |
+| fading, 10 seeds (400) | 70 | 93 | 322 | 322 | 322 | 322 | 367 |
+
+- The last column is a full run from a fresh build of `fix/110d-wid0`, compared cell for cell
+  with the same run of master `40683df` from their CSVs; master `40683df` gives the
+  `feat/110d-stream` column, matrix for matrix. No cell is worse (280 cells at 3
+  seeds, 40 at 10). Eleven cells are better, all WID 0: awgn -6 dB 0/3 to 3/3, -9 dB 0/3 to
+  2/3, Poor @30 (default matrix) 0/3 to 2/3; on fading, good 8/10 to 9/10, moderate 0/10 to
+  5/10, Poor @30 0/10 to 8/10, Poor noiseless 0/10 to 7/10, Poor at -1 dB 0/10 to 1/10, Poor at
+  9 dB 0/10 to 8/10, D.6.4 +75 Hz 0/10 to 7/10, -75 Hz 0/10 to 8/10.
 
 - The last two columns are full runs from fresh builds of master `db8329a` and of this
   branch, compared cell for cell from their CSVs: every cell is equal (280 cells at 3 seeds,
@@ -74,9 +86,9 @@ one decode of a burst, not a BER figure.
 
 - **Merged to master and pushed as branches:** `feat/110d-rx`, `feat/110d-walsh`,
   `feat/110d-qam`, `feat/110d-integrate`, `docs/110d-std-pdf`, `feat/110d-chan`,
-  `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`. None holds anything
-  that master lacks.
-- **This branch:** `feat/110d-stream`, worktree `m110a-wt-110d-stream`, not merged.
+  `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`, `feat/110d-stream`.
+  None holds anything that master lacks.
+- **This branch:** `fix/110d-wid0`, worktree `m110a-wt-110d-wid0`, not merged.
 - **Worktree left in place:** `m110a-wt-110d-proofs` (`feat/110d-proofs`, merged). It holds
   an untracked `test/110d/__pycache__/`. Deleting that folder was refused by a permission
   denial, so the worktree was not removed. Nothing in it is unmerged.
@@ -126,7 +138,11 @@ pre-equaliser one-tap path.
 - The support residual comparison is biased toward short observation windows when the
   probe carries a residual frequency error (above). Placement of the strongest delay is
   constrained; weak taps are not.
-- WID 0 has no equaliser (it has no probes). It still fails fading: 0/10 on Poor.
+- WID 0 has no equaliser (it has no probes). On Poor it passes 8/10 at 30 dB and 1/10 at
+  the Table D-LXIV Poor value (-1 dB).
+- WID 0 below -6 dB: the misses at -7 to -9 dB are preamble reads (a wrong or missing
+  down-count, a failed WID checksum), not payload. The count and WID are decided per
+  super-frame, uncoded; a joint decision across super-frames was not tried.
 - WID 12 (256QAM) fails Poor at 30 dB. Table D-LXIV sets no Poor requirement for WID 11-12.
 - static-wid2 fails on WID 7, 10 and 13. Its 9 ms spread exceeds what the K=32 probes cover.
   Table D-LXV pairs that channel with WID 2, which decodes.
@@ -135,19 +151,18 @@ pre-equaliser one-tap path.
 
 ### Open questions
 
-1. **WID 0 needs about 9 dB more than Table D-LXIV in AWGN** (measured; cause not
-   determined). The tracking and equaliser work did not explain it.
-2. **ITU good at 30 dB, WID 7.** On multipath the preamble clock fit is off by tens of ppm
+1. **ITU good at 30 dB, WID 7.** On multipath the preamble clock fit is off by tens of ppm
    (measured). After tracking this cell fell from 4/10 to 3/10. The equaliser absorbs the
    error, and the cell now passes 10/10 (measured). The fit itself is unchanged.
-3. **STD-AMB-001 fixed symbol 8.** On the continuous-PN files, PN index 256-287 matches no
+2. **STD-AMB-001 fixed symbol 8.** On the continuous-PN files, PN index 256-287 matches no
    offset: 29/288 chips wrong (measured). This is a question for the transmitter's author.
 
 ### Next steps, in order
 
 1. 256QAM (WID 12) through a 300 Hz low edge: 300-2700 Hz takes its EVM from -53.9 to
    -23.7 dB (measured). The cause was not investigated.
-2. WID 0 in noise and fading: find the 9 dB.
+2. WID 0 on Poor at low SNR (1/10 at -1 dB): no probes, so no equaliser; a RAKE over the
+   two paths was not tried.
 3. A BER-style measurement (long runs, LONG interleaver) to compare with Table D-LXIV
    properly.
 4. K=9 coding.
@@ -747,6 +762,62 @@ Measured detail:
 - **WID 0** still needs 3 dB in AWGN (D-LXIV -6 dB) and still fails Poor at every SNR. The
   tracking work did not find its cause.
 
+## Presence gates and WID 0
+
+Source: `AppDRx::gate`, `AppDRx::sig` in `src/m110d/appd_rx.h`, and the block gate in
+`decode_walsh` (`src/m110d/appd_walsh.h`).
+
+### Cause (measured)
+
+Every presence decision compared the normalised correlation (`corr_at`, `search`, the Walsh
+block mean) with 0.5. A section matched at chip SNR rho scores about
+sqrt((rho + 1/32) / (rho + 1)), and rho is the 3 kHz SNR plus 0.97 dB (3000 / 2400 Hz). The
+receiver reads 0.763 at 0 dB and 0.855 at 3 dB on file 1, where the expression gives 0.754
+and 0.850. At -6 dB, the Table D-LXIV WID 0 value, the expression gives 0.51, and a Monte Carlo
+of the Walsh block mean gives 0.501. So the 0.5 gate was an SNR floor at the requirement:
+
+- `decode_walsh` stopped at the first block whose mean fell below 0.5. At -6 dB, seed 3 decoded
+  two blocks (mean 0.512) with every coded bit re-encoding alike, then stopped at the third.
+- `read_preamble` and `fit_clock` dropped super-frames below 0.5, so at -6 dB a lock read two
+  super-frames or none.
+- The 32-chip single-symbol shape scored 0.60 on noise, above a real nine-symbol lock at
+  -6 to -9 dB (0.39 to 0.53). It was tried first and, at -9 dB, read WID 9 from noise with a
+  valid checksum (master, seed 2).
+- On fading, a faded block below 0.5 ended the WID 0 decode in the same way: Poor @30 was 0/10.
+
+At 0 dB the payload had full margin (`reencode_agree=1.0000`), so the Walsh code structure,
+scrambler, soft bits and interleaver were not the cause. The 9 dB gap in the older tables was
+3 dB by master `40683df`: 9/10 from -5 dB up and 0/10 at -6 dB.
+
+### Fix
+
+Each gate is set from its shape's noise distribution (Monte Carlo; the 1 h `stream.py`
+noise feed then gave no extra message): the 288-chip nine-symbol section scores 0.157 +- 0.027 on noise (p99.99
+0.27), and the gate is 0.35. The 32-chip single-symbol section scores 0.157 +- 0.080 (p99.99
+0.49), and its gate stays 0.5. The Walsh block mean scores 0.183 +- 0.003 on noise, and its
+gate is 0.25. Nine-symbol and single-symbol locks are ordered by standard deviations above
+their own noise mean, not by raw metric.
+
+### Measured
+
+WID 0 file 1 (SHORT, 3 super-frames), AWGN in 3 kHz, 10 seeds per SNR, text exactly equal to
+the clean decode:
+
+| SNR dB | -12 | -11 | -10 | -9 | -8 | -7 | -6 (D-LXIV) | -5 | -4 | -3 | -2 | 0 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| master `40683df` | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 9 | 9 | 9 | 9 | 10 |
+| `fix/110d-wid0` | 0 | 1 | 3 | 7 | 8 | 8 | 10 | 10 | 10 | 10 | 10 | 10 |
+
+Table D-LXIV is stated for the LONG interleaver and a 20-super-frame preamble at BER 1E-5;
+these are single SHORT bursts with 3 super-frames, scored on the whole message. The misses
+from -7 to -9 dB are preamble reads: a wrong down-count, a missing super-frame or a failed WID
+checksum.
+
+Checks on `fix/110d-wid0` (measured, every exit status 0): `m110d_rx --selftest`
+`selftest_mismatches=0`; `m110d_chan --selftest` PASS; `ctest` 24/24; `score.py` 60/60 at 48
+and 8 kHz; `stream.py` 60/60 in order with no extra at 48 kHz and at 8 kHz, and 60/60 with no
+extra inside 1 h of noise at 30 dB (8 kHz).
+
 ## Equaliser (WID 1-13)
 
 Source: `src/m110d/appd_eq.h` (CIR fit, block MMSE-DFE) and `AppDRx::setup_eq` /
@@ -1057,8 +1128,8 @@ real radio's audio path.
   file has a probe quality of 1.000 and a frequency offset estimate of 0.00 Hz (or -0.01 Hz on
   the continuous-PN files). Channel testing above measures noise, fading, multipath, frequency
   offset and clock offset on five SHORT files only.
-- WID 1-13 are equalised (see "Equaliser"). WID 0 is not, and still fails the fading
-  channels.
+- WID 1-13 are equalised (see "Equaliser"). WID 0 is not; on Poor it passes at 30 dB and
+  mostly fails at the Table D-LXIV Poor SNR (see "Presence gates and WID 0").
 - Frequency acquisition covers +-112.5 Hz by design. Larger offsets were tried on one file at
   30 dB only.
 - The WID 6-13 soft bits are max-log distances with no noise-variance estimate. On a clean
@@ -1076,7 +1147,6 @@ real radio's audio path.
    three-super-frame preamble the fit cannot tell clock error from a multipath-shifted peak.
    The equaliser absorbs it: ITU good WID 7 went from 3/10 to 10/10, and Poor with +100 ppm
    decodes (measured). The fit itself is unchanged.
-3. Why WID 0 needs 9 dB more than Table D-LXIV in AWGN (measured; cause not determined).
 
 ## Proofs files for a report page
 

@@ -208,7 +208,9 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
         if (in.verbose)
             std::fprintf(stderr, "walsh block %d at sym %ld: corr %.3f alt_last %d\n", r.blocks_decoded, pos, bq,
                          alt_wins);
-        if (bq < 0.5) break;  // no Walsh signal where a block is due
+        // No Walsh signal where a block is due. On noise the block mean is 0.183 +- 0.003; a
+        // signal at a 3 kHz SNR of -6 dB gives 0.50 and at -12 dB 0.31 (Monte Carlo, 640 symbols).
+        if (bq < 0.25) break;
         qsum += bq;
         qn++;
         r.walsh_alt_blocks += alt_wins;
