@@ -7,6 +7,17 @@ status. It decodes the payload text for the BPSK waveforms, WID 1 to 5.
 Phase 1 does not decode WID 0 (Walsh data), QPSK, 8PSK or QAM payloads, or K=9 coding. For
 those waveforms it reports the WID and the interleaver only.
 
+## Source document
+
+The standard is filed in this repo at `docs/standards/MIL-STD-188-110D.pdf` [1].
+
+- Title: *Interoperability and Performance Standards for Data Modems*, MIL-STD-188-110D,
+  29 December 2017.
+- Download: https://everyspec.com/MIL-STD/MIL-STD-0100-0299/download.php?spec=MIL-STD-188-110D.055856.pdf
+- Distribution statement, as printed: "DISTRIBUTION STATEMENT A: Approved for public release;
+  distribution unlimited."
+- SHA-256: `aae90e308c8e69f11b013bda6a6cbf70858d5ef40db5a478641c95e9abac63d4`
+
 ## Build and run
 
 ```sh
@@ -189,8 +200,6 @@ The TLC section (D.5.2.1.2) is not used. The receiver neither checks it nor coun
 
 1. What the STD-AMB-001 transmitter sends in fixed symbol 8, where the continuous index runs
    past 255 (measured above; not chased).
-2. The repo-docs citation rule asks for the cited source document to be filed in the repo's
-   docs folder; this branch does not commit the standard's PDF.
 
 ## Credits
 
@@ -203,5 +212,6 @@ interleaver or tail-biting code, so nothing from it is used here.
 [1] Department of Defense, *Interoperability and Performance Standards for Data Modems*,
 MIL-STD-188-110D, Appendix D. Distribution Statement A, approved for public release.
 Available: https://everyspec.com/MIL-STD/MIL-STD-0100-0299/MIL-STD-188-110D_55856/
+Filed copy: `docs/standards/MIL-STD-188-110D.pdf`.
 
 [2] HeroesLament, *milwave-rs*, MIT OR Apache-2.0. https://github.com/HeroesLament/milwave-rs
