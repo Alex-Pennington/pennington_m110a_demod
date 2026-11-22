@@ -1,12 +1,13 @@
-# MIL-STD-188-110D Appendix D receiver (3 kHz), phase 1
+# MIL-STD-188-110D Appendix D receiver (3 kHz)
 
 `m110d_rx` decodes one 3 kHz Appendix D single-tone transmission from a WAV file [1]. It
 reports the Waveform ID (WID), the interleaver, the constraint length, acquisition and EOM
-status. It decodes the payload text for WID 0 (75 bps, Walsh) and the BPSK waveforms, WID 1
-to 5.
+status. It decodes the payload text for every waveform, WID 0 to 13: Walsh (WID 0), BPSK
+(WID 1-5), QPSK (WID 6 and 13), 8PSK (WID 7), 16QAM (WID 8), 32QAM (WID 9), 64QAM (WID 10,
+11) and 256QAM (WID 12).
 
-It does not decode QPSK, 8PSK or QAM payloads, or K=9 coding. For those waveforms it reports
-the WID and the interleaver only.
+It does not decode K=9 coding. For a K=9 transmission it reports the WID and the interleaver
+only.
 
 ## Source document
 
@@ -31,7 +32,8 @@ build-110d/bin/m110d_rx <file.wav>
 # the 60-file interop set; expected values come from <set>/README.md
 python3 -I test/110d/score.py --rx build-110d/bin/m110d_rx --set <test-set dir> --jobs 2
 
-# check the generated mini-probe base sequences against Tables D-XXIII and D-XXV
+# check the mini-probe base sequences against Tables D-XXIII and D-XXV, the WID 0
+# scrambler against the D.5.1.4 example, and QAM points against Tables D-VIII and D-X
 build-110d/bin/m110d_rx --selftest
 ```
 
@@ -51,10 +53,12 @@ The WAV must be 16-bit PCM at a sample rate that is a multiple of 2400 Hz (the t
 | `reencode_agree`, `probe_quality` | share of soft coded bits the decoded path re-encodes with the same sign; mean normalised mini-probe correlation (WID 0, which has no probes: mean normalised correlation of the decided Walsh symbol) |
 | `walsh_alt_last` | WID 0 only: blocks whose last channel symbol correlates better with the alternate Walsh set than the normal set, over blocks decoded |
 | `boundary_probe_after_frames` | data frames followed by the cyclically shifted (long-interleaver boundary) mini-probe |
+| `bits_per_symbol`, `evm_db`, `qam_scale` | WID 6-13 only: data bits per symbol; error vector magnitude of the data symbols against their decided constellation points; constellation scale used |
+| `points_unused`, `point_max_err` | WID 6-13 only: transmitted constellation points (8PSK symbols, or QAM symbols after scrambling) never decided; largest distance from a received symbol to its decided table point, in probe-amplitude units |
 
 ## Measured pass table
 
-This is the scorer's own output. It was run at commit `46d3fe2` against
+This is the scorer's own output. It was run at the merge of `feat/110d-qam` into `feat/110d-integrate` against
 `interop-110D-AppD-2026-09-08`, with exit status 0.
 
 ```
@@ -83,40 +87,40 @@ This is the scorer's own output. It was run at commit `46d3fe2` against
 21        5 short              5 short        PASS  PASS  on/1         restart     
 22        5 medium             5 medium       PASS  PASS  on/1         restart     
 23        5 long               5 long         PASS  PASS  on/1         restart     
-24        6 ultra-short        6 ultra-short  PASS  n/a   on/-         restart     
-25        6 short              6 short        PASS  n/a   on/-         restart     
-26        6 medium             6 medium       PASS  n/a   on/-         restart     
-27        6 long               6 long         PASS  n/a   on/-         restart     
-28        7 ultra-short        7 ultra-short  PASS  n/a   on/-         restart     
-29        7 short              7 short        PASS  n/a   on/-         restart     
-30        7 medium             7 medium       PASS  n/a   on/-         restart     
-31        7 long               7 long         PASS  n/a   on/-         restart     
-32        8 ultra-short        8 ultra-short  PASS  n/a   on/-         restart     
-33        8 short              8 short        PASS  n/a   on/-         restart     
-34        8 medium             8 medium       PASS  n/a   on/-         restart     
-35        8 long               8 long         PASS  n/a   on/-         restart     
-36        9 ultra-short        9 ultra-short  PASS  n/a   on/-         restart     
-37        9 short              9 short        PASS  n/a   on/-         restart     
-38        9 medium             9 medium       PASS  n/a   on/-         restart     
-39        9 long               9 long         PASS  n/a   on/-         restart     
-40       10 ultra-short       10 ultra-short  PASS  n/a   on/-         restart     
-41       10 short             10 short        PASS  n/a   on/-         restart     
-42       10 medium            10 medium       PASS  n/a   on/-         restart     
-43       10 long              10 long         PASS  n/a   on/-         restart     
-44       11 ultra-short       11 ultra-short  PASS  n/a   on/-         restart     
-45       11 short             11 short        PASS  n/a   on/-         restart     
-46       11 medium            11 medium       PASS  n/a   on/-         restart     
-47       11 long              11 long         PASS  n/a   on/-         restart     
-48       12 ultra-short       12 ultra-short  PASS  n/a   on/-         restart     
-49       12 short             12 short        PASS  n/a   on/-         restart     
-50       12 medium            12 medium       PASS  n/a   on/-         restart     
-51       12 long              12 long         PASS  n/a   on/-         restart     
-52       13 ultra-short       13 ultra-short  PASS  n/a   on/-         restart     
-53       13 short             13 short        PASS  n/a   on/-         restart     
-54       13 medium            13 medium       PASS  n/a   on/-         restart     
-55       13 long              13 long         PASS  n/a   on/-         restart     
+24        6 ultra-short        6 ultra-short  PASS  PASS  on/1         restart     
+25        6 short              6 short        PASS  PASS  on/1         restart     
+26        6 medium             6 medium       PASS  PASS  on/1         restart     
+27        6 long               6 long         PASS  PASS  on/1         restart     
+28        7 ultra-short        7 ultra-short  PASS  PASS  on/1         restart     
+29        7 short              7 short        PASS  PASS  on/1         restart     
+30        7 medium             7 medium       PASS  PASS  on/1         restart     
+31        7 long               7 long         PASS  PASS  on/1         restart     
+32        8 ultra-short        8 ultra-short  PASS  PASS  on/1         restart     
+33        8 short              8 short        PASS  PASS  on/1         restart     
+34        8 medium             8 medium       PASS  PASS  on/1         restart     
+35        8 long               8 long         PASS  PASS  on/1         restart     
+36        9 ultra-short        9 ultra-short  PASS  PASS  on/1         restart     
+37        9 short              9 short        PASS  PASS  on/1         restart     
+38        9 medium             9 medium       PASS  PASS  on/1         restart     
+39        9 long               9 long         PASS  PASS  on/1         restart     
+40       10 ultra-short       10 ultra-short  PASS  PASS  on/1         restart     
+41       10 short             10 short        PASS  PASS  on/1         restart     
+42       10 medium            10 medium       PASS  PASS  on/1         restart     
+43       10 long              10 long         PASS  PASS  on/1         restart     
+44       11 ultra-short       11 ultra-short  PASS  PASS  on/1         restart     
+45       11 short             11 short        PASS  PASS  on/1         restart     
+46       11 medium            11 medium       PASS  PASS  on/1         restart     
+47       11 long              11 long         PASS  PASS  on/1         restart     
+48       12 ultra-short       12 ultra-short  PASS  PASS  on/1         restart     
+49       12 short             12 short        PASS  PASS  on/1         restart     
+50       12 medium            12 medium       PASS  PASS  on/1         restart     
+51       12 long              12 long         PASS  PASS  on/1         restart     
+52       13 ultra-short       13 ultra-short  PASS  PASS  on/1         restart     
+53       13 short             13 short        PASS  PASS  on/1         restart     
+54       13 medium            13 medium       PASS  PASS  on/1         restart     
+55       13 long              13 long         PASS  PASS  on/1         restart     
 56        3 long               3 long         PASS  PASS  on/1         continuous  STD-AMB-001
-57       13 long              13 long         PASS  n/a   on/-         continuous  STD-AMB-001
+57       13 long              13 long         PASS  PASS  on/1         continuous  STD-AMB-001
 58        3 long               3 long         PASS  PASS  on/1         restart     single-fixed
 59        3 long               3 long         PASS  PASS  on/1         restart     long-preamble
 60        3 long               3 long         PASS  PASS  off/0        restart     no-EOM
@@ -124,11 +128,15 @@ This is the scorer's own output. It was run at commit `46d3fe2` against
 WID+interleaver correct: 60/60
 text PASS (WID 0):       3/3
 text PASS (WID 1-5):     24/24
+text PASS (WID 6-13):    33/33
+text PASS, EOM as expected (WID 0-13): 60/60
 ```
 
 "ID" passes when the WID and the interleaver both match the README and the WID checksum
-passes. "text" is scored for WID 0 to 5 and is a prefix match against the README's expected text, which is the first
-~100 characters of each message. File 60 has no EOM. It decodes as the message text followed
+passes. "text" is scored for every WID, 0 to 13, and is a prefix match against the README's
+expected text, which is the first ~100 characters of each message. The last line counts files
+whose text passes and whose EOM matches the README's EOM column (seen for EOM-on, not seen for
+file 60). File 60 has no EOM. It decodes as the message text followed
 by zero bytes to the end of the 4096-bit long block (512 bytes), as its README row describes.
 
 ## What the test set settled (measured)
@@ -156,6 +164,32 @@ Each item below is a single decode run on the named file.
 - **BPSK scrambler steps.** Three generator shifts per BPSK data symbol decode the set. One
   shift per symbol does not (file 13 with `--bpsk-scr-shifts 1`: no EOM, agreement 0.8179).
   D.5.1.3 lists the iteration count for 8PSK and the QAM orders, but not for BPSK.
+- **WID 6-13 payloads.** Files 24-55 and 57 decode to the README text with the EOM seen,
+  re-encode agreement 1.0000, and EVM between -53.9 and -54.7 dB (`m110d_rx` on each file).
+  File 57 (WID 13, STD-AMB-001 continuous PN) decodes the same as file 55.
+- **QPSK scrambler steps.** Three generator shifts per QPSK data symbol decode the set, as
+  for BPSK. One or two shifts do not: file 52 with `--psk-scr-shifts 1` gives no EOM and
+  agreement 0.8340, with 2 no EOM and 0.8262. D.5.1.3 states 3 iterations for 8PSK only.
+  For 8PSK the count is checked the same way (file 28: 1 and 2 shifts give no EOM).
+- **QAM scrambler bits.** XOR of the symbol number with the rightmost N register cells, the
+  rightmost cell as the least significant bit, N shifts per symbol (D.5.1.3), decodes WID
+  8-12. No other reading was tried.
+- **QAM amplitude.** The transmitter sends the Table D-VII to D-X points at the listed
+  amplitudes, on the scale of the unit-amplitude mini-probes. With the channel gain taken
+  from the probes and scale 1 the EVM is -54 dB on files 32, 36, 40, 44 and 48; scaling
+  each frame to the constellation's RMS instead gives -35.4, -36.9, -34.9, -38.6 and
+  -41.8 dB (`--qam-scale 0`). Scale 1 is the default. D.5.1 says nothing on the relative
+  power of data and probe that this reading relies on; this is measured, not specified.
+- **Constellation tables.** Tables D-IV, D-V and D-VII to D-X are images in the published
+  PDF and were transcribed by hand (`src/m110d/appd_constellations.h`). Across files 24-55
+  every point of every constellation is decided at least once (`points_unused=0` on at
+  least one file per order), and no received symbol lies further than 0.0051 from its table
+  point (`point_max_err`). So every entry of Tables D-VII to D-X is checked to about
+  0.005, which is coarser than the six printed decimals. The Table D-IV and D-V
+  transcodings are checked only through the decode: a wrong entry would corrupt the text.
+- **24-symbol mini-probe.** WID 11 and 12 use the 13-symbol base of Table D-XXII(a)
+  extended to 24, with the boundary shift of 6 (Table D-XXI). Probe quality is 1.000 and
+  the shifted probe follows data frame 62 of 64 on files 47 and 51.
 - **Scrambling tables.** Tables D-XVIII and D-XIX are images in the published PDF and were
   transcribed by hand. File 56 checks every chip of fixedPN[0..255], cntPN[0..127] and
   widPN[0..159], and they match. The 3 kHz waveform never uses cntPN[128..255] or
@@ -193,6 +227,10 @@ Each item below is a single decode run on the named file.
 | D.5.1.5: SRRC 35% matched filter | `srrc_taps` |
 | D.5.1.2.1.1, Tables D-III, D-VI: BPSK transcoding, 8PSK points | `decode_payload`, `psk8` |
 | D.5.1.3, Figure D-6: data scrambler, reset per data frame | `DataScrambler` in `src/m110d/appd_tables.h` |
+| D.5.1.2.1.2, D.5.1.2.1.3, Tables D-IV, D-V: QPSK and 8PSK transcoding | `kQpskTranscode`, `k8pskTranscode` in `src/m110d/appd_constellations.h` |
+| D.5.1.2.2, Tables D-VII to D-X: 16, 32, 64 and 256QAM points | `qam_point`, `tables_selftest_qam` |
+| D.5.1.3: PSK mod-8 and QAM XOR descrambling, soft demapping | `demap_frame` in `src/m110d/appd_qam.h` |
+| D.5.2.2, Tables D-XXI, D-XXII(a): 24-symbol mini-probe | `mini_probe` |
 | D.5.2, Tables D-XI, D-XII: frame U data + K probe | `waveform_params`, `decode_payload` |
 | D.5.2.1, D.5.2.1.1, Tables D-XIII, D-XIV: Walsh preamble | `walsh_section`, `walsh_scores` |
 | D.5.2.1.3: nine- and single-symbol fixed subsection | `kFixedNine`, `kFixedSingle`, `acquire` |
@@ -216,7 +254,11 @@ The TLC section (D.5.2.1.2) is not used. The receiver neither checks it nor coun
   continuous-PN files). No noise, multipath, frequency offset or sample-clock offset was
   tested.
 - Channel estimation is a single complex gain per mini-probe, linearly interpolated across
-  each data block. There is no equaliser and no symbol-timing tracking.
+  each data block. There is no equaliser and no symbol-timing tracking. On this set that is
+  enough for 256QAM (EVM -54 dB). Over a channel with multipath or clock offset the QAM
+  orders will need an equaliser and timing tracking first (inferred, not tested).
+- The WID 6-13 soft bits are max-log distances with no noise-variance estimate. On a clean
+  set that costs nothing; its effect at low SNR was not measured.
 - Acquisition searches the whole file, offline, at every sample. It does not stream.
 
 ## Open questions
@@ -230,6 +272,10 @@ No code was taken from another project. The read-only reference
 milwave-rs [2] was read during this work. It holds no Appendix D preamble, frame structure,
 interleaver or tail-biting code, so nothing from it is used here. Its `src/walsh.rs` is a
 Walsh-16 correlator with no D.5.1.4 scrambler; the WID 0 decoder is written from the standard.
+Its 16, 32 and 64QAM tables (`src/unified/constellation.rs`) do not match Tables D-VII to
+D-IX (for example its 16QAM symbols 1 and 2 are swapped, and its 64QAM symbol 13 is (1, 0)
+where the table gives (0.588429, -0.588429)), and it has no 256QAM table; the constellations
+here were transcribed from the standard's page images instead.
 
 ## References
 
