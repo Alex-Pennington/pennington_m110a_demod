@@ -80,7 +80,10 @@ on a unit boundary counted from bit 54.
 [measured] In melp2400 the final run of ones is 109 bits long (bits 15173-15281). Taking
 the trailer to start at 15174 assumes that it falls on the 54-bit grid from bit 54, as in
 the other ten streams. So the melp2400 row below is [inferred], and the 109th one is the
-last bit of the frame before it.
+last bit of the frame before it. [measured] What supports the reading: the alternating
+column 5 alternates through frame 279, the last frame; column 53 is 1 in 71 % of frames; and
+header, 280 units, 108 ones and 6 zeros rebuild the stream bit for bit (`claims2400.py`,
+`docs/harris-tx.md`).
 
 | Stream | Unit | Units from bit 54 | Duration | Trailer at bit | Trailer |
 |---|---|---|---|---|---|
@@ -339,6 +342,35 @@ not excluded:
 as in the other ten streams, the alternating bit is frame column 5, not 53. NOT DETERMINABLE
 here: the layout. The same known audio at 2400V would settle it (section 6).
 
+#### Structured hypotheses (`claims2400.py`)
+
+The 280 frames of 54 bits from stream bit 54 to the trailer, one message. z is against the
+null the row names. Calibrations: 600H (199 blocks, fields contiguous by US 6,917,914) and
+1200H (256 frames, standard MELPe 1200 order).
+
+| | Hypothesis | Measured | Verdict |
+|---|---|---|---|
+| V1 | 54-bit frame (2400 bps, 22.5 ms) | strongest period of 4-400: 54, z 110.8; autocorrelation peaks at 54, 108, 162, 216 (z +27.6 to +14.9) | supported |
+| V1 | other frame lengths: 27, 48, 60 (25 ms), 72, 81 | z 61.9, 10.7, 6.4, 29.5, 34.2, each within 1.7 sd of independent bits with melp2400's own 54-column profile; largest excess over all 397 periods +4.0, against a shuffled-bits maximum of 4.4 | contradicted |
+| V2 | frames start at stream bit 54 + 54k | header end and trailer start on that grid; column 5 alternates 279/279, frames 0 and 279 included | supported |
+| V3 | sync bit in the standard position (last bit, B_54) | column 53 alternates 105/279; the grid that puts it last overlaps the header by 48 bits | contradicted |
+| V4 | superframe of 2, 3, 4 or 6 frames (outside column 5) | z -0.4, -1.0, -0.1, -0.6 against frame-order shuffles | contradicted |
+| V5 | dependent bits sit next to each other | adjacent \|phi\| 0.162 against 0.083 for random column orders, z +8.6 (600H +3.6, 1200H +4.7) | supported |
+| V5 | every field is contiguous | 1200H's standard order also reads z +4.7, so the test does not separate the two | not determinable |
+| V6 | contiguous fields of MELPe 2400's widths (7, 7, 8, 6, 6, 6, 5, 4, 3, 1, 1) | dependence breaks give 42 segments, 35 single columns; the same method splits 600H's known fields into 43 single columns of 50 | not determinable |
+| V7 | standard MELPe 2400, frame rotated or reversed (108 readings) | the two readings with the sync at B_54 send two-bit pitch codes in 26.4 % and 18.6 % of frames (coder 0.0 %, random 16.4 %) | contradicted |
+| V8 | columns 4, 6, 7, 8, 16, 17, 18 all zero (117 of 280 frames) are a slowly varying state, as an unvoiced pitch code is | mean run 4.18 frames against 1.71 ± 0.10 shuffled, z +23.8; 16 of 46 other columns shift at \|z\| >= 3 | supported |
+
+[measured] Structure sits in columns 0-28: the strongly coupled groups 0-4, 6-7, 12-13, 14-15
+and 17-20, and 19 of the 20 columns that persist from frame to frame (ac1 >= 0.18; the 20th is
+33). Columns 29-53 show neither, except the pairs 29-30 and 48-49.
+
+[inferred] A 54-bit, 22.5 ms MELP-like frame with its sync at column 5 and a voicing-like
+7-bit code, in a layout that is not the standard's. That fits Harris's own 2400 layout and
+does not exclude an arbitrary permutation of MELPe 2400 (V7 tests rotations and reversals
+only). Nothing here shows that the frames carry speech, and none is claimed. One message
+cannot place the field boundaries. Known audio at 2400V would (section 6, item 6).
+
 ### What the header does to alignment
 
 [measured] All vocoder data starts at bit 54, right after the header, in every mode: 600H
@@ -454,6 +486,7 @@ python3 -I -B test/harris/harris600/pausewin.py  $P 3 4 5 7  # windows constant 
 python3 -I -B test/harris/harris600/smooth.py    $P 4 7 9 11 # ordered-codebook smoothness
 python3 -I -B test/harris/blind/claims600.py     $P          # section 3: claims P1-P11 (T1-T9)
 python3 -I -B test/harris/blind/fields600.py     $P          # section 3: popcounts, orderings, stage split
+python3 -I -B test/harris/blind/claims2400.py    $P          # section 4: 2400V hypotheses V1-V8
 python3 -I -B test/harris/harris600/splits.py    $P          # chunk boundaries, group |r|
 python3 -I -B test/harris/harris600/align.py     $P          # cross-message alignment
 python3 -I -B test/harris/harris600/melp600.py   $P          # melp600 phase and layout

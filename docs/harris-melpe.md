@@ -214,17 +214,18 @@ modem.
   would be 1. NOT
   DETERMINABLE from the standard alone which one Table XII intends. The readings fit value + 4.
 - **TX known symbols.** 110C puts D1 and D2 in the two known segments before each new
-  interleaver block [1, 5.3.2.3.7.1.2], and the Harris radio does. For 600H and 1200H this
-  modem's TX now does too (`docs/harris-tx.md`). Every other mode, 2400V included, still sends
-  every known segment as zeros. The receiver skips those two segments, so it reads either kind.
+  interleaver block [1, 5.3.2.3.7.1.2], and the Harris radio does. This modem's TX does too,
+  in every coded mode with probes: 600H, 1200H and 2400V through `ModemTX::encode_bits`
+  (`docs/harris-tx.md`), the other modes through `M110ACodec::encode_bits_with_probes`. The
+  receiver skips those two segments, so it reads zeros there as well.
 - **Quality thresholds.** `quality_db` no longer counts the block-boundary probes, so it reads
   higher than before wherever a transmitter sends D1 and D2 there. The thresholds were set on
   the old figure (`api/modem_rx.cpp`, `quality_threshold_db`). They were not re-derived. On the
   420 decodes above, no wrong payload passes them.
-- **TX end of message.** For 600H and 1200H this modem's TX sends the EOM 4B65A5B2
-  [1, 5.3.2.3.1] and the interleaver flush [1, 5.3.2.3.2], and own-TX loopback is tested
-  with `eom=1` (ctest `harris_tx_loopback`; `docs/harris-tx.md`). Every other mode, 2400V
-  included, still ends a message with four frames of zero data, without the EOM or the flush.
+- **TX end of message.** This modem's TX sends the EOM 4B65A5B2 [1, 5.3.2.3.1] and the
+  interleaver flush [1, 5.3.2.3.2]: always for 600H, 1200H and 2400V, and for the other
+  modes when `include_eom` is set (the default). Own-TX loopback of 600H, 1200H and 2400V is
+  tested with `eom=1` (ctest `harris_tx_loopback`; `docs/harris-tx.md`).
 - **75 bps.** AUTO names 75S and 75L. There is no 75 bps data path, in TX or in RX.
 - `src/m110a/preamble_codec.h` has its own D1, D2 table, with 75 bps marked "estimated" as 7,7
   short and 5,7 long. Those collide with 2400 digital voice and the Harris 600 code. Nothing in
@@ -713,7 +714,10 @@ firmware are lost."*
   indirectly consistent with that (`docs/harris-600-format.md` s3, claim P6).
 - **The melp2400 layout.** It is not standard MELPe 2400: a quarter of its frames carry
   pitch codes the standard never sends, its parity fails, and 12 bit orders were tried. It is
-  not LPC-10e in any bit order (`docs/harris-blind.md` s A).
+  not LPC-10e in any bit order (`docs/harris-blind.md` s A). The frame is 54 bits (22.5 ms)
+  from stream bit 54, with no superframe, and a 7-column code behaves like a slowly varying
+  voicing state. The field boundaries are NOT DETERMINABLE from this one message
+  (`docs/harris-600-format.md` s4, *Structured hypotheses*). Nothing here shows it is speech.
 
 ### Alex's rulings, 2026-11-22
 
