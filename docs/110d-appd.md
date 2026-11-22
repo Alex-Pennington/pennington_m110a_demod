@@ -2,10 +2,11 @@
 
 `m110d_rx` decodes one 3 kHz Appendix D single-tone transmission from a WAV file [1]. It
 reports the Waveform ID (WID), the interleaver, the constraint length, acquisition and EOM
-status. It decodes the payload text for the BPSK waveforms, WID 1 to 5.
+status. It decodes the payload text for WID 0 (75 bps, Walsh) and the BPSK waveforms, WID 1
+to 5.
 
-Phase 1 does not decode WID 0 (Walsh data), QPSK, 8PSK or QAM payloads, or K=9 coding. For
-those waveforms it reports the WID and the interleaver only.
+It does not decode QPSK, 8PSK or QAM payloads, or K=9 coding. For those waveforms it reports
+the WID and the interleaver only.
 
 ## Source document
 
@@ -47,20 +48,21 @@ The WAV must be 16-bit PCM at a sample rate that is a multiple of 2400 Hz (the t
 | `pn_chip_errors`, `fixed_symbol_chip_errors` | hard chip decisions in the acquired super-frame that disagree with the scrambling tables |
 | `payload`, `payload_note` | `decoded` or `skipped`, and why |
 | `blocks`, `eom`, `bytes`, `text` | interleaver blocks decoded, EOM seen, payload bytes up to the EOM (or every decoded byte without one); non-printing bytes are written `\xNN` |
-| `reencode_agree`, `probe_quality` | share of soft coded bits the decoded path re-encodes with the same sign; mean normalised mini-probe correlation |
+| `reencode_agree`, `probe_quality` | share of soft coded bits the decoded path re-encodes with the same sign; mean normalised mini-probe correlation (WID 0, which has no probes: mean normalised correlation of the decided Walsh symbol) |
+| `walsh_alt_last` | WID 0 only: blocks whose last channel symbol correlates better with the alternate Walsh set than the normal set, over blocks decoded |
 | `boundary_probe_after_frames` | data frames followed by the cyclically shifted (long-interleaver boundary) mini-probe |
 
 ## Measured pass table
 
-This is the scorer's own output. It was run at commit `59604d4` against
+This is the scorer's own output. It was run at commit `46d3fe2` against
 `interop-110D-AppD-2026-09-08`, with exit status 0.
 
 ```
  #  exp WID exp IL       got WID got IL       ID    text  EOM exp/got  PN          note
 ---------------------------------------------------------------------------------------
- 1        0 short              0 short        PASS  n/a   on/-         restart     
- 2        0 medium             0 medium       PASS  n/a   on/-         restart     
- 3        0 long               0 long         PASS  n/a   on/-         restart     
+ 1        0 short              0 short        PASS  PASS  on/1         restart     
+ 2        0 medium             0 medium       PASS  PASS  on/1         restart     
+ 3        0 long               0 long         PASS  PASS  on/1         restart     
  4        1 ultra-short        1 ultra-short  PASS  PASS  on/1         restart     
  5        1 short              1 short        PASS  PASS  on/1         restart     
  6        1 medium             1 medium       PASS  PASS  on/1         restart     
@@ -120,11 +122,12 @@ This is the scorer's own output. It was run at commit `59604d4` against
 60        3 long               3 long         PASS  PASS  off/0        restart     no-EOM
 ---------------------------------------------------------------------------------------
 WID+interleaver correct: 60/60
+text PASS (WID 0):       3/3
 text PASS (WID 1-5):     24/24
 ```
 
 "ID" passes when the WID and the interleaver both match the README and the WID checksum
-passes. "text" is a prefix match against the README's expected text, which is the first
+passes. "text" is scored for WID 0 to 5 and is a prefix match against the README's expected text, which is the first
 ~100 characters of each message. File 60 has no EOM. It decodes as the message text followed
 by zero bytes to the end of the 4096-bit long block (512 bytes), as its README row describes.
 
@@ -163,6 +166,24 @@ Each item below is a single decode run on the named file.
 - **Single-fixed preamble.** File 58 acquires on the one-symbol fixed subsection with one
   super-frame, down-count 0. The nine-symbol shape gives metrics of 0.271 and 0.287 there.
 - **Long preamble.** File 59 shows eight super-frames with down-counts 7 to 0.
+- **WID 0 data start.** Data channel symbols begin at the first symbol after the last
+  preamble super-frame, with no mini-probe between (Tables D-XI and D-XII give N/A for
+  WID 0; D.5.2.2). On files 1-3 the first block starts at symbol 1728 = 3 super-frames of 576
+  symbols, and every block's mean normalised Walsh correlation is 1.000 (`m110d_rx -v`).
+- **WID 0 scrambler reset.** The D.5.1.4 sequence restarts at each interleaver block. The
+  reading that runs it on across blocks decodes block 0 of file 1, then block 1 correlates at
+  0.172 and no EOM is found (temporary build, not kept). Files 2 and 3 (288 and 1152 coded
+  bits per block, 4608 and 18432 chips) decode, so the wrap at 2048 values within a block is
+  exercised as well.
+- **WID 0 alternate Walsh set.** The last channel symbol of every block correlates better with
+  the alternate set than the normal set: `walsh_alt_last=21/21`, `6/6` and `2/2` on files 1,
+  2 and 3. The receiver places the block boundary by count from the data start; it does not
+  search for the alternate symbol.
+- **WID 0 di-bit order and code.** The first bit of the di-bit (MSB in the D.5.1.2.3.1 table)
+  is taken as the earlier interleaver fetch, as D.5.1.2.1.2 states for QPSK. With that order,
+  the Figure D-9 K=7 rate 1/2 code with no repetition or puncturing, and the D.5.3.3 fetch
+  with the Table D-LI increments 11, 37 and 145, files 1-3 decode with re-encode agreement
+  1.0000 and EOM seen.
 
 ## Standard sections implemented
 
@@ -183,6 +204,8 @@ Each item below is a single decode run on the named file.
 | D.5.3.2.4, Tables D-XLIX, D-L: repetition then puncturing | `depuncture` |
 | D.5.3.3, Tables D-XXXVII, D-LI: interleaver load, linear fetch | `interleaver_params`, `decode_payload` |
 | D.5.4.3, D.5.4.5.1: EOM 4B65A5B2 | `find_eom` |
+| D.5.1.2.3.1: WID 0 Walsh sets, normal and alternate (last di-bit of a block) | `kWalshData4`, `kWalshAlt8`, `decode_walsh` in `src/m110d/appd_walsh.h` |
+| D.5.1.4: WID 0 trinomial (159, 31) scrambler, 2048 values, reset per block | `walsh_scrambler`, checked by `walsh_selftest` against the D.5.1.4 example |
 
 The TLC section (D.5.2.1.2) is not used. The receiver neither checks it nor counts its blocks.
 
@@ -205,7 +228,8 @@ The TLC section (D.5.2.1.2) is not used. The receiver neither checks it nor coun
 
 No code was taken from another project. The read-only reference
 milwave-rs [2] was read during this work. It holds no Appendix D preamble, frame structure,
-interleaver or tail-biting code, so nothing from it is used here.
+interleaver or tail-biting code, so nothing from it is used here. Its `src/walsh.rs` is a
+Walsh-16 correlator with no D.5.1.4 scrambler; the WID 0 decoder is written from the standard.
 
 ## References
 

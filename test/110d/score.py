@@ -10,10 +10,11 @@ column there is the first ~100 characters of each message, so the text check is 
 match: decoded text must start with it. For the no-EOM file the decoded text runs on into
 the zero padding of the last interleaver block; the prefix match passes that by design.
 
-Text is scored for the waveforms phase 1 decodes (WID 1-5, BPSK). For the other waveforms
-the receiver reports WID and interleaver only, and the text column reads "n/a".
+Text is scored for the waveforms the receiver decodes: WID 0 (Walsh) and WID 1-5 (BPSK). For
+the other waveforms the receiver reports WID and interleaver only, and the text column reads
+"n/a".
 
-Exit status: 0 when every file reports the expected WID and interleaver and every WID 1-5
+Exit status: 0 when every file reports the expected WID and interleaver and every WID 0-5
 file passes the text check, 1 otherwise.
 """
 import argparse
@@ -88,24 +89,29 @@ def main():
     print(hdr)
     print("-" * len(hdr))
     n_id = n_text = n_text_scope = 0
+    n_w0 = n_w0_scope = 0
     for r in rows:
         k = res[r["num"]]
         gw = k.get("wid", "-")
         gi = k.get("interleaver", "-")
         id_ok = gw == str(r["wid"]) and gi == r["il"] and k.get("wid_checksum") == "ok"
         n_id += id_ok
-        if 1 <= r["wid"] <= 5:
-            n_text_scope += 1
+        if 0 <= r["wid"] <= 5:
             got = unescape(k.get("text", ""))
             t_ok = got.startswith(r["text"])
-            n_text += t_ok
+            if r["wid"] == 0:
+                n_w0_scope += 1
+                n_w0 += t_ok
+            else:
+                n_text_scope += 1
+                n_text += t_ok
             tcol = "PASS" if t_ok else "FAIL"
             eom_got = k.get("eom", "-")
         else:
             tcol = "n/a"
             eom_got = "-"
         note = r["variant"] or ""
-        if k.get("payload_note") and 1 <= r["wid"] <= 5:
+        if k.get("payload_note") and 0 <= r["wid"] <= 5:
             note = (note + " " + k["payload_note"]).strip()
         if k.get("_rc"):
             note = (note + f" rc={k['_rc']}").strip()
@@ -113,8 +119,9 @@ def main():
               f"{tcol:<4}  {r['eom'] + '/' + eom_got:<11}  {k.get('pn', '-'):<10}  {note}")
     print("-" * len(hdr))
     print(f"WID+interleaver correct: {n_id}/60")
+    print(f"text PASS (WID 0):       {n_w0}/{n_w0_scope}")
     print(f"text PASS (WID 1-5):     {n_text}/{n_text_scope}")
-    return 0 if n_id == 60 and n_text == n_text_scope else 1
+    return 0 if n_id == 60 and n_text == n_text_scope and n_w0 == n_w0_scope else 1
 
 
 if __name__ == "__main__":
