@@ -64,8 +64,10 @@ def mode_text(name, meta):
     d2 = meta.get("d2", d2)
     count = meta.get("countdown", count)
     npre = meta.get("preambles", npre)
-    il = {2: "short or zero interleave", 23: "long interleave"}.get(count, "interleave unknown")
+    il = {2: "short or zero interleave", 23: "long interleave"}.get(int(count), "interleave unknown")
     parts = [f"D1,D2 {d1},{d2}", f"count {count} ({il})"]
+    if meta.get("mode"):
+        parts.insert(0, str(meta["mode"]))
     if npre != 1:
         parts.append(f"{npre} preambles")
     if "rate" in meta:

@@ -76,6 +76,17 @@ struct BrainDecodeResult {
     int d2 = -1;
     float d1_corr = 0.0f;
     float d2_corr = 0.0f;
+    // Runner-up D value and its correlation, for D1 and D2
+    int d1_second = -1;
+    int d2_second = -1;
+    float d1_corr2 = 0.0f;
+    float d2_corr2 = 0.0f;
+    // Count segment: the D value (4-7) read for each of the three digits, its
+    // |correlation| and the runner-up's, normalised to 1.0 for a clean symbol;
+    // filled whether or not the countdown was accepted
+    int count_d[3] = {-1, -1, -1};
+    float count_corr[3] = {0.0f, 0.0f, 0.0f};
+    float count_corr2[3] = {0.0f, 0.0f, 0.0f};
     std::string mode_name = "UNKNOWN";
     
     // Extracted symbols
@@ -545,8 +556,11 @@ private:
         
         float best_d1_corr = 0.0f;
         float best_d2_corr = 0.0f;
+        float second_d1_corr = 0.0f;
+        float second_d2_corr = 0.0f;
         int d1 = 0, d2 = 0;
-        
+        int d1_second = -1, d2_second = -1;
+
         for (int d = 0; d < 8; d++) {
             // D1 correlation
             complex_t corr1(0, 0);
@@ -561,7 +575,12 @@ private:
                 pow1 += std::norm(filtered[idx]);
             }
             float c1 = std::abs(corr1) / std::sqrt(pow1 * 32 + 0.0001f);
-            if (c1 > best_d1_corr) { best_d1_corr = c1; d1 = d; }
+            if (c1 > best_d1_corr) {
+                second_d1_corr = best_d1_corr; d1_second = d1;
+                best_d1_corr = c1; d1 = d;
+            } else if (c1 > second_d1_corr) {
+                second_d1_corr = c1; d1_second = d;
+            }
             
             // D2 correlation
             complex_t corr2(0, 0);
@@ -576,13 +595,22 @@ private:
                 pow2 += std::norm(filtered[idx]);
             }
             float c2 = std::abs(corr2) / std::sqrt(pow2 * 32 + 0.0001f);
-            if (c2 > best_d2_corr) { best_d2_corr = c2; d2 = d; }
+            if (c2 > best_d2_corr) {
+                second_d2_corr = best_d2_corr; d2_second = d2;
+                best_d2_corr = c2; d2 = d;
+            } else if (c2 > second_d2_corr) {
+                second_d2_corr = c2; d2_second = d;
+            }
         }
-        
+
         result.d1 = d1;
         result.d2 = d2;
         result.d1_corr = best_d1_corr;
         result.d2_corr = best_d2_corr;
+        result.d1_second = d1_second;
+        result.d2_second = d2_second;
+        result.d1_corr2 = second_d1_corr;
+        result.d2_corr2 = second_d2_corr;
         
         // Look up mode name
         result.mode_name = lookup_mode_name(d1, d2);
@@ -606,14 +634,20 @@ private:
         const int count_start = result.start_sample +
             (brain::P_COMMON_LENGTH + brain::P_MODE_LENGTH) * sps_;
         int countdown = 0;
+        bool clear = true;
         for (int seg = 0; seg < 3; seg++) {
             float best = 0.0f, second = 0.0f;
             int best_d = -1;
+            float power = 0.0f;
+            for (int i = 0; i < 32; i++) {
+                int idx = count_start + (seg * 32 + i) * sps_;
+                if (idx < 0 || idx >= static_cast<int>(filtered.size())) return;
+                power += std::norm(filtered[idx]);
+            }
             for (int d = 4; d < 8; d++) {
                 complex_t corr(0, 0);
                 for (int i = 0; i < 32; i++) {
                     int idx = count_start + (seg * 32 + i) * sps_;
-                    if (idx < 0 || idx >= static_cast<int>(filtered.size())) return;
                     uint8_t pattern = (brain::psymbol[d][i % 8] + brain::pscramble[i]) % 8;
                     corr += filtered[idx] *
                             std::conj(complex_t(brain::psk8_i[pattern], brain::psk8_q[pattern]));
@@ -622,20 +656,26 @@ private:
                 if (mag > best) { second = best; best = mag; best_d = d; }
                 else if (mag > second) { second = mag; }
             }
-            if (best_d < 0 || best < 1.5f * second) return;  // ambiguous digit
-            countdown = (countdown << 2) | (best_d - 4);
+            const float norm = std::sqrt(power * 32.0f + 0.0001f);
+            result.count_d[seg] = best_d;
+            result.count_corr[seg] = best / norm;
+            result.count_corr2[seg] = second / norm;
+            if (best_d < 0 || best < 1.5f * second) clear = false;  // ambiguous digit
+            else countdown = (countdown << 2) | (best_d - 4);
         }
-        if (countdown < frames) result.countdown = countdown;
+        if (clear && countdown < frames) result.countdown = countdown;
     }
     
     /**
      * Look up mode name from D1/D2 values
      */
     std::string lookup_mode_name(int d1, int d2) {
-        // Mode table from Brain Modem
+        // MIL-STD-188-110C/D Table XI, then the Harris application-specific
+        // codes (Table XI reserves 5,6 and 5,7 and does not define them)
         struct ModeEntry { int d1; int d2; const char* name; };
         static const ModeEntry modes[] = {
-            {0, 0, "M75N"},    // 75bps no interleave (special case)
+            {7, 5, "M75NS"},
+            {5, 5, "M75NL"},
             {7, 4, "M150S"},
             {5, 4, "M150L"},
             {6, 7, "M300S"},
@@ -647,6 +687,9 @@ private:
             {6, 4, "M2400S"},
             {4, 4, "M2400L"},
             {7, 6, "M4800S"},
+            {7, 7, "M2400V"},  // 2400 digital voice
+            {5, 7, "M600H"},   // Harris application-specific: 600 bps, short
+            {5, 6, "M1200H"},  // Harris application-specific: 1200 bps, short
         };
         
         for (const auto& m : modes) {

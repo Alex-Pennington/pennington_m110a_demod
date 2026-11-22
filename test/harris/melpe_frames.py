@@ -77,9 +77,13 @@ def cut_frames(bits, rate, offset=0, reverse=False, invert=False):
     return f
 
 
-def pack_frames(frames, rate):
-    """Frames (n, n_bits) of B_01.. order -> the reference coder's -b 54 byte stream."""
-    n_bits, _, n_bytes, _, packing = RATES[rate]
+def pack_frames(frames, rate, packing=None):
+    """Frames (n, n_bits) of B_01.. order -> the reference coder's -b 54 byte stream.
+
+    packing None: the rate's packing as measured from the coder ("lsb" puts B_01 in the
+    LSB of byte 0, as RFC 8130; "msb" in the MSB). Pass the other one to test it."""
+    n_bits, _, n_bytes, _, default = RATES[rate]
+    packing = packing or default
     f = np.asarray(frames, dtype=np.uint8)
     if f.ndim != 2 or f.shape[1] != n_bits:
         raise ValueError(f"frames must be (n, {n_bits}) for {rate} bit/s")
@@ -88,9 +92,10 @@ def pack_frames(frames, rate):
     return np.packbits(full, axis=1, bitorder="little" if packing == "lsb" else "big").tobytes()
 
 
-def unpack_frames(data, rate):
+def unpack_frames(data, rate, packing=None):
     """The reference coder's -b 54 byte stream -> frames (n, n_bits) of B_01.. order."""
-    n_bits, _, n_bytes, _, packing = RATES[rate]
+    n_bits, _, n_bytes, _, default = RATES[rate]
+    packing = packing or default
     a = np.frombuffer(bytes(data), dtype=np.uint8)
     a = a[: len(a) // n_bytes * n_bytes].reshape(-1, n_bytes)
     full = np.unpackbits(a, axis=1, bitorder="little" if packing == "lsb" else "big")

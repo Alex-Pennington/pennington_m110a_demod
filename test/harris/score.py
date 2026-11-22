@@ -1,18 +1,30 @@
 #!/usr/bin/env python3
-"""Score the Harris MELP test transmissions: payload bits -> MELPe frames -> audio.
+"""Score the Harris MELP test transmissions: recordings -> payload bits -> MELPe frames -> audio.
 
 Usage:
-  python3 -I test/harris/score.py --melpe <MELPe program> [--payload DIR] [--audio DIR]
-                                   [--work DIR] [--search | --search-all] [--jobs N]
-                                   [--proofs DIR --set DIR [--decoder TEXT]]
-  python3 -I test/harris/score.py --melpe <MELPe program> --calibrate RAW [RAW ...]
-                                   [--work DIR]
+  python3 -I -B test/harris/score.py --melpe <MELPe program> --payload DIR
+        [--rx build/bin/m110a_rx --score build/bin/harris_score] [--set <test-set dir>]
+        [--search | --search-all] [--audio DIR] [--work DIR] [--jobs N]
+        [--proofs DIR [--decoder TEXT]]
+  python3 -I -B test/harris/score.py --melpe <MELPe program> --calibrate RAW [RAW ...]
+        [--work DIR]
+
+Two stages, one pass table:
+
+1. Modem (modem.py, with --rx and --score): each recording through m110a_rx AUTO, then each
+   message it reports through harris_score twice (equalized and phase-tracked only).
+   Writes <payload>/<slug>.bin (LSB first, cut at the EOM), .bits, BIT-ORDER.txt, and a
+   <slug>.json sidecar per message: mode, D1, D2, countdown, EOM, verified (the two
+   harris_score decodes identical and both found the EOM) and the MELPe rate of the mode.
+   Without --rx the MELPe stage reads a payload directory the modem stage wrote before.
+2. MELPe: each payload cut into frames, decoded through the MELPe program, and scored as
+   speech.
 
 The MELPe program is the STANAG 4591 reference coder's command line
 (`-r <rate> -m A|S -i <in> -o <out>`, -b 54 byte frames); it is run as an external
 program and is not part of this repo.
 
-Inputs, per file of the test set (slugs in FILES below):
+MELPe stage inputs, per file of the test set (slugs in FILES below):
   <payload>/<slug>.bin   payload bytes from the 110A receiver, or, for a recording with
                          several preambles, one <slug>_m<N>.bin per message (N = 1, 2, ...),
                          each scored on its own with its own <slug>_m<N>.json; the proof
@@ -22,11 +34,13 @@ Inputs, per file of the test set (slugs in FILES below):
                           "rate": 600|1200|2400, "offset": int, "reverse": bool,
                           "invert": bool, "verified": bool, "decoder": str, "d1": int,
                           "d2": int, "countdown": int, "preambles": int}. Keys present
-                          fix that choice. Absent keys take the defaults (rate from the
-                          slug, msb, the sync-bit offset or 0, no reversal or inversion);
-                          --search tries both byte orders and every frame offset,
-                          --search-all also every rate, reversal and inversion.
-Outputs: <audio>/<slug>.wav, 8 kHz mono 16-bit.
+                          fix that choice ("packing": "msb"|"lsb" fixes the coder byte
+                          packing). Absent keys take the defaults (rate from the slug, LSB
+                          first, the sync-bit offset or 0, the coder's measured packing, no
+                          reversal or inversion); --search tries both byte orders, every
+                          frame offset and, at 600 bps, both coder packings; --search-all
+                          also every rate, reversal and inversion.
+Outputs: <audio>/<slug>.wav, 8 kHz mono 16-bit, with --audio.
 
 Speech measure (melpe_frames.speech_measure): `track` is the share of 22.5 ms frames of
 the decoded audio that are voiced with pitch in 80-308 Hz and continue the previous
@@ -49,8 +63,6 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import melpe_frames as mf  # noqa: E402
 import proofs  # noqa: E402
-
-JOB = "/home/rayven/.claude/jobs/6e6029c0/tmp/harris"
 
 # slug, file name in the test set, rate implied by the name
 FILES = [
@@ -76,12 +88,12 @@ def run_coder(melpe, rate, mode, src, dst):
                            f"{(p.stderr or p.stdout).strip()[:200]}")
 
 
-def decode_frames(melpe, frames, rate, work, tag):
+def decode_frames(melpe, frames, rate, work, tag, packing=None):
     """Frames (n, n_bits) -> int16 audio through the coder's synthesis."""
     bit = os.path.join(work, tag + ".bit")
     pcm = os.path.join(work, tag + ".pcm")
     with open(bit, "wb") as f:
-        f.write(mf.pack_frames(frames, rate))
+        f.write(mf.pack_frames(frames, rate, packing))
     run_coder(melpe, rate, "S", bit, pcm)
     x = mf.read_raw(pcm)
     os.remove(bit)
@@ -155,8 +167,9 @@ def candidates(meta, rate_hint, search, wide=False):
     reversal and inversion. Wide search is off by default: the rate is read off the
     preamble, and 600 bit/s decodes of mis-cut bits look speech-like inside each 90 ms
     block, so every extra choice raises the best wrong reading (docs/harris-melpe.md)."""
-    rates = [meta["rate"]] if "rate" in meta else ([2400, 1200, 600] if wide else [rate_hint])
-    orders = [meta["bit_order"]] if "bit_order" in meta else (["msb", "lsb"] if search else ["msb"])
+    rates = [int(meta["rate"])] if "rate" in meta else ([2400, 1200, 600] if wide else [rate_hint])
+    # the modem stage's payloads are LSB first (BIT-ORDER.txt); --search tries both
+    orders = [meta["bit_order"]] if "bit_order" in meta else (["lsb", "msb"] if search else ["lsb"])
     revs = [meta["reverse"]] if "reverse" in meta else ([False, True] if wide else [False])
     invs = [meta["invert"]] if "invert" in meta else ([False, True] if wide else [False])
     for r in rates:
@@ -190,16 +203,28 @@ def score_file(melpe, payload, meta, rate_hint, search, work, slug, jobs, wide=F
     tasks = []
     for rate, order, rev, inv in candidates(meta, rate_hint, search, wide):
         bits = mf.bytes_to_bits(payload, order)
+        # coder byte packing: as measured from the coder, and at 600 bit/s, where that
+        # differs from RFC 8130 Figure 4, also RFC 8130's under --search
+        default = mf.RATES[rate][4]
+        if "packing" in meta:
+            packs = [meta["packing"]]
+        elif rate == 600 and (search or wide):
+            packs = [default, "lsb" if default == "msb" else "msb"]
+        else:
+            packs = [default]
         for off in offsets_for(bits, rate, rev, meta, search or wide):
             frames = mf.cut_frames(bits, rate, off, rev, inv)
-            if len(frames) >= 2:
+            if len(frames) < 2:
+                continue
+            for pk in packs:
                 tasks.append((dict(rate=rate, order=order, offset=off, reverse=rev, invert=inv,
-                                   frames=len(frames), sync=mf.sync_score(frames, rate)),
+                                   packing=pk, frames=len(frames),
+                                   sync=mf.sync_score(frames, rate)),
                               frames))
 
     def one(i):
         d, frames = tasks[i]
-        x = decode_frames(melpe, frames, d["rate"], work, f"{slug}_{i}")
+        x = decode_frames(melpe, frames, d["rate"], work, f"{slug}_{i}", d["packing"])
         return mf.speech_measure(x), x
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as ex:
@@ -262,27 +287,35 @@ def score_part(a, part, meta, rate_hint):
         return r
     _, d, x = best
     ok = d["m"]["track"] >= PASS_TRACK and d["m"]["track"] - d["second"] >= PASS_MARGIN
-    verified = bool(meta.get("verified")) or (d["sync"] is not None and d["sync"] >= SYNC_TRUST)
+    # the modem stage's verification when the sidecar has one; else the sync bit
+    verified = bool(meta["verified"]) if "verified" in meta else \
+        (d["sync"] is not None and d["sync"] >= SYNC_TRUST)
     r.update(d=d, x=x, ok=ok, status=proofs.status_for(True, verified, ok))
     return r
 
 
+HDR = (f"{'message':<20} {'mode':<6} {'D1,D2':<5} {'EOM':<3} {'modem':<8} {'bytes':>5}  "
+       f"{'rate':>4} {'order':<5} {'pack':<4} {'off':>3} {'rev':<3} {'inv':<3} {'frames':>6} "
+       f"{'sync':>5}  {'voiced':>6} {'track':>6} {'2nd':>5} {'f0':>4}  result")
+
+
 def print_row(part, meta, r=None):
-    pre = str(meta.get("preamble", "-"))[:9]
-    mode = str(meta.get("mode", "-"))[:10]
-    head = f"{part:<20} {pre:<9} {mode:<10}"
+    d1d2 = f"{meta['d1']},{meta['d2']}" if "d1" in meta and "d2" in meta else "-"
+    eom = {True: "yes", False: "no"}.get(meta.get("eom"), "-")
+    ver = {True: "verified", False: "NOT"}.get(meta.get("verified"), "-")
+    head = f"{part:<20} {str(meta.get('mode', '-'))[:6]:<6} {d1d2:<5} {eom:<3} {ver:<8}"
     if r is None:
-        print(f"{head} {'-':>6}  {'NO PAYLOAD':>78}")
+        print(f"{head} {'-':>5}  NO PAYLOAD")
         return
     d = r["d"]
     if d is None:
-        print(f"{head} {r['bytes']:>6}  too short for one frame")
+        print(f"{head} {r['bytes']:>5}  too short for one frame")
         return
     sync = "-" if d["sync"] is None else f"{d['sync']:.2f}"
-    print(f"{head} {r['bytes']:>6}  {d['rate']:>4} {d['order']:<5} "
+    print(f"{head} {r['bytes']:>5}  {d['rate']:>4} {d['order']:<5} {d['packing']:<4} "
           f"{d['offset']:>3} {'y' if d['reverse'] else 'n':<3} {'y' if d['invert'] else 'n':<3} "
           f"{d['frames']:>6} {sync:>5}  {d['m']['voiced']:>6.3f} {d['m']['track']:>6.3f} "
-          f"{d['second']:>5.3f} {d['m']['f0_median']:>5.0f}  {'PASS' if r['ok'] else 'FAIL'}")
+          f"{d['second']:>5.3f} {d['m']['f0_median']:>4.0f}  {'PASS' if r['ok'] else 'FAIL'}")
 
 
 def describe(r):
@@ -292,7 +325,9 @@ def describe(r):
         return f"{r['bytes']} payload bytes, too short for one MELPe frame", None
     decoded = (f"{r['bytes']} payload bytes, {d['frames']} MELPe {d['rate']} bps frames, "
                f"speech measure {d['m']['track']:.2f} (next best reading {d['second']:.2f})")
-    detail = (f"bit order {d['order']}-first, frame offset {d['offset']} bits"
+    pack = "RFC 8130" if d["packing"] == "lsb" else "MSB-first"
+    detail = (f"payload bytes read {d['order'].upper()} first, frame offset {d['offset']} bits, "
+              f"coder packing {pack}"
               + (", frames reversed" if d["reverse"] else "")
               + (", bits inverted" if d["invert"] else "")
               + ("" if d["sync"] is None else
@@ -323,12 +358,38 @@ def recording_item(label, mode, results, audio, proofs_root, slug):
     return proofs.item(label, mode, status, decoded, detail, audio)
 
 
+# MELPe rate carried by each receiver mode (docs/harris-melpe.md, Modem)
+MODE_RATE = {"600H": 600, "600S": 600, "600L": 600, "1200H": 1200, "1200S": 1200,
+             "1200L": 1200, "2400V": 2400, "2400S": 2400, "2400L": 2400}
+SIDECAR_KEYS = ("mode", "d1", "d2", "countdown", "preambles", "bytes", "eom", "verified")
+
+
+def write_sidecars(payload_dir, records, decoder=None):
+    """<slug>.json per message from the modem stage: what the preamble and the modem
+    verification said, and the MELPe rate the mode carries."""
+    for rec in records:
+        meta = {k: rec[k] for k in SIDECAR_KEYS if rec.get(k) is not None}
+        for k in ("d1", "d2", "countdown"):
+            if k in meta and str(meta[k]).lstrip("-").isdigit():
+                meta[k] = int(meta[k])
+        if rec.get("mode") in MODE_RATE:
+            meta["rate"] = MODE_RATE[rec["mode"]]
+        if decoder:
+            meta["decoder"] = decoder
+        with open(os.path.join(payload_dir, rec["slug"] + ".json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=1)
+            f.write("\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--melpe", required=True, help="MELPe reference coder program")
-    ap.add_argument("--payload", default=os.path.join(JOB, "payload"))
-    ap.add_argument("--audio", default=os.path.join(JOB, "audio"))
-    ap.add_argument("--work", default=os.path.join(JOB, "melpe", "work"))
+    ap.add_argument("--rx", help="m110a_rx: run the modem stage first (with --score and --set)")
+    ap.add_argument("--score", help="harris_score, for the modem stage")
+    ap.add_argument("--payload", help="payload directory: the modem stage writes it, "
+                                      "the MELPe stage reads it")
+    ap.add_argument("--audio", help="also write each message's decoded speech here")
+    ap.add_argument("--work", help="scratch directory (default <payload>/work)")
     ap.add_argument("--jobs", type=int, default=4, help="parallel decodes")
     ap.add_argument("--search", action="store_true",
                     help="search byte order and frame offset at the file's rate")
@@ -346,22 +407,37 @@ def main():
     if not os.access(a.melpe, os.X_OK):
         print(f"--melpe {a.melpe}: not an executable", file=sys.stderr)
         return 2
+    if not a.calibrate and not a.payload:
+        print("--payload is required", file=sys.stderr)
+        return 2
+    if a.rx and not (a.score and a.set):
+        print("the modem stage (--rx) needs --score and --set", file=sys.stderr)
+        return 2
+    a.work = a.work or os.path.join(a.payload or ".", "work")
     os.makedirs(a.work, exist_ok=True)
 
     if a.calibrate:
         calibrate(a.melpe, a.calibrate, a.work)
         return 0
 
-    os.makedirs(a.audio, exist_ok=True)
+    if a.rx:
+        import modem
+        print("modem stage")
+        rows, records, _ = modem.decode_set(a.rx, a.score, a.set, a.payload, a.work)
+        modem.print_rows(rows)
+        print()
+        write_sidecars(a.payload, records, a.decoder)
+
+    if a.audio:
+        os.makedirs(a.audio, exist_ok=True)
     pdir = None
     if a.proofs:
         pdir = os.path.join(a.proofs, proofs.AUDIO_DIR)
         os.makedirs(pdir, exist_ok=True)
     items = []
     decoders = set()
-    hdr = (f"{'payload':<20} {'preamble':<9} {'mode':<10} {'bytes':>6}  {'rate':>4} {'order':<5} "
-           f"{'off':>3} {'rev':<3} {'inv':<3} {'frames':>6} {'sync':>5}  {'voiced':>6} "
-           f"{'track':>6} {'2nd':>5} {'f0':>5}  result")
+    hdr = HDR
+    print("MELPe stage")
     print(hdr)
     print("-" * len(hdr))
     n_have = n_pass = 0
@@ -389,7 +465,7 @@ def main():
                 decoders.add(str(pmeta["decoder"]))
             r = score_part(a, part, pmeta, rate_hint)
             print_row(part, pmeta, r)
-            if r["x"] is not None:
+            if r["x"] is not None and a.audio:
                 mf.write_wav(os.path.join(a.audio, part + ".wav"), r["x"])
             results.append(r)
         item = recording_item(label, proofs.mode_text(label, meta), results, audio,

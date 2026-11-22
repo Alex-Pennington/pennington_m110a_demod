@@ -221,6 +221,9 @@ private:
             case Mode::M2400_LONG: return ModeId::M2400L;
             case Mode::M4800_SHORT: return ModeId::M4800S;
             case Mode::M4800_LONG: return ModeId::M4800S;
+            case Mode::M2400_VOICE: return ModeId::M2400V;
+            case Mode::M600_HARRIS: return ModeId::M600H;
+            case Mode::M1200_HARRIS: return ModeId::M1200H;
             default: return ModeId::M2400S;
         }
     }
@@ -246,6 +249,9 @@ private:
             case ModeId::M2400S: mode_index = 10; is_long = false; break;
             case ModeId::M2400L: mode_index = 11; is_long = true; break;
             case ModeId::M4800S: mode_index = 17; is_long = false; break;
+            case ModeId::M2400V: mode_index = 16; is_long = false; break;
+            case ModeId::M600H:  mode_index = 18; is_long = false; break;
+            case ModeId::M1200H: mode_index = 19; is_long = false; break;
             default: mode_index = 10; is_long = false; break;
         }
         
