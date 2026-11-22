@@ -1,78 +1,127 @@
-# Harris-mode transmitter (600H, 1200H, 2400V)
+# Harris-mode transmitter (600H, 1200H)
 
 Goal: a transmitter whose output a Harris RT-1694D accepts, so known 600H payloads can be played
 to the radio and its synthesiser output recorded (`docs/harris-melpe.md` gives the modem facts).
+This is transmit code only. It writes files and keys no radio.
 
 Labels: **read** = read from code or a standard; **measured** = measured with a command;
 **guessed** = an inference not yet measured.
 
-## State
+## What TX does for 600H and 1200H
 
-### Done
+`M110ACodec::encode_message_bits` (`src/modem/m110a_codec.h`), through `ModemTX::encode_bits`
+(`api/modem_tx.cpp`). `ModemTX::encode(bytes)` takes the same path for 600H and 1200H, bytes LSB
+first. Every other mode transmits as before.
 
-- Read the TX path (`api/modem_tx.cpp`, `src/modem/m110a_codec.h`) and the standard's text on the
-  EOM, the flush and the block-boundary known symbols (110D §5.3.2.2.3, §5.3.2.2.4, §5.3.2.3.1,
-  §5.3.2.3.2, §5.3.2.3.7.1.2). The results are under *What TX does today* and *What 110C requires*.
-- Built the tree on this branch. No sources are changed.
+- **Input:** payload bits, each 0 or 1, in the order the FEC encoder takes them. Any length.
+- **Message end:** one continuous K=7 rate 1/2 stream: the payload, the EOM 4B65A5B2 most
+  significant digit first [110D §5.3.2.3.1], 144 zero bits, then zeros to the end of the
+  interleaver block (360 information bits per block at 600H, 720 at 1200H) [§5.3.2.3.2]. No other
+  tail is added (read).
+- **Known symbols:** in the last two known segments of every 1440-symbol block, the 8-symbol Walsh
+  pattern of D1 and then D2 twice, then 4 zeros, through the scrambler like the zeros elsewhere
+  [§5.3.2.3.7.1.2]. The last block carries them too, as the radio does (measured, below).
+- **Stream:** the short preamble (three frames, countdown 2, 1, 0), then data and probes,
+  modulated as one symbol stream. Root-raised-cosine shaping (alpha 0.35) leaves no gap between
+  preamble and data.
+- **Length:** 1440 × (1 + ceil((payload bits + 176) / bits per block)) symbols, preamble included.
+  The radio's recordings have the same block counts (measured, below).
+- `include_eom` is ignored on this path: the EOM is always sent. The 288 Brain-modem leading symbols
+  still follow `include_leading_symbols`.
 
-### Verified
+### `m110a_tx`
 
-- Baseline `ctest --test-dir build -j8` on the unchanged tree: "100% tests passed, 0 tests failed
-  out of 19" (measured).
+`build/bin/m110a_tx [--mode 600H|1200H] (--bits FILE | --bytes FILE) [--frame] OUT.wav` writes a
+48 kHz 16-bit mono WAV: by default 2 s of silence, the signal (carrier 1800 Hz, root-raised-cosine,
+no leading symbols), then 1 s of silence. `--match WAV` sets the signal RMS to a recording's.
+`--symbols OUT` writes the 8PSK position (0-7) of every symbol from the first preamble symbol.
 
-### Not done
+`--frame` takes whole vocoder units (60 bits at 600H, 81 at 1200H) and frames them as the radio
+does: the 54-bit header, the units, the trailer words W and W', then zeros to a multiple of 16 bits.
 
-- No TX change. 600H, 1200H and 2400V transmit as before, without D1/D2 block probes, the EOM or
+- Measured: the zero fill is to a multiple of 16 bits in all eleven streams (600_1 pads 14 bits,
+  600_2 pads 2). From each of the nine streams that end in W, W' (600_x, 1200_x), `--frame` rebuilds
+  the stream bit for bit from its units.
+- Not covered: melp600's form (108 ones as trailer, stream bit 54 = 0). Send it with `--bits`.
+
+## Verified
+
+- **Loopback, ctest `harris_tx_loopback`** (`test/harris/tx_loopback.py`, label `iq`, needs numpy
+  and scipy). For each of 600H and 1200H, it runs three cases from a fixed seed: 23 framed random
+  units, a byte payload that fills four blocks exactly, and 301 bytes. Each goes through m110a_tx,
+  a WAV, I/Q and `m110a_rx` AUTO. Every case must name the mode and D1, D2, report `success=1
+  eom=1`, return the payload bytes identically, and have the symbol count above. Measured: 6/6.
+- **`test_table_xi_modes`:** the in-process ModemTX → AUTO loopback of 600H and 1200H now runs on
+  this path and still requires the exact payload.
+
+## Step 1: recorded messages re-made by this modem
+
+`test/harris/tx_step1.py` re-makes every 600H and 1200H message in the Harris set. It takes the
+message's trusted payload bits (the modem stage's `<slug>.bits`) and transmits them at the
+recording's level. Then (a) `m110a_rx` decodes our WAV, and (b) `harris_score --compare` compares
+symbols. For (b), the receiver makes its own hard decisions on every symbol from the first
+preamble symbol, on the recording and on our WAV, and the script counts how many agree with our
+transmitted symbol stream. The receiver decides without looking at our stream: preamble and probes
+get 8-ary decisions, data the nearest point of the mode's constellation. It adapts on the known
+288-symbol common segment once before it decides. The work files go under `build/` and stay out
+of git.
+
+```sh
+python3 -I -B test/harris/tx_step1.py --rx build/bin/m110a_rx --tx build/bin/m110a_tx \
+    --score build/bin/harris_score --set <recordings> --payload <payload dir> --work build/step1/all
+```
+
+Measured, one-tap front end (`--eq 0`). melp600 is also given with the 13-tap equalizer
+(`--eq 6`), which that narrow-band file needs:
+
+| Message | (a) m110a_rx on our WAV | Recording vs our symbols | Preamble | Data | Zero probes | D1/D2 probes |
+|---|---|---|---|---|---|---|
+| 600_1 | success=1 eom=1, 442 bytes identical | 17278/17280 | 1440/1440 | 7920/7920 | 7566/7568 | 352/352 |
+| 600_2 | identical | 15838/15840 | all | all | 6878/6880 | all |
+| 600_3 m1 | identical | 12958/12960 | all | all | 5502/5504 | all |
+| 600_3 m2 | identical | 10078/10080 | all | all | 4126/4128 | all |
+| 600_3 m3 | identical | 7198/7200 | all | all | 2750/2752 | all |
+| 600_3 m4 | identical | 5758/5760 | all | all | 2062/2064 | all |
+| 1200_1 | identical | 21590/21600 | all | all | 9628/9632 | 442/448 |
+| 1200_2 | identical | 14398/14400 | all | all | 6190/6192 | all |
+| 1200_3 | identical | 14398/14400 | all | all | 6190/6192 | all |
+| melp600, `--eq 6` | identical | 23026/23040 | 1439/1440 | 10800/10800 | 10313/10320 | 474/480 |
+
+Our own WAV against our symbols: every symbol agrees, in all ten.
+
+Where the recordings diverge from our stream (measured):
+
+- **The end.** In eight messages the only two disagreements are the last two symbols of the
+  transmission. There the recording's level falls to 0.25 and then 0.05 of a symbol, while
+  ours stays at 1.0. The radio's signal stops about two symbols before the last probe segment ends.
+  1200_1 stops 11 symbols early (all ten of its disagreements are symbols 21589 to 21599), and
+  melp600 about 9 (9 of its 14). NOT DETERMINABLE from the recordings whether the radio, its
+  audio path or the recording cuts them. This TX sends the full last frame.
+- **melp600's scattered errors.** The other 5 of its 14 are spread over the message, at its 10.7 %
+  probe symbol error rate. With one tap it agrees on 21935/23040, with all data symbols still
+  agreeing. That is the file's narrow passband, not the stream.
+- **Nothing else.** The 1440-symbol preamble, every data symbol, every D1/D2 segment and the
+  number of blocks agree. That includes the final block, whose content is the EOM, the 144-bit
+  flush and the zero fill. After the last symbol, the recordings fall to noise within 8 symbols.
+  So the radio sends nothing after the last block that this receiver sees (measured).
+
+## Not proven
+
+- **That the radio accepts our WAV.** No RT-1694D has been played this file. The symbols match.
+  The analogue side was not compared: pulse shape, exact carrier (the recordings read +2.5 Hz
+  against our 1800 Hz, which is the radio or the recording chain), audio passband and level
+  through the operator's chain.
+- **What goes before the preamble.** Our WAV starts the preamble straight after silence. The
+  comparison begins at the first preamble symbol, so nothing earlier in the recordings was
+  compared.
+- **2400V.** It is not on this path. It still transmits without D1/D2 block probes, the EOM or
   the flush.
-- No loopback ctests for the Harris modes.
-- No step-1 operator file (600_1 re-modulated). No comparison with the recording.
-- No measurement of what follows the EOM in the recordings (how many blocks, what content).
-- Probe-set paper design: not started.
-- Fallback audio set (silence, pitch sweep, level steps, vowel and hiss, known audio) and its
-  README: not started. No candidate public-domain speech named yet.
-- No files were generated for the operator.
-
-## What TX does today (read, `api/modem_tx.cpp`, `src/modem/m110a_codec.h`)
-
-- **Modes:** 150S to 2400L, 4800S, 2400V (D1, D2 7, 7), 600H (5, 7) and 1200H (5, 6). 75S and 75L
-  return "M75 modes not yet supported". `M4800_LONG` maps to 4800S.
-- **Preamble:** `BrainPreambleEncoder::encode(mode_index, is_long)`. Short modes send three
-  frames, counting down 2, 1, 0. With `include_leading_symbols`, 288 extra symbols go before the
-  preamble: a 2-symbol burst, 8 silent symbols, 2 ramp symbols and 276 scrambled 8PSK.
-- **Input:** bytes only, turned into bits LSB first. A payload whose length is not a whole number
-  of bytes cannot be sent bit-exact.
-- **FEC:** K=7, rate 1/2, then 6 zero tail bits. The coded stream is padded with zeros to the
-  interleaver block.
-- **Known segments:** every one is scrambled zeros, including the two before each new interleaver
-  block, where 110C requires D1 and D2.
-- **EOM:** not sent. With `include_eom`, `generate_eom` adds four frames of scrambled zero data
-  and zero probes. That is not the 32-bit pattern 4B65A5B2, so `eom=1` is not tested on own-TX
-  loopback.
-- **Flush:** none beyond the 6 tail bits and the zero padding of the last block. 110C asks for
-  144 zero bits plus the rest of the block.
-- **Output:** real audio at `sample_rate` with the carrier at `carrier_freq`, shaped by a
-  root-raised-cosine filter (alpha 0.35, 6 symbols each side). Optional raised-cosine ramp-up.
-
-## What 110C requires (read, MIL-STD-188-110D text, same clauses as 110C)
-
-- **EOM** (§5.3.2.2.3, §5.3.2.3.1): 4B65A5B2, most significant digit first, fed to the FEC
-  encoder right after the last data bit.
-- **Flush** (§5.3.2.3.2): 144 zero bits, plus enough zeros to complete the interleaver block that
-  holds the last coder flush bit.
-- **Known data** (§5.3.2.3.7.1.2): the two known segments before each new interleaver block
-  (1440 symbols short) carry D1 and then D2: the 8-symbol Walsh pattern twice (16 symbols), then
-  4 zeros when the segment is 20 symbols long. The pattern goes through the scrambler like the
-  zeros it replaces. `test/harris/harris_score.cpp` `dpat()` and `fse()` use this form.
+- The slow ctest sweeps (`-L slow`) were not run. They exercise the receiver on the MS-DMT
+  reference recordings, not this TX.
 
 ## Next steps (in order)
 
-1. Measure in the recordings what follows the EOM: the decoded bits after the EOM to the end of
-   the signal, the number of blocks, and whether the last block carries D1/D2 probes.
-2. Add a bit-level encode path (payload bits verbatim, then the EOM, then the flush as measured)
-   and D1/D2 in the block-boundary known segments, for 600H, 1200H and 2400V. Keep RX unchanged
-   and add byte-exact loopback ctests per mode.
-3. Re-modulate 600_1's payload bits. Its dump is 442 bytes, so the EOM sits somewhere in bits
-   3529 to 3536. Read `eom_bit` from `harris_score` first: the bits between the trailer's end
-   (3522) and the EOM must go out verbatim. Write the 48 kHz, 16-bit mono WAV with 2 s of quiet before and 1 s after, matched
-   to the recording's level, and run the comparison.
-4. Probe-set design, then the fallback audio set.
+1. Probe-set paper design for the radio play-back route (`docs/harris-melpe.md`), then the
+   fallback audio set.
+2. If the radio rejects our WAV: compare the analogue side (spectrum, pulse shape, start of
+   transmission) against a recording before changing the symbol stream.
