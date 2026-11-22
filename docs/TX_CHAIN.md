@@ -174,6 +174,21 @@ With RRC pulses the modem is within about 0.7 dB of theory and meets Table XVI. 
 rectangular pulses it has a BER floor near 5e-4, and 4800S needs about 30 dB to come back
 bit-exact.
 
+### Decode quality gate
+
+`m110a_rx` and `ModemRX` say `success=1` only when the probe SNR (`quality_db`) reaches
+the mode's threshold. They measure it over the first 1440 channel symbols, or over the
+message's own symbols when the EOM shows the message is shorter. A 4800S message of a few
+bytes is two frames, and probes after the message carry no signal.
+
+4800S is uncoded, so no threshold makes `success=1` mean bit-exact: at 17 dB some decodes
+still carry 1-2 bit errors at 13-15 dB. Its threshold, 12.5 dB, was set from 440 ModemTX
+4800S decodes (1 to 400 bytes, 0 to 18 dB) and checked on 416 more. Every decode it
+admitted had BER below 1e-2 (worst 9.4e-3), and clean messages of 1 to 600 bytes score
+13.8 dB and up. Exact 1- and 23-byte messages at 18 dB
+can score 12.2 dB and stay below it. Noise after a genuine preamble, in 4800S and 2400S,
+gives `success=0` (ctest `tx_noise_gate`).
+
 ## Configuration
 
 ```cpp

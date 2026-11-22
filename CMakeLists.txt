@@ -176,6 +176,8 @@ if(M110A_HAVE_SCIPY)
     "tx_loopback_rrc|--modes ${_coded} --snr inf,10"
     "tx_loopback_rrc_4800S|--modes 4800S --snr inf,18 --seeds 1,2,3"
     "tx_loopback_rect|--modes ${_coded} --snr inf,10 --rect"
+    # message lengths around frame, block and byte boundaries
+    "tx_loopback_lengths|--modes 150S,600S,2400S,1200L,4800S --snr inf --bytes 1,23,157,158,159,400"
   )
   foreach(c ${_tx_cases})
     string(REPLACE "|" ";" _p "${c}")
@@ -185,6 +187,13 @@ if(M110A_HAVE_SCIPY)
     add_test(NAME ${_name} COMMAND ${_txlb} ${_args} --work ${CMAKE_BINARY_DIR}/rx_work/${_name})
     set_tests_properties(${_name} PROPERTIES LABELS "iq;tx" TIMEOUT 3600)
   endforeach()
+
+  # the decode-quality gate says success=0 for noise after a genuine preamble
+  add_test(NAME tx_noise_gate
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/tx/noise_gate.py
+                   --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>
+                   --work ${CMAKE_BINARY_DIR}/rx_work/tx_noise_gate)
+  set_tests_properties(tx_noise_gate PROPERTIES LABELS "iq;tx" TIMEOUT 3600)
 
   # long sweeps: ctest -L slow
   set(_all_modes 150S,150L,300S,300L,600S,600L,1200S,1200L,2400L)
