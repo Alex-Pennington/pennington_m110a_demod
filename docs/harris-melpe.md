@@ -742,8 +742,15 @@ All in the question dialog unless noted.
 - Not merged:
   - `feat/harris-blind`: the LPC-10e test, the patent sources and the review of the patent
     layout against the 600H bits.
-  - `feat/harris-synth`: a clean-room MELP synthesiser in `src/melp_synth/`, with no tables.
-    Its fast ctest passed 17/17 at handoff. The slow sweeps were not run.
+  - `feat/harris-synth`: a clean-room MELP synthesiser in `src/melp_synth/`.
+    - It holds the STANAG 4591 tables the PDF prints, as data.
+    - A fresh build passes ctest 23/23, slow sweeps included.
+    - It decodes the codebook-free fields of the three 1200H payloads exactly as the
+      reference coder reads them: the U/V patterns and the band-pass cutoffs.
+    - The LSF codebooks, the Fourier magnitude codebook and the 1200 bit/s VQ codebooks
+      are missing. Getting NATO's copy of them needs a person with NATO standardization
+      access.
+    - See *Synthesiser*, above.
   - `feat/harris-tx`: `docs/harris-tx.md` only. It records what TX does today and what is
     missing: zeros where the D1/D2 known symbols belong at block boundaries, no EOM, no
     interleaver flush, no Harris framing.
