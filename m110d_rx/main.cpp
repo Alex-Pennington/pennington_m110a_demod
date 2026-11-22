@@ -85,6 +85,7 @@ int main(int argc, char** argv) {
         std::printf("preamble=%s\n", r.preamble_shape.c_str());
         std::printf("pn=%s\n", r.pn_restart == 1 ? "restart" : "continuous");
         std::printf("freq_offset_hz=%.2f\n", r.freq_offset_hz);
+        std::printf("clock_ppm=%.1f\n", r.clock_ppm);
         std::printf("superframes=%d\n", r.superframes_seen);
         std::printf("counts=");
         for (size_t i = 0; i < r.counts.size(); i++) std::printf("%s%d", i ? "," : "", r.counts[i]);

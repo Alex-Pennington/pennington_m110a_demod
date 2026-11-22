@@ -87,6 +87,7 @@ struct WalshInput {
     long start_sym;                    // first data channel symbol
     cplx h0;                           // channel gain from the preamble fixed subsection
     long max_sym;                      // symbols available after t0
+    int sps;                           // samples per symbol
     bool verbose;
 };
 
@@ -146,6 +147,12 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
     // hypothesis with the largest |correlation|, so it does not depend on the phase of h.
     double wr = 0;
     const double kPllA = 0.21, kPllB = 0.0225;  // per channel symbol: wn 0.15, zeta 0.707
+    // Decision-directed symbol timing, second order: tau (samples) and dtau (samples per
+    // channel symbol, residual clock error). The decided hypothesis is correlated at
+    // tau +- sps/4 and |correlation| fitted with a parabola.
+    double tau = 0, dtau = 0;
+    const double kTimA = 0.1, kTimB = 0.005;
+    const double dl = std::max(1.0, in.sps / 4.0);
     double agree_sum = 0, qsum = 0;
     long qn = 0;
     r.walsh_alt_blocks = 0;
@@ -159,7 +166,7 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
             int off = (int)(((long)i * kWalshLen) % kWalshScrLen);
             cplx acc[4];
             double e;
-            walsh_corr(in, pos + (long)i * kWalshLen, off, alt, acc, &e, wr);
+            walsh_corr(in, pos + (long)i * kWalshLen, off, alt, acc, &e, wr, tau);
             double m[4];
             for (int d = 0; d < 4; d++) m[d] = std::real(acc[d] * std::conj(h)) / (std::abs(h) + 1e-12);
             int dh = (int)(std::max_element(m, m + 4) - m);
@@ -172,6 +179,16 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
             double mag = 0.8 * std::abs(h) + 0.2 * std::abs(meas);
             wr += kPllB * pe / kWalshLen;
             h = std::polar(mag, std::arg(h) + kPllA * pe + wr * kWalshLen);
+            {
+                cplx al[4], ar[4];
+                walsh_corr(in, pos + (long)i * kWalshLen, off, alt, al, nullptr, wr, tau - dl);
+                walsh_corr(in, pos + (long)i * kWalshLen, off, alt, ar, nullptr, wr, tau + dl);
+                double vl = std::abs(al[dn]), vc = std::abs(acc[dn]), vr = std::abs(ar[dn]);
+                double den = vl - 2 * vc + vr, x = 0;
+                if (den < 0) x = std::max(-1.0, std::min(1.0, 0.5 * (vl - vr) / den)) * dl;
+                dtau += kTimB * x;
+                tau += kTimA * x + dtau;
+            }
             // soft bits, positive = bit 0; first bit (MSB) is fetched first (D.5.1.2.3.1)
             double b1_0 = std::max(m[0], m[1]), b1_1 = std::max(m[2], m[3]);
             double b0_0 = std::max(m[0], m[2]), b0_1 = std::max(m[1], m[3]);
@@ -180,7 +197,7 @@ inline void decode_walsh(const WalshInput& in, RxResult& r) {
             if (alt) {
                 // block-boundary check: does the alternate set beat the normal set here?
                 cplx accn[4];
-                walsh_corr(in, pos + (long)i * kWalshLen, off, false, accn, nullptr);
+                walsh_corr(in, pos + (long)i * kWalshLen, off, false, accn, nullptr, wr, tau);
                 double an = 0, aa = 0;
                 for (int d = 0; d < 4; d++) { an = std::max(an, std::abs(accn[d])); aa = std::max(aa, std::abs(acc[d])); }
                 alt_wins = aa > an;

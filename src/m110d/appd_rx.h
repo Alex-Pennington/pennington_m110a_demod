@@ -10,6 +10,13 @@
 // transcoding here; WID 6-13 (QPSK, 8PSK, 16/32/64/256QAM) are demapped by appd_qam.h.
 // WID 0 (Walsh, no frames or probes) is decoded by appd_walsh.h.
 //
+// Synchronisation: the preamble is searched in time and over 25 Hz frequency bins (+-112 Hz);
+// the clock ratio is fitted from the fixed-subsection timing of every super-frame; WID 1-13
+// track residual frequency and symbol timing on the D.5.2.2 mini-probes, WID 0 with a
+// decision-directed carrier and timing loop. Channel estimation is one complex gain per
+// mini-probe, interpolated across the frame: there is no equaliser. An equaliser would replace
+// the per-symbol `h` in decode_payload, with the tracked `tau` and frequency ramp kept.
+//
 // Not decoded: K=9.
 #ifndef M110D_APPD_RX_H
 #define M110D_APPD_RX_H
@@ -273,6 +280,7 @@ struct RxResult {
     std::string preamble_shape;  // nine-fixed / single-fixed
     int pn_restart = -1;
     double freq_offset_hz = 0;
+    double clock_ppm = 0;  // receive clock error from the preamble timing fit
     int superframes_seen = 0;
     std::vector<int> counts;
     bool count_parity_ok = false;
@@ -319,7 +327,7 @@ public:
         if (!read_preamble(r)) return r;
         if (r.wid.waveform == 0) {  // WID 0: Walsh data, no frames or probes (Tables D-XI, D-XII)
             decode_walsh({[this](double n, double tau) { return sample(n, tau); }, data_start_sym_, h_last_,
-                          ((long)y_.size() - t0_) / sps_, opt_.verbose}, r);
+                          (long)(((double)y_.size() - spos(0)) / (sps_ * rate_)), sps_, opt_.verbose}, r);
             return r;
         }
         decode_payload(r);
@@ -335,6 +343,7 @@ private:
     int nfixed_ = 0;    // Walsh symbols in the fixed subsection
     double fo_ = 0;     // frequency offset, Hz
     double rate_ = 1;   // receive samples per nominal sample (clock ratio, 1 + ppm*1e-6)
+    double t0f_ = 0;    // fractional correction to t0_, samples
     cplx h0_ = 1.0;     // channel gain from the fixed subsection
     cplx h_last_ = 1.0;  // fixed-subsection gain of the last super-frame read
 
@@ -349,7 +358,7 @@ private:
     }
 
     // Sample index of symbol position sym_pos (from t0_) under the clock ratio, plus tau samples.
-    double spos(double sym_pos, double tau = 0) const { return (double)t0_ + sym_pos * sps_ * rate_ + tau; }
+    double spos(double sym_pos, double tau = 0) const { return (double)t0_ + t0f_ + sym_pos * sps_ * rate_ + tau; }
 
     cplx sample(double sym_pos, double tau = 0) const { return at(spos(sym_pos, tau)); }
 
@@ -525,7 +534,83 @@ private:
 
     long data_start_sym_ = 0;  // symbol offset (from t0_) of the first mini-probe
 
+    // Peak position, relative to index c, of a least-squares parabola through v[c-4..c+4]
+    // (fewer at the ends). The correlation peak is about sps samples wide, so a wide fit is
+    // steadier than three points. Clamped to +-1 sample.
+    static double peak_offset(const std::vector<double>& v, int c) {
+        double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, t0 = 0, t1 = 0, t2 = 0;
+        for (int d = -4; d <= 4; d++) {
+            int i = c + d;
+            if (i < 0 || i >= (int)v.size()) continue;
+            double x = d, x2 = x * x;
+            s0 += 1; s1 += x; s2 += x2; s3 += x2 * x; s4 += x2 * x2;
+            t0 += v[i]; t1 += x * v[i]; t2 += x2 * v[i];
+        }
+        // normal equations for v = a + b x + c2 x^2 (Cramer's rule)
+        double D = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+        if (std::fabs(D) < 1e-12) return 0;
+        double Db = s0 * (t1 * s4 - s3 * t2) - t0 * (s1 * s4 - s3 * s2) + s2 * (s1 * t2 - t1 * s2);
+        double Dc = s0 * (s2 * t2 - t1 * s3) - s1 * (s1 * t2 - t1 * s2) + t0 * (s1 * s3 - s2 * s2);
+        double b = Db / D, c2 = Dc / D;
+        if (c2 >= 0) return 0;
+        return std::max(-1.0, std::min(1.0, -b / (2 * c2)));
+    }
+
+    // Symbol timing over the preamble: fine-time the fixed subsection of every super-frame
+    // that correlates, nearest the acquired one first, each predicted from a least-squares
+    // line through those already found; the line's slope is the clock ratio and its
+    // intercept the fractional start. A peak measured with the wrong chip spacing is biased
+    // by the stretch over half the subsection, so every super-frame found is then
+    // re-measured under the fitted ratio and the line refitted, twice.
+    void fit_clock(RxResult& r) {
+        std::vector<std::pair<double, double>> pts;  // (super-frame index, peak sample)
+        const int W = std::max(2, (2 * sps_) / 5);      // +-0.4 symbol search
+        auto refit = [&]() {
+            if (pts.size() < 2) return;
+            double n = (double)pts.size(), sx = 0, sy = 0, sxx = 0, sxy = 0;
+            for (auto& p : pts) { sx += p.first; sy += p.second; sxx += p.first * p.first; sxy += p.first * p.second; }
+            double b = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+            double a = (sy - b * sx) / n;
+            rate_ = b / ((double)sf_len_ * sps_);
+            t0f_ = a - (double)t0_;
+        };
+        auto measure = [&](long m, double& peak) {
+            double tp = spos((double)(m * sf_len_));
+            if (tp - W < 0 || spos((double)((m + 1) * sf_len_)) + W >= (double)y_.size()) return false;
+            int bk = 0;
+            double bq = 0;
+            std::vector<double> qv(2 * W + 1);
+            for (int d = -W; d <= W; d++) {
+                qv[d + W] = corr_at(tp + d, fixed_chips_);
+                if (qv[d + W] > bq) { bq = qv[d + W]; bk = d; }
+            }
+            if (bq < 0.5) return false;
+            peak = tp + bk + peak_offset(qv, bk + W);
+            return true;
+        };
+        for (int k = 0; k <= 62; k++) {
+            long m = (k + 1) / 2 * (k % 2 ? 1 : -1);  // 0, 1, -1, 2, -2, ...
+            double pk;
+            if (!measure(m, pk)) continue;
+            pts.push_back({(double)m, pk});
+            if (pts.size() == 1) t0f_ = pk - (double)t0_ - (double)m * sf_len_ * sps_ * rate_;
+            refit();
+        }
+        for (int pass = 0; pass < 2 && pts.size() >= 2; pass++) {
+            std::vector<std::pair<double, double>> again;
+            for (auto& p : pts) {
+                double pk;
+                if (measure((long)p.first, pk)) again.push_back({p.first, pk});
+            }
+            if (again.size() < 2) break;
+            pts = again;
+            refit();
+        }
+        r.clock_ppm = (rate_ - 1) * 1e6;
+    }
+
     bool read_preamble(RxResult& r) {
+        fit_clock(r);
         // Walk super-frames backwards and forwards from the acquired one while the fixed
         // subsection correlates; decode count and WID in each.
         double wid_sc[kWidSyms][4] = {};
@@ -682,14 +767,42 @@ private:
         const double Tf = (double)(U + K);  // symbols between probe centres
         double fr = 0, dfr = 0;
         const double kFrA = 0.5, kFrB = 0.15;
+        // Symbol timing tracking on the same probes: tau is the timing offset in samples at a
+        // probe, dtau its change per frame (residual clock error after rate_). The probe is
+        // correlated at tau_pred and +-sps/4 and |gain| is fitted with a parabola; the update
+        // is skipped on a probe below quality 0.6 (a fade), and dtau is held to +-1000 ppm.
+        double tau = 0, dtau = 0;
+        // Low gains: the preamble fit carries the clock ratio, the loop only trims it. Gains of
+        // 0.5 / 0.1 cost seeds on the fading channels, where multipath moves the probe peak
+        // (measured on files 29 and 41, ITU good, 10 seeds).
+        const double kTauA = 0.15, kTauB = 0.01;
+        const double dl = std::max(1.0, sps_ / 4.0);
+        const double dtau_max = 1e-3 * Tf * sps_;
         for (int frame = 0;; frame++) {
             long next_probe = pos + U;
             if (spos((double)(next_probe + K)) >= (double)y_.size()) break;
             const double fr_pred = fr + dfr;
             const double th_pred = 2 * M_PI * 0.5 * (fr + fr_pred) * Tf;
+            const double tau_pred = tau + dtau;
             double qa, qb;
-            cplx ha = probe_gain(next_probe, probe, &qa, fr_pred);
-            cplx hb = probe_gain(next_probe, probe_b, &qb, fr_pred);
+            cplx ha = probe_gain(next_probe, probe, &qa, fr_pred, tau_pred);
+            cplx hb = probe_gain(next_probe, probe_b, &qb, fr_pred, tau_pred);
+            const bool use_b = qb > qa;
+            const std::vector<cplx>& pr = use_b ? probe_b : probe;
+            double tau_next = tau_pred;
+            if (std::max(qa, qb) >= 0.6) {
+                double vl = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred - dl));
+                double vc = std::abs(use_b ? hb : ha);
+                double vr = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred + dl));
+                double den = vl - 2 * vc + vr, x = 0;
+                if (den < 0) x = std::max(-1.0, std::min(1.0, 0.5 * (vl - vr) / den)) * dl;
+                tau_next = tau_pred + kTauA * x;
+                dtau = std::max(-dtau_max, std::min(dtau_max, dtau + kTauB * x));
+                if (tau_next != tau_pred) {
+                    ha = probe_gain(next_probe, probe, &qa, fr_pred, tau_next);
+                    hb = probe_gain(next_probe, probe_b, &qb, fr_pred, tau_next);
+                }
+            }
             cplx h_next = qa >= qb ? ha : hb;
             if (qb > qa) r.boundary_frames.push_back(frame);
             double qn_ = std::max(qa, qb);
@@ -710,7 +823,7 @@ private:
             for (int i = 0; i < U; i++) {
                 double a = ((double)i - c_prev) / Tf;
                 cplx h = (h_prev * (1 - a) + hn0 * a) * std::polar(1.0, th * a);
-                cplx z = sample((double)(pos + i)) * std::conj(h) / (std::norm(h) + 1e-12);
+                cplx z = sample((double)(pos + i), tau + (tau_next - tau) * a) * std::conj(h) / (std::norm(h) + 1e-12);
                 if (wp->bits_per_sym > 1) { zf.push_back(z); continue; }
                 z *= std::conj(psk8(scr.value3()));
                 scr.shift(opt_.bpsk_scr_shifts);
@@ -719,6 +832,7 @@ private:
             if (wp->bits_per_sym > 1)  // WID 6-13: appd_qam.h
                 demap_frame(wp->bits_per_sym, zf, opt_.psk_scr_shifts, opt_.qam_scale, blk, r.qam);
             h_prev = h_next;
+            tau = tau_next;
             pos = next_probe + K;
             if ((int)blk.size() == nbits) {
                 // D.5.3.3.2 load / D.5.3.3.3 fetch: punctured bit n sits at (n*inc) mod size
