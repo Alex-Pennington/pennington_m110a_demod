@@ -377,10 +377,11 @@ private:
         }
         printf("msg=%d start_s=%.3f end_s=%.3f mode=%s preamble_hits=%d acq_metric=%.2f "
                "acq_foff_hz=%+.2f success=%d quality_db=%.1f quality_threshold_db=%.1f eom=%d "
-               "bytes=%zu snr_db=%.1f err=\"%s\"\n",
+               "bytes=%zu snr_db=%.1f d1=%d d2=%d countdown=%d err=\"%s\"\n",
                m.id, a_first / FS, a1 / FS, mode_name(r.mode).c_str(), m.hits, m.metric,
                m.freq, r.success ? 1 : 0, r.quality_db, r.quality_threshold_db,
-               eom_bit >= 0 ? 1 : 0, d.size(), r.snr_db, r.error ? r.error->message.c_str() : "");
+               eom_bit >= 0 ? 1 : 0, d.size(), r.snr_db, r.d1, r.d2, r.countdown,
+               r.error ? r.error->message.c_str() : "");
         printf("  text=\"%s\"\n  hex=%s\n", text.c_str(), hex.c_str());
         fflush(stdout);
         if (r.success) decoded_ok_++;

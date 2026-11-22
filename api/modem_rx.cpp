@@ -94,7 +94,8 @@ public:
             
             BrainDecoder detector(detect_cfg);
             auto detect_result = detector.decode(samples);
-            
+            record_preamble(detect_result, result);
+
             // Check mode detection
             if (detect_result.mode_name == "UNKNOWN" || detect_result.correlation < 0.5f) {
                 result.success = false;
@@ -546,6 +547,38 @@ private:
     /// decodes as they were and lifts quiet ones to the same operating point.
     static constexpr double NOMINAL_SYMBOL_RMS = 0.55;
     
+    /// Copy what the AUTO pass read from the preamble into the result, and
+    /// print it on one line to stdout (m110a_rx passes stdout through under -v):
+    /// D1/D2 with best and runner-up correlation, the three count digits with
+    /// theirs, and the mode they map to.
+    static void record_preamble(const BrainDecodeResult& d, DecodeResult& r) {
+        if (!d.preamble_found) {
+            std::cout << "[RX PREAMBLE] not found corr=" << d.correlation << std::endl;
+            return;
+        }
+        r.d1 = d.d1;
+        r.d2 = d.d2;
+        r.countdown = d.countdown;
+        int raw = 0;
+        for (int i = 0; i < 3; i++) {
+            if (d.count_d[i] < 4) { raw = -1; break; }
+            raw = (raw << 2) | (d.count_d[i] - 4);
+        }
+        r.countdown_raw = raw;
+        char buf[512];
+        snprintf(buf, sizeof buf,
+                 "[RX PREAMBLE] common_corr=%.3f acc=%.1f%% foff=%+.2f Hz "
+                 "D1=%d (%.3f, 2nd D%d %.3f) D2=%d (%.3f, 2nd D%d %.3f) "
+                 "count=%d,%d,%d (%.3f/%.3f %.3f/%.3f %.3f/%.3f) countdown_raw=%d countdown=%d mode=%s",
+                 d.correlation, d.accuracy, d.freq_offset_hz,
+                 d.d1, d.d1_corr, d.d1_second, d.d1_corr2,
+                 d.d2, d.d2_corr, d.d2_second, d.d2_corr2,
+                 d.count_d[0], d.count_d[1], d.count_d[2],
+                 d.count_corr[0], d.count_corr2[0], d.count_corr[1], d.count_corr2[1],
+                 d.count_corr[2], d.count_corr2[2], raw, d.countdown, d.mode_name.c_str());
+        std::cout << buf << std::endl;
+    }
+
     /// Scale preamble and data symbols so the common preamble has the nominal RMS.
     static void normalize_symbol_level(BrainDecodeResult& r) {
         int n = std::min<int>(brain::P_COMMON_LENGTH, static_cast<int>(r.preamble_symbols.size()));
