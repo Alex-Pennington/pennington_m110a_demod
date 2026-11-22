@@ -763,10 +763,12 @@ factorisation and weights its soft decisions into the existing Viterbi decoder.
    position to the end of the input. A probe with one-tap correlation below 0.3 does not update
    the frequency loop.
 2. **Support.** The probe-averaged periodic power-delay profile gives the delays that carry
-   energy, modulo L. Each way of unwrapping it into a span of at most K-L delays is scored by
-   a least-squares fit on the probe samples that span leaves free of data; ties within 2.5x go
-   to the shortest span. The chosen arc +-2 delays is then thresholded at 2.5x the noise of the
-   periodic estimate.
+   energy, modulo L. Each way of unwrapping it into a span of at most K-L delays that places
+   the strongest delay at |d| <= L/2 is scored by a least-squares fit on the probe samples that
+   span leaves free of data (the timing loop centres the probe on the strongest path, and the
+   residual alone favours an alias a base period away when the probe carries a residual
+   frequency error). Ties within 2.5x go to the shortest span. The chosen arc +-2 delays is
+   then thresholded at 2.5x the noise of the periodic estimate.
 3. **CIR per probe.** A least-squares fit on that support uses every clean probe sample (K for
    a single path, as the one-tap estimate did). The signal ends at the first two probes in a row
    whose fit explains less than 0.2 of what it can.
@@ -789,15 +791,21 @@ Baseline is master `79de273`, re-measured here with the same runner, seeds and j
 reproduces the tables above (static 6/45, fading 93/400). Matrices run one at a time
 (`--matrix X --seeds 3`, fading `--seeds 10`, `--jobs 2`):
 
-| Matrix | 79de273 | eq at 2d66ba3 | eq at c5e4eb7 | Rows with a worse cell |
+| Matrix | 79de273 | eq at 2d66ba3 | eq at master 1f02930 | eq at fix/110d-drift |
 |---|---|---|---|---|
-| default (110 runs) | 95 | 103 | 104 | none |
-| awgn (150) | 111 | 116 | not run in full | none |
-| foff (240) | 240 | 240 | not run in full | none |
-| drift (105) | 105 | 105 | not run in full | none |
-| ppm (270) | 270 | 270 | not run in full | none |
-| static (45) | 6 | 36 | see below | none |
-| fading, 10 seeds (400) | 93 | 310 | see below | none |
+| default (110 runs) | 95 | 103 | 104 | 104 |
+| awgn (150) | 111 | 116 | 116 | 116 |
+| foff (240) | 240 | 240 | 240 | 240 |
+| drift (105) | 105 | 105 | 100 | 105 |
+| ppm (270) | 270 | 270 | 270 | 270 |
+| static (45) | 6 | 36 | 36 | 36 |
+| fading, 10 seeds (400) | 93 | 310 | 322 | 322 |
+
+The last two columns are full runs of every matrix from fresh builds (`--matrix
+default,awgn,foff,drift,ppm,static --seeds 3` and `--matrix fading --seeds 10`, `--jobs 3`).
+They differ in five drift cells, each 2/3 on master and 3/3 on `fix/110d-drift` (files
+1/13/53/29/41): fdrift +3.5 Hz/s @30 on WID 10; fdrift -3.5 Hz/s @30 on WID 13, 7 and 10;
+sweep D.6.5 @30 on WID 10. Every other cell is equal.
 
 Fading at `2d66ba3`, 10 seeds:
 
@@ -835,7 +843,6 @@ improve through the acquisition change; the equaliser does not touch WID 0.
 
 ### Not done
 
-- The full matrix at `c5e4eb7`, except default, was not complete when this was written.
 - WID 0 has no equaliser (no probes): still 0/10 on Poor.
 - WID 12 on Poor @30 still fails (2 seeds tried). Table D-LXIV gives no Poor requirement for
   WID 11-12.
