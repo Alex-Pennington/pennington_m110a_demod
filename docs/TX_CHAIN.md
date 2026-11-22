@@ -141,8 +141,9 @@ for (symbol : symbols) {
   and the message end separately would put those 12 symbols between them, and the receiver
   would read the data 12 symbols late.
 
-Samples per symbol is `int(sample_rate / 2400)`: 20 at 48 kHz. At 8 kHz that is 3, so the
-symbol rate would be 2667 Bd. Use 48 kHz.
+Samples per symbol is `sample_rate / 2400`: 20 at 48 kHz. `TxConfig` and `RxConfig` take
+48 kHz only, and `encode()` and `decode()` refuse any other rate. At 8 kHz it would be
+3.33, and the modem, which runs a whole number of samples per symbol, would send 2667 Bd.
 
 ## Measured performance
 
@@ -195,7 +196,7 @@ gives `success=0` (ctest `tx_noise_gate`).
 ```cpp
 TxConfig tx_cfg;
 tx_cfg.mode = Mode::M2400_SHORT;
-tx_cfg.sample_rate = 48000.0f;     // or 8000
+tx_cfg.sample_rate = 48000.0f;     // the only rate taken (see Modulation)
 tx_cfg.carrier_freq = 1800.0f;     // 500-3000 Hz
 tx_cfg.amplitude = 0.8f;           // 0.0-1.0
 tx_cfg.include_preamble = true;    // Add sync preamble

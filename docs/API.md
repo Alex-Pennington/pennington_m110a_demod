@@ -130,7 +130,7 @@ ModemTX tx(TxConfig::for_mode(Mode::M1200_SHORT));
 ```cpp
 struct TxConfig {
     Mode mode = Mode::M2400_SHORT;    // Operating mode
-    float sample_rate = 8000.0f;      // 8000 or 48000 Hz
+    float sample_rate = 48000.0f;     // 48000 Hz only: whole samples per symbol
     float carrier_freq = 1800.0f;     // 500-3000 Hz
     float amplitude = 0.8f;           // 0.0-1.0
     bool include_preamble = true;     // Add sync preamble
@@ -198,7 +198,7 @@ ModemRX rx(RxConfig::for_mode(Mode::M2400_SHORT));
 ```cpp
 struct RxConfig {
     Mode mode = Mode::AUTO;           // AUTO for auto-detection
-    float sample_rate = 8000.0f;      // 8000 or 48000 Hz
+    float sample_rate = 48000.0f;     // 48000 Hz only: whole samples per symbol
     float carrier_freq = 1800.0f;     // Expected carrier
     float freq_search_range = 100.0f; // Search ±100 Hz
     Equalizer equalizer = Equalizer::DFE;

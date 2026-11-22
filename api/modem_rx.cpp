@@ -69,6 +69,12 @@ public:
         
         state_ = RxState::SEARCHING;
         DecodeResult result;
+        auto valid = config_.validate();  // the constructor takes the config unchecked
+        if (!valid.ok()) {
+            result.error = valid.error();
+            state_ = RxState::DECODE_ERROR;
+            return result;
+        }
         
         ModeId mode_id;
         float detected_freq_offset = 0.0f;
@@ -718,6 +724,12 @@ private:
     mutable std::mutex mutex_;
     
     DecodeResult decode_internal(const Samples& samples) {
+        auto valid = config_.validate();
+        if (!valid.ok()) {
+            DecodeResult r;
+            r.error = valid.error();
+            return r;
+        }
         // First pass - detect mode
         BrainDecoderConfig detect_cfg;
         detect_cfg.sample_rate = config_.sample_rate;

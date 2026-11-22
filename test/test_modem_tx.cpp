@@ -6,6 +6,8 @@
 // d1d2:  in the symbols M110ACodec sends, the probes of the last two frames of every
 //        interleaver block carry D1 and D2 (Walsh pattern twice, then zeros), all other
 //        probes are zero (MIL-STD-188-110 5.3.2.3.7.1.2).
+// rate:  8 kHz (3.33 samples per symbol) is refused by TxConfig/RxConfig validation,
+//        by ModemTX::encode and by ModemRX::decode; 48 kHz is taken.
 #include "api/modem.h"
 #include "modem/m110a_codec.h"
 
@@ -98,11 +100,33 @@ void d1d2() {
     }
 }
 
+void rate() {
+    for (float sr : {8000.0f, 9600.0f, 44100.0f, 48000.0f}) {
+        const bool want = sr == 48000.0f;
+        TxConfig t;
+        t.sample_rate = sr;
+        RxConfig r;
+        r.sample_rate = sr;
+        const bool tx_valid = t.validate().ok(), rx_valid = r.validate().ok();
+        auto e = ModemTX(t).encode(payload(10));
+        Samples s(48000, 0.0f);
+        auto d = ModemRX(r).decode(s);
+        const bool rx_refused = d.error && d.error->code == ErrorCode::INVALID_SAMPLE_RATE;
+        printf("rate  %6.0f Hz: TxConfig %s, RxConfig %s, encode %s, decode %s\n", sr,
+               tx_valid ? "valid" : "refused", rx_valid ? "valid" : "refused",
+               e.ok() ? "ok" : "refused", rx_refused ? "refused" : "taken");
+        check(tx_valid == want && rx_valid == want, "validate: 48000 only");
+        check(e.ok() == want, "encode refuses a rate without whole samples per symbol");
+        check(rx_refused == !want, "decode refuses a rate without whole samples per symbol");
+    }
+}
+
 }  // namespace
 
 int main() {
     level();
     d1d2();
+    rate();
     printf(failures ? "test_modem_tx: %d FAILED\n" : "test_modem_tx: all passed\n", failures);
     return failures ? 1 : 0;
 }

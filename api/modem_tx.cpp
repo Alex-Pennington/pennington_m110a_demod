@@ -60,6 +60,8 @@ public:
     
     Result<Samples> encode(const std::vector<uint8_t>& data) {
         std::lock_guard<std::mutex> lock(mutex_);
+        auto valid = config_.validate();  // the constructor takes the config unchecked
+        if (!valid.ok()) return valid.error();
         
         if (data.empty()) {
             return Error(ErrorCode::TX_DATA_EMPTY);
@@ -134,6 +136,8 @@ public:
     
     Result<Samples> encode_bits(const std::vector<uint8_t>& bits, std::vector<int>* symbols) {
         std::lock_guard<std::mutex> lock(mutex_);
+        auto valid = config_.validate();
+        if (!valid.ok()) return valid.error();
         if (bits.empty()) return Error(ErrorCode::TX_DATA_EMPTY);
         if (!is_bits_mode(api_to_internal_mode(config_.mode))) {
             return Error(ErrorCode::NOT_IMPLEMENTED, "encode_bits: 600H and 1200H only");
@@ -143,6 +147,8 @@ public:
 
     Result<Samples> generate_preamble() {
         std::lock_guard<std::mutex> lock(mutex_);
+        auto valid = config_.validate();
+        if (!valid.ok()) return valid.error();
         ModeId mode_id = api_to_internal_mode(config_.mode);
         auto symbols = generate_preamble(mode_id);
         return config_.use_pulse_shaping ? 
