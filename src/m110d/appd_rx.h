@@ -1108,10 +1108,26 @@ private:
                 // Pulse tails just outside the arc would pollute the edge observations of one
                 // hypothesis and not another: every hypothesis is scored with two delays of
                 // margin each side (classes not already used), when the probe allows it.
+                // Gaps of up to four delays inside the arc are filled first: the first threshold
+                // can miss a tap between two strong ones (WID 12, Table D-LXV, measured), and a
+                // wrong unwrapping can then cover it with an aliased margin delay.
+                std::vector<int> cls(L, 0);
+                for (int d : taps) cls[((d % L) + L) % L] = 1;
+                {
+                    std::vector<int> filled;
+                    for (size_t i = 0; i < taps.size(); i++) {
+                        filled.push_back(taps[i]);
+                        if (i + 1 < taps.size() && taps[i + 1] - taps[i] <= 5)
+                            for (int d = taps[i] + 1; d < taps[i + 1]; d++) {
+                                int k = ((d % L) + L) % L;
+                                if (!cls[k]) { filled.push_back(d); cls[k] = 1; }
+                            }
+                    }
+                    std::sort(filled.begin(), filled.end());
+                    taps = filled;
+                }
                 std::vector<int> wide = taps;
                 {
-                    std::vector<int> cls(L, 0);
-                    for (int d : taps) cls[((d % L) + L) % L] = 1;
                     for (int e = 1; e <= 2; e++)
                         for (int d : {taps.front() - e, taps.back() + e}) {
                             int k = ((d % L) + L) % L;
@@ -1143,31 +1159,53 @@ private:
             }
         }
         best = best_v;
-        // Refine the support on the chosen arc (+-2 delays) with the noise level just measured:
-        // a delay is kept when its averaged power exceeds 2.5 x the periodic estimate's noise.
-        double sigma2 = best;
-        std::vector<int> taps;
+        // Refine the support on the chosen arc (+-2 delays). The noise level comes from a fit
+        // of every delay of that range (one per class mod L), when the probe leaves enough
+        // clean observations for it; otherwise from the chosen hypothesis, whose residual also
+        // holds the taps the first threshold left out (WID 12, ITU Poor, measured). A delay is
+        // kept when its averaged power exceeds 2.5 x the periodic estimate's noise.
+        std::vector<int> range;
         {
             std::vector<int> cls(L, 0);
-            const double thr = std::max(2.5 * sigma2 / L, 1e-5 * Pmax);
             for (int d = best_taps.front(); d <= best_taps.back(); d++) {
                 int k = ((d % L) + L) % L;
-                if (!cls[k] && (Pc[k] > thr || k == kmax)) { taps.push_back(d); cls[k] = 1; }
+                if (!cls[k]) { range.push_back(d); cls[k] = 1; }
             }
-            for (int e = 1; e <= 2; e++) {
+            for (int e = 1; e <= 2; e++)
                 for (int d : {best_taps.front() - e, best_taps.back() + e}) {
                     int k = ((d % L) + L) % L;
-                    if (!cls[k] && Pc[k] > thr) { taps.push_back(d); cls[k] = 1; }
+                    if (!cls[k]) { range.push_back(d); cls[k] = 1; }
                 }
-            }
-            std::sort(taps.begin(), taps.end());
+            std::sort(range.begin(), range.end());
         }
+        double sigma2 = best;
         ProbeFit fa, fb;
+        const double v_range = support_residual(range, K, L, probe, probe_b, sub, fa, fb);
+        if (v_range < sigma2) sigma2 = v_range;
+        std::vector<int> taps;
+        {
+            const double thr = std::max(2.5 * sigma2 / L, 1e-5 * Pmax);
+            for (int d : range) {
+                int k = ((d % L) + L) % L;
+                if (Pc[k] > thr || k == kmax) taps.push_back(d);
+            }
+        }
         double v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
-        while (v >= 1e300 && taps.size() > 1) {  // too wide for the probe: drop the weaker end
-            const int kf = ((taps.front() % L) + L) % L, kb = ((taps.back() % L) + L) % L;
-            if (Pc[kf] < Pc[kb]) taps.erase(taps.begin());
-            else taps.pop_back();
+        // Too many taps for the clean observations the span leaves: drop the weakest tap, or
+        // the weaker end when the span alone leaves too few observations.
+        auto pcd = [&](int d) { return Pc[(size_t)(((d % L) + L) % L)]; };
+        while (v >= 1e300 && taps.size() > 1) {
+            const int span = taps.back() - taps.front();
+            if (K - span - 2 >= 2) {
+                size_t w = 0;
+                for (size_t i = 1; i < taps.size(); i++)
+                    if (pcd(taps[i]) < pcd(taps[w])) w = i;
+                taps.erase(taps.begin() + (long)w);
+            } else if (pcd(taps.front()) < pcd(taps.back())) {
+                taps.erase(taps.begin());
+            } else {
+                taps.pop_back();
+            }
             v = support_residual(taps, K, L, probe, probe_b, sub, fa, fb);
         }
         if (v >= 1e300) return false;
