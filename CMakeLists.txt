@@ -41,6 +41,10 @@ add_executable(hfchansim hfchansim/main.cpp)
 add_executable(m110a_rx m110a_rx/main.cpp)
 target_link_libraries(m110a_rx PRIVATE m110a_modem)
 
+# Harris-mode transmitter: payload bits -> WAV (600H, 1200H; docs/harris-tx.md)
+add_executable(m110a_tx m110a_tx/main.cpp)
+target_link_libraries(m110a_tx PRIVATE m110a_modem)
+
 # MIL-STD-188-110D Appendix D (3 kHz) receiver: WAV -> WID, interleaver, text
 add_executable(m110d_rx m110d_rx/main.cpp)
 
@@ -54,7 +58,7 @@ add_executable(m110d_chan m110d_chan/main.cpp)
 # over the Harris MELP test set; docs/harris-melpe.md)
 add_executable(harris_score test/harris/harris_score.cpp)
 
-set_target_properties(m110a_server hfchansim m110a_rx m110d_rx m110d_chan harris_score PROPERTIES
+set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_chan harris_score PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----

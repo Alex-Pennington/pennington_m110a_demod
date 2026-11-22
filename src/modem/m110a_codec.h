@@ -340,7 +340,103 @@ public:
         
         return output;
     }
-    
+
+    /**
+     * Encode one whole message the way MIL-STD-188-110C/D ends it, from payload bits.
+     *
+     * The FEC encoder takes, as one continuous stream: the payload bits verbatim (each
+     * 0 or 1, in transmit order), the EOM 4B65A5B2 most significant digit first
+     * (§5.3.2.3.1), 144 zero bits, then zeros up to the end of the interleaver block
+     * holding the last of them (§5.3.2.3.2). No further tail is added: the 144 zeros
+     * flush the K=7 encoder. In the two known segments before each new interleaver
+     * block, the last two of every block, the 8-symbol Walsh pattern of D1 and then D2
+     * goes out twice, plus 4 zeros when the segment is 20 symbols long, through the
+     * same scrambler as the zeros it replaces (§5.3.2.3.7.1.2). The last block of the
+     * message carries them too, as the Harris RT-1694D sends (docs/harris-tx.md).
+     *
+     * Supports the coded short and long modes with probes and no bit repetition
+     * (600 to 2400 bps); returns an empty vector for any other mode.
+     *
+     * @param bits     payload bits, each 0 or 1
+     * @param sym_idx  if not null, receives the 8PSK position (0-7) of every symbol
+     * @return data and probe symbols, starting with the first data symbol after the
+     *         preamble
+     */
+    std::vector<complex_t> encode_message_bits(const std::vector<uint8_t>& bits,
+                                               std::vector<int>* sym_idx = nullptr) {
+        const int unknown_len = config_.unknown_data_len;
+        const int known_len = config_.known_data_len;
+        const int bps = config_.bits_per_symbol;
+        const int block_size = interleaver_.block_size();
+        if (unknown_len == 0 || known_len == 0 || config_.bps == 4800 ||
+            config_.symbol_repetition != 1 || block_size % 2 != 0 ||
+            (block_size / bps) % unknown_len != 0) {
+            return {};
+        }
+        const int frames_per_block = block_size / bps / unknown_len;
+        if (frames_per_block < 2) return {};
+
+        // Information bits: payload, EOM, 144-bit flush, zeros to the block end
+        static const uint32_t EOM = 0x4B65A5B2u;
+        std::vector<int> info(bits.begin(), bits.end());
+        for (int i = 31; i >= 0; i--) info.push_back((EOM >> i) & 1);
+        info.insert(info.end(), 144, 0);
+        const size_t info_per_block = block_size / 2;
+        while (info.size() % info_per_block != 0) info.push_back(0);
+
+        // Rate 1/2, K=7, one continuous stream (the zeros above are the flush)
+        std::vector<int> coded = fec_encode(info);
+        coded.resize(info.size() * 2);
+
+        // Interleave block by block, then tribits / dibits / bits, MSB first
+        std::vector<int> labels;
+        labels.reserve(coded.size() / bps);
+        for (size_t b = 0; b < coded.size(); b += block_size) {
+            std::vector<soft_bit_t> blk(coded.begin() + b, coded.begin() + b + block_size);
+            auto il = interleaver_.interleave(blk);
+            for (size_t i = 0; i + bps <= il.size(); i += bps) {
+                int v = 0;
+                for (int k = 0; k < bps; k++) if (il[i + k] > 0) v |= 1 << (bps - 1 - k);
+                labels.push_back(v);
+            }
+        }
+
+        // Walsh patterns (0 or 4) of D1 and D2, as the preamble's mode segment uses
+        static const int WALSH[8][8] = {
+            {0,0,0,0,0,0,0,0}, {0,4,0,4,0,4,0,4}, {0,0,4,4,0,0,4,4}, {0,4,4,0,0,4,4,0},
+            {0,0,0,0,4,4,4,4}, {0,4,0,4,4,0,4,0}, {0,0,4,4,4,4,0,0}, {0,4,4,0,4,0,0,4}};
+        const int d1 = config_.d1_sequence & 7, d2 = config_.d2_sequence & 7;
+
+        std::vector<complex_t> output;
+        DataScramblerFixed scrambler;
+        const size_t nframes = labels.size() / unknown_len;
+        output.reserve(nframes * (unknown_len + known_len));
+        if (sym_idx) { sym_idx->clear(); sym_idx->reserve(output.capacity()); }
+        auto emit = [&](int pos) {
+            output.push_back(PSK8_POINTS[pos & 7]);
+            if (sym_idx) sym_idx->push_back(pos & 7);
+        };
+        for (size_t f = 0; f < nframes; f++) {
+            for (int i = 0; i < unknown_len; i++) {
+                int v = labels[f * unknown_len + i];
+                int gray;
+                switch (config_.modulation) {
+                    case Modulation::BPSK: gray = v ? 4 : 0; break;
+                    case Modulation::QPSK: gray = QPSK_SYMBOLS[MGD2[v & 3]]; break;
+                    case Modulation::PSK8: default: gray = MGD3[v & 7]; break;
+                }
+                emit(gray + scrambler.next());
+            }
+            const int fb = static_cast<int>(f % frames_per_block);
+            const int d = fb == frames_per_block - 2 ? d1 : fb == frames_per_block - 1 ? d2 : -1;
+            for (int k = 0; k < known_len; k++) {
+                int pat = (d >= 0 && k < 16) ? WALSH[d][k % 8] : 0;
+                emit(pat + scrambler.next());
+            }
+        }
+        return output;
+    }
+
     // ========================================================================
     // RX Pipeline
     // ========================================================================

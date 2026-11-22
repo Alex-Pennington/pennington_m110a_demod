@@ -71,7 +71,18 @@ public:
         if (mode_id == ModeId::M75NS || mode_id == ModeId::M75NL) {
             return Error(ErrorCode::NOT_IMPLEMENTED, "M75 modes not yet supported");
         }
-        
+
+        // Harris modes: whole 110C message from bits (EOM, flush, D1/D2 probes)
+        if (is_bits_mode(mode_id)) {
+            std::vector<uint8_t> bits;
+            bits.reserve(data.size() * 8);
+            for (uint8_t b : data)
+                for (int i = 0; i < 8; i++) bits.push_back((b >> i) & 1);  // LSB first
+            auto r = encode_bits_locked(bits, nullptr);
+            if (r.ok()) stats_.bytes_transmitted += data.size();
+            return r;
+        }
+
         Samples output;
         
         // Reset NCO phase for consistent output
@@ -126,6 +137,15 @@ public:
         return output;
     }
     
+    Result<Samples> encode_bits(const std::vector<uint8_t>& bits, std::vector<int>* symbols) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (bits.empty()) return Error(ErrorCode::TX_DATA_EMPTY);
+        if (!is_bits_mode(api_to_internal_mode(config_.mode))) {
+            return Error(ErrorCode::NOT_IMPLEMENTED, "encode_bits: 600H and 1200H only");
+        }
+        return encode_bits_locked(bits, symbols);
+    }
+
     Result<Samples> generate_preamble() {
         std::lock_guard<std::mutex> lock(mutex_);
         ModeId mode_id = api_to_internal_mode(config_.mode);
@@ -200,6 +220,46 @@ private:
     static constexpr float RRC_ALPHA = 0.35f;
     static constexpr int RRC_SPAN = 6;  // symbols each side
     
+    static bool is_bits_mode(ModeId m) {
+        return m == ModeId::M600H || m == ModeId::M1200H;
+    }
+
+    static int psk8_position(const complex_t& s) {
+        int p = static_cast<int>(std::lround(std::atan2(s.imag(), s.real()) * 4.0 / M_PI));
+        return ((p % 8) + 8) % 8;
+    }
+
+    // Caller holds mutex_. Leading symbols (if configured) are modulated on their own,
+    // as encode() does; preamble, data and the message end as one stream.
+    Result<Samples> encode_bits_locked(const std::vector<uint8_t>& bits, std::vector<int>* symbols) {
+        ModeId mode_id = api_to_internal_mode(config_.mode);
+        std::vector<int> data_idx;
+        auto data_syms = codec_.encode_message_bits(bits, &data_idx);
+        if (data_syms.empty()) {
+            return Error(ErrorCode::NOT_IMPLEMENTED, "mode has no 110C message encoder");
+        }
+        nco_ = NCO(config_.sample_rate, config_.carrier_freq);
+        Samples output;
+        if (config_.include_leading_symbols) {
+            auto lead = generate_leading_symbols();
+            auto a = config_.use_pulse_shaping ? modulate_with_rrc(lead) : modulate_simple(lead);
+            output.insert(output.end(), a.begin(), a.end());
+        }
+        std::vector<complex_t> stream;
+        if (config_.include_preamble) stream = generate_preamble(mode_id);
+        if (symbols) {
+            symbols->clear();
+            for (const auto& s : stream) symbols->push_back(psk8_position(s));
+            symbols->insert(symbols->end(), data_idx.begin(), data_idx.end());
+        }
+        stream.insert(stream.end(), data_syms.begin(), data_syms.end());
+        auto a = config_.use_pulse_shaping ? modulate_with_rrc(stream) : modulate_simple(stream);
+        output.insert(output.end(), a.begin(), a.end());
+        if (config_.soft_ramp_ms > 0.0f && !output.empty()) apply_soft_ramp(output);
+        stats_.frames_transmitted++;
+        return output;
+    }
+
     void init_pulse_shaping() {
         sps_ = static_cast<int>(config_.sample_rate / 2400.0f);
         rrc_taps_ = generate_srrc_taps(RRC_ALPHA, RRC_SPAN, static_cast<float>(sps_));
@@ -513,6 +573,10 @@ Result<Samples> ModemTX::encode(const std::vector<uint8_t>& data) {
 Result<Samples> ModemTX::encode(const std::string& text) {
     std::vector<uint8_t> data(text.begin(), text.end());
     return impl_->encode(data);
+}
+
+Result<Samples> ModemTX::encode_bits(const std::vector<uint8_t>& bits, std::vector<int>* symbols) {
+    return impl_->encode_bits(bits, symbols);
 }
 
 Result<Samples> ModemTX::generate_preamble() {
