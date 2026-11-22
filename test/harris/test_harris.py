@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""Fast checks for the Harris MELPe scorer that need no MELPe coder.
+
+Usage: python3 -I -B test/harris/test_harris.py <work dir>
+
+- frame packing: round trip at each rate, and the sync bit and B_01 land where the
+  reference coder puts them
+- bit streams: byte order, offset, reversal and inversion
+- sync search: finds the offset of an alternating sync bit; random bits do not reach the
+  trust level
+- speech measure: a voiced signal with a continuous pitch contour scores high; white noise
+  and a buzz whose pitch is drawn at random each frame (what random MELPe bits decode to)
+  score low
+- proofs: text-field check, status rule, and an end-to-end score.py --proofs run with no
+  payloads (every item "none")
+- messages: a recording with one payload per preamble (<slug>_m<N>.bin) stays one proof
+  item, with per-message results and the messages' audio joined; run with a stub coder
+  that synthesises silence
+"""
+import json
+import os
+import subprocess
+import sys
+import wave
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import melpe_frames as mf  # noqa: E402
+import proofs  # noqa: E402
+
+FAILS = []
+
+
+def check(cond, what):
+    print(("ok   " if cond else "FAIL ") + what)
+    if not cond:
+        FAILS.append(what)
+
+
+def test_packing():
+    for rate in (2400, 1200, 600):
+        f = mf.random_frames(rate, 50, seed=rate)
+        b = mf.pack_frames(f, rate)
+        check(len(b) == 50 * mf.frame_bytes(rate), f"{rate}: {mf.frame_bytes(rate)} bytes per frame")
+        check(np.array_equal(mf.unpack_frames(b, rate), f), f"{rate}: pack/unpack round trip")
+    one = np.zeros((1, 54), np.uint8)
+    one[0, 53] = 1
+    check(mf.pack_frames(one, 2400) == bytes([0, 0, 0, 0, 0, 0, 0x20]), "2400: B_54 (sync) is byte 6 bit 5")
+    one = np.zeros((1, 81), np.uint8)
+    one[0, 0] = 1
+    check(mf.pack_frames(one, 1200)[0] == 0x01, "1200: B_01 (sync) is byte 0 bit 0")
+    one = np.zeros((1, 54), np.uint8)
+    one[0, 0] = 1
+    check(mf.pack_frames(one, 600)[0] == 0x80, "600: B_01 is byte 0 bit 7")
+    full = np.ones((1, 54), np.uint8)
+    check(mf.pack_frames(full, 600)[6] == 0xFC, "600: low two bits of byte 6 unused")
+
+
+def test_streams():
+    data = bytes([0b10110000, 0x0F])
+    check(list(mf.bytes_to_bits(data, "msb")[:4]) == [1, 0, 1, 1], "msb order: bit 7 first")
+    check(list(mf.bytes_to_bits(data, "lsb")[:4]) == [0, 0, 0, 0], "lsb order: bit 0 first")
+    for o in ("msb", "lsb"):
+        check(mf.bits_to_bytes(mf.bytes_to_bits(data, o), o) == data, f"{o}: bytes/bits round trip")
+    bits = np.arange(54 * 3 + 5) % 2
+    f = mf.cut_frames(bits, 600, 5)
+    check(f.shape == (3, 54) and f[0, 0] == 1, "cut_frames: offset and frame count")
+    check(np.array_equal(mf.cut_frames(bits, 600, 5, reverse=True)[0], f[0, ::-1]), "cut_frames: reverse")
+    check(np.array_equal(mf.cut_frames(bits, 600, 5, invert=True)[0], f[0] ^ 1), "cut_frames: invert")
+
+
+def test_header_trailer():
+    h = np.frombuffer(mf.HARRIS_HEADER.encode(), np.uint8) - ord("0")
+    body = mf.random_frames(1200, 10, 4).ravel()
+    s = np.concatenate([h, body, np.ones(mf.HARRIS_TRAILER_BITS, np.uint8)])
+    out, found = mf.strip_header_trailer(s)
+    check(found and np.array_equal(out, body), "header and trailer removed from a Harris stream")
+    out, found = mf.strip_header_trailer(body)
+    check(not found and np.array_equal(out, body), "a stream without the header is left whole")
+    import score
+    pay = mf.bits_to_bytes(np.concatenate([s, np.zeros((-len(s)) % 8, np.uint8)]), "lsb")
+    bits, found = score.vocoder_bits(pay, "lsb")
+    check(found and np.array_equal(bits[:len(body)], body), "vocoder_bits cuts the payload bytes the same way")
+
+
+def test_sync():
+    rng = np.random.default_rng(7)
+    for rate in (2400, 1200):
+        n = mf.frame_bits(rate)
+        f = mf.random_frames(rate, 60, seed=3)
+        f[:, mf.sync_index(rate)] = np.arange(60) % 2
+        lead = 17
+        bits = np.concatenate([rng.integers(0, 2, lead, dtype=np.uint8), f.ravel()])
+        off, s = mf.find_sync(bits, rate)
+        check(off == lead and s == 1.0, f"{rate}: sync search finds offset {lead}")
+        rev = mf.cut_frames(bits, rate, lead, reverse=True)
+        bits_r = np.concatenate([np.zeros(lead, np.uint8), rev.ravel()])
+        off, s = mf.find_sync(bits_r, rate, index=n - 1 - mf.sync_index(rate))
+        check(off == lead and s == 1.0, f"{rate}: sync search on reversed frames")
+        off, s = mf.find_sync(rng.integers(0, 2, n * 200, dtype=np.uint8), rate)
+        check(s < 0.9, f"{rate}: random bits stay below sync trust (best {s:.2f})")
+    check(mf.find_sync(np.zeros(1000, np.uint8), 600) == (None, None), "600: no sync bit")
+
+
+def framed(period, n_frames, seed):
+    """A stream whose bits at a few positions of each `period`-bit frame are biased."""
+    rng = np.random.default_rng(seed)
+    f = rng.integers(0, 2, size=(n_frames, period), dtype=np.uint8)
+    for c, p1 in ((0, 0.9), (7, 0.15), (19, 0.85), (33, 0.2)):
+        f[:, c] = rng.random(n_frames) < p1
+    return np.concatenate([rng.integers(0, 2, 13, dtype=np.uint8), f.ravel()])
+
+
+def test_period():
+    s60 = [framed(60, 80, k) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(s60, 600)
+    check(best == 60 and zb > 6 and not ok, f"60-bit frames fail the 600 bit/s check (best {best}, z {zb:.1f}, z54 {zn:.1f})")
+    s54 = [framed(54, 80, k) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(s54, 600)
+    check(ok and zn > 6, f"54-bit frames pass the 600 bit/s check (best {best}, z54 {zn:.1f})")
+    rnd = [np.random.default_rng(k).integers(0, 2, 4000, dtype=np.uint8) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(rnd, 600)
+    check(ok and zb < 6, f"random bits show no period (best z {zb:.1f})")
+    biased = [(np.random.default_rng(k).random(4000) < 0.3).astype(np.uint8) for k in range(3)]
+    best, zb, zn, ok = mf.period_check(biased, 600)
+    check(zb < 6, f"a global imbalance alone shows no period (best z {zb:.1f})")
+
+
+def buzz(f0_per_hop, seconds, seed=0, envelope=True):
+    """Pulse train through a two-pole resonance, pitch per 22.5 ms hop, syllable envelope."""
+    rng = np.random.default_rng(seed)
+    n = int(seconds * mf.FS)
+    f0 = np.repeat(f0_per_hop, mf.HOP)[:n]
+    phase = np.cumsum(f0 / mf.FS)
+    pulses = (np.diff(np.floor(phase), prepend=0) > 0).astype(float)
+    y = np.zeros(n)
+    a1, a2 = 2 * 0.95 * np.cos(2 * np.pi * 700 / mf.FS), -0.95 ** 2
+    for i in range(n):
+        y[i] = pulses[i] + a1 * (y[i - 1] if i else 0) + a2 * (y[i - 2] if i > 1 else 0)
+    env = 0.55 + 0.45 * np.sin(2 * np.pi * 3 * np.arange(n) / mf.FS) if envelope else 1.0
+    y = y * env + 0.01 * rng.standard_normal(n)
+    return (8000 * y / np.max(np.abs(y))).astype(np.int16)
+
+
+def chunks(x, n):
+    k = len(x) // n
+    return [x[i * n:(i + 1) * n] for i in range(k)]
+
+
+def order_margin(x, chunk, rate, n_shuf=12):
+    """Audio-level order test: energy-contour r1 of x against its chunks shuffled.
+    Returns (r1, depth, margin over the mean of the shuffles)."""
+    import score
+    cs = chunks(x, chunk)
+    r1, depth = mf.energy_contour(np.concatenate(cs), rate)
+    rng = np.random.default_rng(3)
+    sh = [mf.energy_contour(np.concatenate([cs[i] for i in rng.permutation(len(cs))]), rate)[0]
+          for _ in range(n_shuf)]
+    return r1, depth, r1 - float(np.mean(sh)), score
+
+
+def test_time_structure():
+    rate, chunk = 1200, 540  # a 1200 bit/s frame
+    secs = 6
+    hops = int(secs * mf.FS / mf.HOP) + 2
+    t = np.arange(hops) * mf.HOP / mf.FS
+    x = buzz(120 + 20 * np.sin(2 * np.pi * 0.5 * t), secs, seed=4).astype(float)
+    n = len(x)
+    tt = np.arange(n) / mf.FS
+    # syllables: 2 per second, rising and falling, with pauses
+    env = np.clip(np.sin(2 * np.pi * 1 * tt), 0, None) ** 2 * (0.2 + 0.8 * (np.sin(2 * np.pi * 0.31 * tt) > -0.3))
+    syll = (x * env + 30 * np.random.default_rng(1).standard_normal(n)).astype(np.int16)
+    steady = buzz(np.full(hops, 110.0), secs, seed=5, envelope=False)
+    rep = np.tile(syll[n // 2:n // 2 + chunk], n // chunk)
+    cs = chunks(syll, chunk)
+    pre_shuffled = np.concatenate([cs[i] for i in np.random.default_rng(8).permutation(len(cs))])
+    import score
+
+    def ok(x):
+        b = mf.boundary_ratio(x, rate, phase=0)
+        d = mf.energy_contour(x, rate)[1]
+        return b <= score.BOUNDARY_MAX[rate] and d >= score.DEPTH_MIN, b, d
+
+    for name, sig, want in (("syllabic signal in order", syll, True),
+                            ("steady buzz", steady, False),
+                            ("one frame repeated", rep, False),
+                            ("frames shuffled", pre_shuffled, False)):
+        good, b, d = ok(sig)
+        check(good == want, f"time test: {name} {'passes' if want else 'fails'} "
+                            f"(B {b:.2f}, depth {d:.1f} dB)")
+    # the shuffled-order test (2400 bit/s) on the same audio stand-ins
+    r_s, d_s, m_s, _ = order_margin(syll, chunk, rate)
+    r_r, d_r, m_r, _ = order_margin(rep, chunk, rate)
+    r_p, d_p, m_p, _ = order_margin(pre_shuffled, chunk, rate)
+    check(m_s >= score.ORDER_MARGIN, f"order test: syllabic signal beats its shuffles ({m_s:+.2f})")
+    check(m_r < score.ORDER_MARGIN and m_p < score.ORDER_MARGIN,
+          f"order test: repeated ({m_r:+.2f}) and shuffled ({m_p:+.2f}) frames do not")
+    check(all(np.isnan(v) for v in mf.energy_contour(np.zeros(1000), rate))
+          and np.isnan(mf.boundary_ratio(np.zeros(1000), rate)), "under 8 frames: no reading")
+    f = mf.random_frames(1200, 30, 2)
+    f[:, 0] = np.arange(30) % 2
+    s = mf.shuffled_frames(f, 1200, 1)
+    check(sorted(map(tuple, s[:, 1:])) == sorted(map(tuple, f[:, 1:]))
+          and np.array_equal(s[:, 0], f[:, 0]), "shuffled frames: same content, sync bit alternates")
+
+
+def test_measure():
+    hops = int(4 * mf.FS / mf.HOP) + 2
+    t = np.arange(hops) * mf.HOP / mf.FS
+    smooth = 120 + 25 * np.sin(2 * np.pi * 0.7 * t)
+    m = mf.speech_measure(buzz(smooth, 4))
+    check(m["track"] > 0.6 and 95 < m["f0_median"] < 145,
+          f"continuous pitch contour scores high (track {m['track']:.2f}, f0 {m['f0_median']:.0f})")
+    smooth_track = m["track"]
+    jumpy = np.random.default_rng(5).uniform(60, 400, hops)
+    m = mf.speech_measure(buzz(jumpy, 4, seed=1))
+    # an audio stand-in, not a decode of random bits (those are in score.py --calibrate)
+    check(m["track"] < 0.25 * smooth_track,
+          f"pitch drawn at random per frame scores far below a continuous one "
+          f"(track {m['track']:.2f} against {smooth_track:.2f})")
+    noise = (3000 * np.random.default_rng(2).standard_normal(4 * mf.FS)).astype(np.int16)
+    m = mf.speech_measure(noise)
+    check(m["track"] < 0.05, f"white noise scores low (track {m['track']:.2f})")
+    check(mf.speech_measure(np.zeros(100, np.int16))["frames"] == 0, "short input: no frames")
+
+
+def test_proofs(work):
+    check(proofs.check_text({"decoder": "m110a_rx feat/harris-mode @abc1234",
+                             "what": proofs.WHAT}) == [], "branch name and AN/PRC-150 pass the text check")
+    for bad in ("/home/x/600_1.wav", "see ~/.local/share", "payload/600_1.bin", "saga.internal",
+                "on saga", "7.0711 MHz", "pitch 120 Hz", "10.0.0.5"):
+        check(proofs.check_text({"note": bad}) != [], f"text check catches {bad!r}")
+    check([proofs.status_for(*a) for a in ((False, False, False), (True, False, True),
+                                           (True, True, False), (True, False, False))]
+          == ["none", "pass", "partial", "fail"], "status rule")
+    try:
+        proofs.write(work, proofs.document("x", "y", [proofs.item(
+            "600 #1", "m", "none", "d", audio=[{"label": "Decoded speech", "file": "t7-audio/nope.wav"}])]))
+        check(False, "write refuses a missing audio file")
+    except ValueError:
+        check(True, "write refuses a missing audio file")
+
+    # end to end: no payloads, a fake test set of short 48 kHz recordings
+    pay = os.path.join(work, "payload")
+    tset = os.path.join(work, "set")
+    pdir = os.path.join(work, "proofs")
+    for d in (pay, tset, pdir):
+        os.makedirs(d, exist_ok=True)
+    have_scipy = True
+    try:
+        import scipy.signal  # noqa: F401
+    except ImportError:
+        have_scipy = False
+    import score
+    if have_scipy:
+        for _, name, _ in score.FILES:
+            with wave.open(os.path.join(tset, name), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(48000)
+                w.writeframes((1000 * np.sin(np.arange(4800) * 0.2)).astype("<i2").tobytes())
+    cmd = [sys.executable, "-I", "-B", os.path.join(HERE, "score.py"), "--melpe", "/bin/true",
+           "--payload", pay, "--audio", os.path.join(work, "audio"), "--work", work,
+           "--proofs", pdir, "--decoder", "m110a_rx master @0000000"]
+    if have_scipy:
+        cmd += ["--set", tset]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    path = os.path.join(pdir, "t7.json")
+    check(os.path.exists(path), f"score.py --proofs writes t7.json (rc {p.returncode})")
+    if not os.path.exists(path):
+        print(p.stdout, p.stderr)
+        return
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    check(doc["id"] == "T7" and doc["order"] == 50 and doc["title"] == proofs.TITLE, "T7 header")
+    check(len(doc["items"]) == 8 and all(i["status"] == "none" for i in doc["items"]),
+          "eight items, all none without payloads")
+    names = [i["name"] for i in doc["items"]]
+    check(names == [n[:-4] for _, n, _ in score.FILES], "item names are the recording names")
+    modes = {i["name"]: i["mode"] for i in doc["items"]}
+    check(modes["melp2400"].startswith("D1,D2 7,7") and modes["1200 #2"].startswith("D1,D2 5,6")
+          and "4 preambles" in modes["600 #3 multiples"], "mode text from the preamble table")
+    check(proofs.check_text(doc) == [], "no paths, hosts or frequencies in the written text")
+    ok = True
+    for it in doc["items"]:
+        for au in it["audio"]:
+            fp = os.path.join(pdir, au["file"])
+            if not os.path.isfile(fp):
+                ok = False
+                continue
+            with wave.open(fp, "rb") as w:
+                ok &= (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (8000, 1, 2)
+    check(ok, "every named audio file exists, 8 kHz mono 16-bit")
+    if have_scipy:
+        check(all(any(a["label"] == "On the channel" for a in i["audio"]) for i in doc["items"]),
+              "channel audio named for every item")
+
+
+STUB_CODER = """#!{py} -IB
+# Stand-in for the MELPe coder in tests: synthesis writes 100 zero samples per input byte.
+import sys
+a = sys.argv
+src, dst = a[a.index("-i") + 1], a[a.index("-o") + 1]
+n = len(open(src, "rb").read())
+open(dst, "wb").write(bytes(200 * n))
+"""
+
+
+def test_multiples(work):
+    import score
+    pay = os.path.join(work, "payload_multi")
+    os.makedirs(pay, exist_ok=True)
+    for n, size in ((2, 30), (10, 20), (1, 40)):
+        with open(os.path.join(pay, f"600_3_multiples_m{n}.bin"), "wb") as f:
+            f.write(bytes(size))
+    with open(os.path.join(pay, "600_3_multiples_mx.bin"), "wb") as f:
+        f.write(bytes(5))
+    with open(os.path.join(pay, "melp600.bin"), "wb") as f:
+        f.write(bytes(25))
+    with open(os.path.join(pay, "melp600_m1.bin"), "wb") as f:
+        f.write(bytes(25))
+    check(score.payload_parts(pay, "600_3_multiples")
+          == [("600_3_multiples_m1", 1), ("600_3_multiples_m2", 2), ("600_3_multiples_m10", 10)],
+          "messages found in number order, other names ignored")
+    check(score.payload_parts(pay, "melp600") == [("melp600", None)], "a whole-recording payload wins")
+    check(score.payload_parts(pay, "600_1") == [], "no payload: no parts")
+    check([score.combine_status(s) for s in (["pass", "pass"], ["pass", "partial"], ["pass", "fail"], [])]
+          == ["pass", "partial", "fail", "none"], "recording status from message statuses")
+
+    stub = os.path.join(work, "stub_melpe.py")
+    with open(stub, "w", encoding="utf-8") as f:
+        f.write(STUB_CODER.format(py=sys.executable))
+    os.chmod(stub, 0o755)
+    pdir = os.path.join(work, "proofs_multi")
+    os.makedirs(pdir, exist_ok=True)
+    p = subprocess.run([sys.executable, "-I", "-B", os.path.join(HERE, "score.py"), "--melpe", stub,
+                        "--payload", pay, "--audio", os.path.join(work, "audio_multi"), "--work", work,
+                        "--proofs", pdir, "--decoder", "m110a_rx master @0000000"],
+                       capture_output=True, text=True, timeout=120)
+    path = os.path.join(pdir, "t7.json")
+    check(os.path.exists(path), f"multi-message run writes t7.json (rc {p.returncode})")
+    if not os.path.exists(path):
+        print(p.stdout, p.stderr)
+        return
+    with open(path, encoding="utf-8") as f:
+        doc = json.load(f)
+    check(len(doc["items"]) == 8, "still eight items, one per recording")
+    it = {i["name"]: i for i in doc["items"]}["600 #3 multiples"]
+    check(it["decoded"].startswith("3 messages, one per preamble")
+          and "Message 3: 20 payload bytes" in it["decoded"], "per-message results in decoded")
+    check(it["status"] == "fail", "silence decodes to fail, not pass")
+    check([a["label"] for a in it["audio"]] == ["Decoded speech"], "one decoded speech file")
+    with wave.open(os.path.join(pdir, it["audio"][0]["file"]), "rb") as w:
+        n = w.getnframes()
+    frames = [len(mf.cut_frames(mf.bytes_to_bits(bytes(s)), 600)) for s in (40, 30, 20)]
+    want = sum(100 * 7 * k for k in frames) + 2 * int(score.GAP_S * mf.FS)
+    check(n == want, f"messages joined with gaps ({n} samples, want {want})")
+    check(proofs.check_text(doc) == [], "multi-message text has no paths, hosts or frequencies")
+    check("600_3_multiples_m1" in p.stdout and "600_3_multiples_m10" in p.stdout,
+          "one table row per message")
+
+
+def main():
+    if len(sys.argv) != 2:
+        print(__doc__)
+        return 2
+    work = sys.argv[1]
+    os.makedirs(work, exist_ok=True)
+    test_packing()
+    test_streams()
+    test_sync()
+    test_header_trailer()
+    test_period()
+    test_measure()
+    test_time_structure()
+    test_proofs(work)
+    test_multiples(work)
+    print(f"{len(FAILS)} failed")
+    return 1 if FAILS else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

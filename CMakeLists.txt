@@ -165,3 +165,18 @@ if(M110A_HAVE_SCIPY)
 else()
   message(STATUS "python3 with numpy+scipy not found: I/Q receive tests skipped")
 endif()
+
+# ---- Harris MELPe scorer (test/harris): packing, sync search, speech measure, proofs ----
+# Needs no MELPe coder; the scorer's channel-audio check runs only when scipy is present.
+if(Python3_Interpreter_FOUND)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -I -c "import numpy"
+                  RESULT_VARIABLE _numpy_rc OUTPUT_QUIET ERROR_QUIET)
+  if(_numpy_rc EQUAL 0)
+    add_test(NAME harris_melpe_scorer
+             COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/harris/test_harris.py
+                     ${CMAKE_BINARY_DIR}/harris_work)
+    set_tests_properties(harris_melpe_scorer PROPERTIES LABELS "fast;unit")
+  else()
+    message(STATUS "python3 with numpy not found: Harris MELPe scorer test skipped")
+  endif()
+endif()
