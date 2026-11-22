@@ -272,6 +272,7 @@ struct RxOptions {
     int psk_scr_shifts = 3;    // scrambler iterations per QPSK/8PSK symbol (D.5.1.3), see appd_qam.h
     double qam_scale = 1.0;    // QAM constellation scale vs mini-probe; 0 = per-frame RMS match (appd_qam.h)
     int eq = 1;                // WID 1-13: 1 probe-aided block MMSE-DFE (appd_eq.h), 0 one-tap gain
+    int eq_passes = 2;         // 2: add the data-aided pass per frame (appd_rx.h equalise_frame)
     bool verbose = false;
 };
 
@@ -910,6 +911,7 @@ private:
         bool b = false;    // the cyclically shifted (interleaver boundary) probe
         cplx h = 1.0;      // one-tap gain at the probe centre
         double th = 0;     // unwrapped rotation from the previous probe centre to this one
+        double th_pred = 0;  // that rotation as the frequency loop predicted it
         double q = 0;      // normalised one-tap correlation
     };
 
@@ -975,6 +977,7 @@ private:
             // unwrapped rotation from the previous probe centre to this one
             double th = th_pred + std::arg(pr_.h * std::conj(h_prev) * std::polar(1.0, -th_pred));
             pr_.th = th;
+            pr_.th_pred = th_pred;
             recs.push_back(pr_);
             // Below quality 0.3 (a deep fade, or no signal) the probe neither updates the
             // frequency loop nor becomes the phase reference; the callers decide where the
@@ -1009,6 +1012,7 @@ private:
         double sigma2 = 0;                 // noise variance per symbol, from the fit residuals
         double lambda = 0;                 // MMSE regularisation: noise / symbol energy
         int nprobes = 0;                   // probes up to the end of the signal
+        double es = 1;                     // mean data symbol energy
     };
 
     static int probe_base_len(int K) { return K == 24 ? 13 : K == 32 ? 16 : K == 48 ? 25 : 0; }
@@ -1190,11 +1194,13 @@ private:
             for (const cplx& o : obs) en += std::norm(o);
             const double base = (double)taps.size() / f.nobs();
             qfit[j] = en > 0 ? (1.0 - res / en - base) / (1.0 - base) : 0.0;
+            // Unwrapped about the frequency loop's prediction, not the one-tap measurement: in a
+            // fade the one-tap rotation can be off by pi (measured, ITU Poor).
             if (j > 0) {
                 cplx s = 0;
                 for (size_t t = 0; t < taps.size(); t++)
-                    s += eq.h[j][t] * std::conj(eq.h[j - 1][t]) * std::polar(1.0, -recs[j].th);
-                eq.th[j] = recs[j].th + std::arg(s);
+                    s += eq.h[j][t] * std::conj(eq.h[j - 1][t]) * std::polar(1.0, -recs[j].th_pred);
+                eq.th[j] = recs[j].th_pred + std::arg(s);
             }
         }
         eq.nprobes = M;
@@ -1221,6 +1227,7 @@ private:
         // Floor at -40 dB of the channel power: interpolation and tracking errors are not in
         // the probe residual.
         eq.lambda = std::max(eq.sigma2, 1e-4 * ph) / es;
+        eq.es = es;
         r.eq_used = true;
         r.eq_taps = taps;
         r.eq_snr_db = eq.sigma2 > 0 ? 10 * std::log10(ph / eq.sigma2) : 99;
@@ -1250,7 +1257,21 @@ private:
         const double c_prev = -0.5 * (K + 1);  // previous probe centre, from data symbol 0
         const long pos = pa.pos + K;
         const std::vector<cplx> seq_a = mini_probe(K, pa.b), seq_b = mini_probe(K, pb.b);
-        // tap t at data-relative symbol n: linear between the probe CIRs, rotation removed
+        // received symbols n = dlo .. U-1+dhi (data-relative), the rotation ramp removed
+        std::vector<cplx> rv0(N);
+        for (int m = 0; m < N; m++) {
+            const int n = m + dlo;
+            const double a = ((double)n - c_prev) / Tf;
+            rv0[m] = sample((double)(pos + n), pa.tau + (pb.tau - pa.tau) * a) * std::polar(1.0, -th * a);
+        }
+        // known symbol at data-relative index i (probe A before, probe B after), else 0
+        auto known = [&](int i) -> cplx {
+            if (i < 0) return K + i >= 0 ? seq_a[(size_t)(K + i)] : cplx(0);
+            if (i >= U) return i - U < K ? seq_b[(size_t)(i - U)] : cplx(0);
+            return 0;
+        };
+        // CIR trajectory: tap t at data-relative symbol n, rotation removed. First linear
+        // between the probe CIRs.
         std::vector<cplx> hn((size_t)N * T);
         for (int m = 0; m < N; m++) {
             const double a = ((double)(m + dlo) - c_prev) / Tf;
@@ -1258,17 +1279,18 @@ private:
         }
         auto hrow = [&](int n, int t) { return hn[(size_t)(n - dlo) * T + t]; };
         std::vector<cplx> rv(N);
-        for (int m = 0; m < N; m++) {
-            const int n = m + dlo;
-            const double a = ((double)n - c_prev) / Tf;
-            cplx v = sample((double)(pos + n), pa.tau + (pb.tau - pa.tau) * a) * std::polar(1.0, -th * a);
-            for (int t = 0; t < T; t++) {  // known probe symbols on either side
-                const int i = n - taps[t];
-                if (i < 0 && K + i >= 0) v -= hrow(n, t) * seq_a[(size_t)(K + i)];
-                else if (i >= U && i - U < K) v -= hrow(n, t) * seq_b[(size_t)(i - U)];
+        auto subtract_known = [&]() {
+            for (int m = 0; m < N; m++) {
+                const int n = m + dlo;
+                cplx v = rv0[m];
+                for (int t = 0; t < T; t++) {
+                    const int i = n - taps[t];
+                    if (i < 0 || i >= U) v -= hrow(n, t) * known(i);
+                }
+                rv[m] = v;
             }
-            rv[m] = v;
-        }
+        };
+        subtract_known();
         // decision sets per symbol (D.5.1.3 scrambling, Tables D-III to D-X)
         const int bits = wp.bits_per_sym;
         std::vector<int> sv(U);
@@ -1306,8 +1328,84 @@ private:
             wf.assign(U, 0.0);
             return;
         }
+        auto dec_error = [&](const std::vector<cplx>& z) {
+            double e = 0;
+            for (int i = 0; i < U; i++) e += std::norm(z[i] - decide(i, z[i]));
+            return e;
+        };
+        // Data-aided pass: with the first pass's decisions as known data, a least-squares fit
+        // over the whole block gives the CIR at the block centre; the trajectory becomes the
+        // quadratic through the two probe CIRs and that one, and the block is equalised again.
+        // The pass with the lower decision error is kept. On a channel that changes within a
+        // frame (ITU Poor, 1 Hz) linear interpolation between probes 120 ms apart left one
+        // frame 12 dB worse than predicted (measured, WID 7).
+        if (opt_.eq_passes > 1) {
+            std::vector<cplx> xd(U);
+            for (int i = 0; i < U; i++) xd[i] = decide(i, zf[i]);
+            auto xfull = [&](int i) { return (i >= 0 && i < U) ? xd[(size_t)i] : known(i); };
+            std::vector<cplx> G((size_t)T * T, 0.0), bvec(T, 0.0);
+            for (int m = 0; m < N; m++) {
+                const int n = m + dlo;
+                std::vector<cplx> row(T);
+                for (int t = 0; t < T; t++) row[t] = xfull(n - taps[t]);
+                for (int a = 0; a < T; a++) {
+                    bvec[a] += std::conj(row[a]) * rv0[m];
+                    for (int b = 0; b < T; b++) G[(size_t)a * T + b] += std::conj(row[a]) * row[b];
+                }
+            }
+            if (solve_dense(G, bvec, T)) {
+                const double a0 = c_prev, a1 = 0.5 * (U - 1), a2 = U + 0.5 * (K - 1);
+                const std::vector<cplx> hn_lin = hn;
+                for (int m = 0; m < N; m++) {
+                    const double x = (double)(m + dlo);
+                    const double l0 = (x - a1) * (x - a2) / ((a0 - a1) * (a0 - a2));
+                    const double l1 = (x - a0) * (x - a2) / ((a1 - a0) * (a1 - a2));
+                    const double l2 = (x - a0) * (x - a1) / ((a2 - a0) * (a2 - a1));
+                    for (int t = 0; t < T; t++)
+                        hn[(size_t)m * T + t] = ha[t] * l0 + bvec[t] * l1 + hb[t] * rot_b * l2;
+                }
+                subtract_known();
+                std::vector<cplx> z2;
+                std::vector<double> var2;
+                if (mmse_dfe_block(U, taps, rv, hrow, eq.lambda, decide, z2, var2) && dec_error(z2) < dec_error(zf)) {
+                    zf.swap(z2);
+                    var.swap(var2);
+                } else {
+                    hn = hn_lin;
+                }
+            }
+        }
+        // Reliability: the DFE's error variance assumes the interpolated CIR is exact. Where
+        // the decision error over a +-16 symbol window exceeds the predicted variance (a CIR
+        // that changed faster than the interpolation, measured on ITU Poor), the excess is
+        // added to every symbol of the window.
+        std::vector<double> e2(U), vp(U);
+        for (int i = 0; i < U; i++) {
+            e2[i] = std::norm(zf[i] - decide(i, zf[i]));
+            vp[i] = var[i] * eq.lambda * eq.es;  // var is in units of the regularised noise
+        }
+        const int Wn = 16;
         wf.resize(U);
-        for (int i = 0; i < U; i++) wf[i] = 1.0 / var[i];
+        {
+            double se = 0, sv = 0;
+            int lo = 0, hi = -1;  // running window [lo, hi]
+            for (int i = 0; i < U; i++) {
+                while (hi < std::min(U - 1, i + Wn)) { hi++; se += e2[hi]; sv += vp[hi]; }
+                while (lo < i - Wn) { se -= e2[lo]; sv -= vp[lo]; lo++; }
+                const double n = hi - lo + 1;
+                const double excess = std::max(0.0, (se - sv) / n);
+                wf[i] = 1.0 / (vp[i] + excess);
+            }
+        }
+        if (opt_.verbose) {
+            double e = 0, vm = 0, hp = 0;
+            for (int i = 0; i < U; i++) { e += e2[i]; vm += vp[i]; }
+            for (const cplx& t : ha) hp += std::norm(t);
+            std::fprintf(stderr, "eq frame %d: decision error %.1f dB, predicted %.1f dB (of symbol energy), "
+                         "probe CIR power %.2e, rotation %.2f rad (one-tap %.2f)\n", frame,
+                         10 * std::log10(e / U / eq.es + 1e-30), 10 * std::log10(vm / U / eq.es + 1e-30), hp, th,
+                         pb.th);
+        }
     }
 
     static bool find_eom(const std::vector<int>& bits, RxResult& r) {

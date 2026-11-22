@@ -8,7 +8,8 @@
 //   --code d9|alt|auto             K=7 tap reading: Figure D-9 (default), time-reversed, or best
 //   --psk-scr-shifts N             data scrambler iterations per QPSK/8PSK symbol (default 3)
 //   --qam-scale X                  QAM constellation scale vs the mini-probe (default 1; 0 = per-frame RMS)
-//   --eq dfe|off                   WID 1-13 channel equaliser: block MMSE-DFE (default) or one-tap gain
+//   --eq dfe|probe|off             WID 1-13 channel equaliser: block MMSE-DFE with the data-aided pass
+//                                  (default), without it (probe CIRs only), or the one-tap gain
 //   --selftest                     check generated tables against the standard and exit
 //   -v                             diagnostics on stderr
 //
@@ -59,6 +60,7 @@ int main(int argc, char** argv) {
         } else if (a == "--eq") {
             std::string v = next();
             opt.eq = v == "off" ? 0 : 1;
+            opt.eq_passes = v == "probe" ? 1 : 2;
         } else if (a == "--selftest") {
             int bad = tables_selftest() + walsh_selftest() + tables_selftest_qam();
             std::printf("selftest_mismatches=%d\n", bad);
