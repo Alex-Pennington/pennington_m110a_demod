@@ -9,14 +9,16 @@
  *        + data, root-raised-cosine shaped, carrier 1800 Hz -> 48 kHz 16-bit mono.
  *
  * Usage: m110a_tx [options] OUT.wav
- *   --mode M        600H (default) or 1200H
+ *   --mode M        600H (default), 1200H or 2400V
  *   --bits FILE     payload as ASCII 0/1 in transmit order (other characters ignored)
  *   --bytes FILE    payload as bytes, bit k = bit k%8 of byte k/8 (LSB first, as
  *                   m110a_rx prints hex=)
  *   --frame         the payload is whole vocoder units (60 bits for 600H, 81 for
- *                   1200H); wrap them as the RT-1694D does: the 54-bit header, the
- *                   units, the 108-bit trailer W, W', then zeros to a multiple of
- *                   16 bits (docs/harris-600-format.md, docs/harris-tx.md)
+ *                   1200H, 54 for 2400V); wrap them as the RT-1694D does: the 54-bit
+ *                   header, the units, then for 600H and 1200H the 108-bit trailer
+ *                   W, W' and zeros to a multiple of 16 bits, for 2400V 108 ones and
+ *                   zeros to a multiple of 8 bits, as in the melp2400 recording
+ *                   (docs/harris-600-format.md, docs/harris-tx.md)
  *   --lead S        seconds of silence before the signal (default 2)
  *   --tail S        seconds of silence after it (default 1)
  *   --rms R         RMS of the signal part, full scale 1.0 (default 0.2136, the
@@ -53,7 +55,7 @@ const char* TRAILER_W2 = "101001010010100010100000000100010101000101110011111100
 [[noreturn]] void usage(const char* msg) {
     if (msg) fprintf(stderr, "m110a_tx: %s\n", msg);
     fprintf(stderr,
-        "usage: m110a_tx [--mode 600H|1200H] (--bits FILE | --bytes FILE) [--frame]\n"
+        "usage: m110a_tx [--mode 600H|1200H|2400V] (--bits FILE | --bytes FILE) [--frame]\n"
         "                [--lead S] [--tail S] [--rms R | --match WAV] [--carrier HZ]\n"
         "                [--rect] [--leading] [--symbols OUT] [--payload-out OUT] OUT.wav\n");
     exit(2);
@@ -169,7 +171,8 @@ int main(int argc, char** argv) {
     int unit;
     if (mode_s == "600H") { mode = Mode::M600_HARRIS; unit = 60; }
     else if (mode_s == "1200H") { mode = Mode::M1200_HARRIS; unit = 81; }
-    else usage("--mode must be 600H or 1200H");
+    else if (mode_s == "2400V") { mode = Mode::M2400_VOICE; unit = 54; }
+    else usage("--mode must be 600H, 1200H or 2400V");
 
     std::string raw;
     if (!read_file(bits_path.empty() ? bytes_path : bits_path, raw)) usage("cannot read payload");
@@ -187,9 +190,16 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> f;
         for (const char* p = HEADER; *p; p++) f.push_back(*p - '0');
         f.insert(f.end(), bits.begin(), bits.end());
-        for (const char* p = TRAILER_W; *p; p++) f.push_back(*p - '0');
-        for (const char* p = TRAILER_W2; *p; p++) f.push_back(*p - '0');
-        while (f.size() % 16 != 0) f.push_back(0);
+        if (mode == Mode::M2400_VOICE) {
+            // melp2400, the one 2400V recording: 108 ones, 6 zeros to bit 15288, a
+            // multiple of 8 and not of 16 (docs/harris-tx.md)
+            f.insert(f.end(), 108, 1);
+            while (f.size() % 8 != 0) f.push_back(0);
+        } else {
+            for (const char* p = TRAILER_W; *p; p++) f.push_back(*p - '0');
+            for (const char* p = TRAILER_W2; *p; p++) f.push_back(*p - '0');
+            while (f.size() % 16 != 0) f.push_back(0);
+        }
         bits.swap(f);
     }
     if (bits.empty()) usage("empty payload");

@@ -41,7 +41,7 @@ add_executable(hfchansim hfchansim/main.cpp)
 add_executable(m110a_rx m110a_rx/main.cpp)
 target_link_libraries(m110a_rx PRIVATE m110a_modem)
 
-# Harris-mode transmitter: payload bits -> WAV (600H, 1200H; docs/harris-tx.md)
+# Harris-mode transmitter: payload bits -> WAV (600H, 1200H, 2400V; docs/harris-tx.md)
 add_executable(m110a_tx m110a_tx/main.cpp)
 target_link_libraries(m110a_tx PRIVATE m110a_modem)
 
@@ -158,7 +158,7 @@ if(M110A_HAVE_SCIPY)
   set_tests_properties(iq_frontend_vs_scipy PROPERTIES LABELS "iq")
 
   # Harris-mode TX: payload -> m110a_tx -> WAV -> m110a_rx, byte-exact with EOM
-  # (600H, 1200H; test/harris/tx_loopback.py, docs/harris-tx.md)
+  # (600H, 1200H, 2400V; test/harris/tx_loopback.py, docs/harris-tx.md)
   add_test(NAME harris_tx_loopback
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/harris/tx_loopback.py
                    --rx $<TARGET_FILE:m110a_rx> --tx $<TARGET_FILE:m110a_tx>
