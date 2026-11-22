@@ -4,7 +4,7 @@
 Usage:
   python3 -I test/110d/channel.py --rx build-110d/bin/m110d_rx --chan build-110d/bin/m110d_chan \
       --set <test-set dir> [--matrix default] [--files 1,13,53,29,41] [--seeds N] [--jobs 2]
-      [--proofs DIR [--decoder-label TEXT] [--proofs-note TEXT]]
+      [--bandpass LO:HI[:N]] [--proofs DIR [--decoder-label TEXT] [--proofs-note TEXT]]
 
 --proofs DIR also writes DIR/t6.json for a report page: one item per condition, summed over
 the files and seeds run (status pass when every run decoded the message, partial when some
@@ -25,6 +25,12 @@ Matrices (--matrix, comma-separated; `all` is every one):
   ppm      sample-clock offset and drift, at 30 dB SNR
   fading   ITU good / moderate / poor (Watterson) and the D.6.4 +-75 Hz Doppler shift test
   static   Table D-LXV 3 kHz static multipath channels at 50 dB SNR
+  band     a radio's SSB audio filter (m110d_chan --bandpass, 8th-order Butterworth edges) on
+           its own and at 30 dB: 300-2700, 300-3000, 300-3300 and 200-3000 Hz
+
+--bandpass LO:HI[:N] adds that receiver audio filter to every condition of the chosen matrices
+(m110d_chan --bandpass), so `--matrix default --bandpass 300:2700` is the default matrix
+heard through a 300-2700 Hz radio. Condition labels gain a ` bp LO-HI` suffix.
 
 SNR is in 3 kHz (m110d_chan --noise-bw default) against the burst's average power (E.5.5).
 Impaired WAVs go to a scratch directory under $TMPDIR (or --work) and are deleted after each
@@ -109,7 +115,20 @@ def matrices():
         Cond("D.6.4 poor -75 Hz @30", ["--snr", HI_SNR, "--preset", "poor", "--foff", -75]),
     ]
     m["static"] = [Cond(f"{p} @50", ["--snr", 50, "--preset", p]) for p in ("static-wid2", "static-wid10", "static-wid12")]
+    m["band"] = []
+    for lo, hi in ((300, 2700), (300, 3000), (300, 3300), (200, 3000)):
+        m["band"] += [Cond(f"bandpass {lo}-{hi} Hz", ["--bandpass", f"{lo}:{hi}"], seeds=1),
+                      Cond(f"bandpass {lo}-{hi} Hz @30", ["--snr", HI_SNR, "--bandpass", f"{lo}:{hi}"])]
     return m
+
+
+def with_bandpass(c, bp):
+    """Condition c with m110d_chan --bandpass bp appended."""
+    def f(row):
+        a = c.args(row)
+        return None if a is None else [*a, "--bandpass", bp]
+    lo_hi = "-".join(bp.split(":")[:2])
+    return Cond(f"{c.label} bp {lo_hi}", f, c.seeds)
 
 
 PRESET_WORDS = {
@@ -151,6 +170,9 @@ def cond_words(c, row):
             parts.append(f"sample clock drift {float(v):+g} ppm per second")
         elif f == "--sweep":
             parts.append(f"frequency sweep {v} (D.6.5 triangle)")
+        elif f == "--bandpass":
+            lo, hi = v.split(":")[:2]
+            parts.append(f"radio audio filter {lo}-{hi} Hz")
         i += 2
     if "--snr" in ca and "D-LXIV" not in c.label and not any(p.startswith("noise") for p in parts):
         parts.insert(0, f"noise at {float(ca[ca.index('--snr') + 1]):g} dB SNR")
@@ -187,6 +209,7 @@ def main():
     ap.add_argument("--proofs", metavar="DIR", help="also write DIR/t6.json, one item per condition, for a report page")
     ap.add_argument("--decoder-label", help="decoder label for --proofs (default: m110d_rx @<short commit>)")
     ap.add_argument("--proofs-note", help="note text for --proofs")
+    ap.add_argument("--bandpass", metavar="LO:HI[:N]", help="add m110d_chan --bandpass to every condition")
     a = ap.parse_args()
 
     rows = {r["num"]: r for r in score.parse_readme(os.path.join(a.set, "README.md"))}
@@ -210,7 +233,7 @@ def main():
         for c in all_m[n]:
             if c.label not in seen:
                 seen.add(c.label)
-                conds.append(c)
+                conds.append(with_bandpass(c, a.bandpass) if a.bandpass else c)
 
     work = a.work or tempfile.mkdtemp(prefix="m110d-chan-")
     os.makedirs(work, exist_ok=True)

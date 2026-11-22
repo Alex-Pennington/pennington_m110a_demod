@@ -14,6 +14,11 @@
 //   5. real part (E.4.2 note)
 //   6. white Gaussian noise set for the SNR in a stated bandwidth, against the average power of
 //      the input signal (E.5.5)
+//   7. optional receiver audio filter (not in Appendix E): a radio's SSB passband, lo..hi Hz,
+//      as Butterworth high-pass and low-pass edges of a stated order each, bilinear transform
+//      with pre-warped corners (-3 dB at lo and hi). It is minimum-phase like an analogue
+//      crystal or LC filter, so the group delay rises toward both edges. It filters signal and
+//      noise alike; the SNR of step 6 is still stated before it.
 //
 // The 110A headers awgn.h and watterson.h are not used: awgn.h sets the SNR against the whole
 // Nyquist band and the whole-file power, and watterson.h applies |tap| only (no Doppler phase).
@@ -290,7 +295,62 @@ struct Config {
     double ppm_per_s = 0;         // its drift
     double active_thresh_db = -30;
     uint64_t seed = 1;
+    double bp_lo_hz = 0, bp_hi_hz = 0;  // step 7; 0 = edge not applied
+    int bp_order = 8;                   // per edge, even
 };
+
+// ---------------------------------------------------------------------------------------------
+// Step 7: Butterworth edges as cascaded biquads (direct form I).
+// ---------------------------------------------------------------------------------------------
+struct Biquad {
+    double b0, b1, b2, a1, a2;
+};
+
+// order/2 sections, high-pass (hp) or low-pass at fc Hz. Section k has the Butterworth pole-pair
+// Q = 1 / (2 cos(pi (2k+1) / (2 order))).
+inline std::vector<Biquad> butterworth(int order, double fc, int fs, bool hp) {
+    std::vector<Biquad> v;
+    const double w = 2 * kPi * fc / fs, cw = std::cos(w), sw = std::sin(w);
+    for (int k = 0; k < order / 2; k++) {
+        double q = 1.0 / (2 * std::cos(kPi * (2 * k + 1) / (2.0 * order)));
+        double al = sw / (2 * q), a0 = 1 + al;
+        Biquad b;
+        if (hp) { b.b0 = (1 + cw) / 2; b.b1 = -(1 + cw); b.b2 = (1 + cw) / 2; }
+        else { b.b0 = (1 - cw) / 2; b.b1 = 1 - cw; b.b2 = (1 - cw) / 2; }
+        b.b0 /= a0; b.b1 /= a0; b.b2 /= a0;
+        b.a1 = -2 * cw / a0; b.a2 = (1 - al) / a0;
+        v.push_back(b);
+    }
+    return v;
+}
+
+inline std::vector<Biquad> audio_filter(const Config& c, int fs) {
+    std::vector<Biquad> f;
+    if (c.bp_lo_hz > 0) f = butterworth(c.bp_order, c.bp_lo_hz, fs, true);
+    if (c.bp_hi_hz > 0) {
+        std::vector<Biquad> l = butterworth(c.bp_order, c.bp_hi_hz, fs, false);
+        f.insert(f.end(), l.begin(), l.end());
+    }
+    return f;
+}
+
+inline void run_biquads(const std::vector<Biquad>& f, std::vector<double>& y) {
+    for (const Biquad& b : f) {
+        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+        for (auto& s : y) {
+            double o = b.b0 * s + b.b1 * x1 + b.b2 * x2 - b.a1 * y1 - b.a2 * y2;
+            x2 = x1; x1 = s; y2 = y1; y1 = o;
+            s = o;
+        }
+    }
+}
+
+// |H(f)| of the cascade.
+inline double biquads_gain(const std::vector<Biquad>& f, double hz, int fs) {
+    std::complex<double> z1 = std::polar(1.0, -2 * kPi * hz / fs), z2 = z1 * z1, h = 1.0;
+    for (const Biquad& b : f) h *= (b.b0 + b.b1 * z1 + b.b2 * z2) / (1.0 + b.a1 * z1 + b.a2 * z2);
+    return std::abs(h);
+}
 
 struct Stats {
     size_t n_in = 0, n_out = 0;
@@ -358,6 +418,7 @@ inline std::vector<double> apply(const std::vector<double>& in, int fs, const Co
         Rng rng(c.seed, 1);
         for (auto& s : y) s += sd * rng.normal();
     }
+    run_biquads(audio_filter(c, fs), y);
     return y;
 }
 
