@@ -12,7 +12,8 @@
 //       A.5.3.7 gain, A.5.3.8 pulse dispersion, A.5.3.9 loop control, A.5.3.10
 //       postfilter); Annex D section D.4.8 (harmonic excitation).
 //   [2] MIL-STD-3005 MELP model as summarised in [1] Annex A.5.1 and [3].
-//   [3] T. Collura et al., Harris, "MELP 600 bps", MILCOM 2001 (25 ms frame).
+//   [3] M. W. Chamberlain, Harris, "A 600 bps MELP vocoder for use on HF channels",
+//       MILCOM 2001 (25 ms frame).
 //   [4] RFC 8130 (MELPe 600/1200/2400 RTP payload): frame sizes.
 // No code from any MELP/MELPe implementation was read or used.
 //
