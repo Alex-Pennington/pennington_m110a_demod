@@ -80,16 +80,16 @@ def matrices():
         Cond("ppm +100 @30", ["--snr", HI_SNR, "--ppm", 100]),
         Cond("poor @30", ["--snr", HI_SNR, "--preset", "poor"]),
     ]
-    m["awgn"] = [Cond(f"awgn D-LXIV{off:+d}", snr_rel(off)) for off in (-3, 0, 3, 6, 9, 12, 15, 20)]
+    m["awgn"] = [Cond(f"awgn D-LXIV{off:+d}", snr_rel(off)) for off in (-9, -6, -3, 0, 3, 6, 9, 12, 15, 20)]
     m["foff"] = [Cond(f"foff {f:+g} Hz @30", ["--snr", HI_SNR, "--foff", f])
-                 for f in (-75, -40, -30, -20, -10, -5, -2, 2, 5, 10, 20, 30, 40, 75)]
+                 for f in (-75, -40, -35, -30, -20, -10, -5, -2, 2, 5, 10, 20, 30, 35, 40, 75)]
     m["drift"] = [Cond(f"fdrift {r:+g} Hz/s @30", ["--snr", HI_SNR, "--fdrift", r]) for r in (0.5, 1, 2, 3.5, -3.5)]
     m["drift"] += [
         Cond("sweep D.6.5 from 0 @30", ["--snr", HI_SNR, "--sweep", "75:3.5:0"]),
         Cond("sweep D.6.5 from 0 @24", ["--snr", 24, "--sweep", "75:3.5:0"]),
     ]
     m["ppm"] = [Cond(f"ppm {p:+g} @30", ["--snr", HI_SNR, "--ppm", p])
-                for p in (-500, -300, -100, -30, -10, 10, 30, 100, 300, 500)]
+                for p in (-500, -300, -200, -100, -50, -30, -20, -10, 10, 20, 30, 50, 100, 200, 300, 500)]
     m["ppm"] += [Cond(f"ppm-drift {r:+g}/s @30", ["--snr", HI_SNR, "--ppm-drift", r]) for r in (10, 100)]
     m["fading"] = [
         Cond("good @30", ["--snr", HI_SNR, "--preset", "good"]),
