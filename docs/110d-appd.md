@@ -58,7 +58,7 @@ The WAV must be 16-bit PCM at a sample rate that is a multiple of 2400 Hz (the t
 
 ## Measured pass table
 
-This is the scorer's own output. It was run at the merge of `feat/110d-qam` into `feat/110d-integrate` against
+This is the scorer's own output. It was run at merge commit `e0d079b` against
 `interop-110D-AppD-2026-09-08`, with exit status 0.
 
 ```
