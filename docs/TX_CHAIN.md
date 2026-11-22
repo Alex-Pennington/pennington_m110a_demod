@@ -105,8 +105,9 @@ Three segments, each 0.2 seconds (480 symbols):
 With `include_eom` (the default), `ModemTX::encode` ends the message as MIL-STD-188-110
 5.3.2.2.3-4 and 5.3.2.3.1-2 require. After the last data bit, the FEC encoder takes the
 EOM 4B65A5B2, most significant digit first, then 144 zero flush bits, then zeros to the end
-of the interleaver block that holds the last flush bit. At 4800 bps the same bits go out
-uncoded. This is the ending other 110A modems scan for. `m110a_rx` and `ModemRX` cut the
+of the interleaver block that holds the last flush bit. At 4800 bps the FEC encoder and the
+interleaver are bypassed: the same bits go out uncoded, and the message stops after the
+flush, padded only to the end of its frame's 32-symbol data segment (5.3.2.3.2). This is the ending other 110A modems scan for. `m110a_rx` and `ModemRX` cut the
 decoded data at the EOM, so the payload comes back with nothing after it.
 
 With `include_eom = false`, the data ends at its interleaver block and no EOM is sent.

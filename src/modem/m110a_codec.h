@@ -292,16 +292,23 @@ public:
             repeated_coded = std::move(coded);
         }
         
-        // Step 4: Pad to interleaver block size
-        while (repeated_coded.size() % block_size != 0) {
+        // Step 4: Pad to interleaver block size. With the interleaver bypassed (4800
+        // bps), a message end stops after the coder flush (§5.3.2.3.2): pad only to the
+        // end of the frame's data segment.
+        const bool bypass_end = message_end && interleaver_.is_passthrough();
+        const size_t pad_unit = bypass_end
+            ? static_cast<size_t>(config_.bits_per_symbol * unknown_len)
+            : static_cast<size_t>(block_size);
+        while (repeated_coded.size() % pad_unit != 0) {
             repeated_coded.push_back(0);
         }
         
-        // Step 5: Interleave
+        // Step 5: Interleave (a bypassed interleaver passes the bits through)
         std::vector<soft_bit_t> soft_coded(repeated_coded.begin(), repeated_coded.end());
         std::vector<soft_bit_t> interleaved;
+        if (bypass_end) interleaved = soft_coded;
         
-        for (size_t i = 0; i < soft_coded.size(); i += block_size) {
+        for (size_t i = 0; !bypass_end && i < soft_coded.size(); i += block_size) {
             std::vector<soft_bit_t> block(soft_coded.begin() + i, 
                                           soft_coded.begin() + i + block_size);
             auto il = interleaver_.interleave(block);
