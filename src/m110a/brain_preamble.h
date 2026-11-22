@@ -75,10 +75,11 @@ struct ModeD1D2 {
     int d2;
 };
 
-// D1/D2 values for each mode index
-constexpr std::array<ModeD1D2, 18> mode_d1d2 = {{
-    {0, 0},  // 0: M75NS (no D1/D2)
-    {0, 0},  // 1: M75NL
+// D1/D2 values for each mode index (MIL-STD-188-110C/D Table XI, plus the
+// Harris application-specific codes at 18 and 19)
+constexpr std::array<ModeD1D2, 20> mode_d1d2 = {{
+    {7, 5},  // 0: M75NS
+    {5, 5},  // 1: M75NL
     {7, 4},  // 2: M150S
     {5, 4},  // 3: M150L
     {6, 7},  // 4: M300S
@@ -93,8 +94,10 @@ constexpr std::array<ModeD1D2, 18> mode_d1d2 = {{
     {0, 0},  // 13: unused
     {6, 5},  // 14: M1200V
     {0, 0},  // 15: unused
-    {6, 4},  // 16: M2400V
+    {7, 7},  // 16: M2400V (2400 digital voice)
     {7, 6},  // 17: M4800S
+    {5, 7},  // 18: M600H  (Harris application-specific, not a Table XI mode)
+    {5, 6},  // 19: M1200H (Harris application-specific, not a Table XI mode)
 }};
 
 } // namespace brain
@@ -106,7 +109,7 @@ class BrainPreambleEncoder {
 public:
     /**
      * Generate complete preamble for given mode and interleave type
-     * @param mode_index Mode index (0-17)
+     * @param mode_index Mode index (0-19)
      * @param is_long_interleave True for long interleave (24 frames), false for short (3 frames)
      * @return Vector of complex symbols
      */
@@ -294,7 +297,7 @@ public:
         result.d2 = decode_d_value(symbols, mode_start + 32, 32);
         
         // Look up mode from D1/D2
-        for (int i = 0; i < 18; i++) {
+        for (int i = 0; i < static_cast<int>(brain::mode_d1d2.size()); i++) {
             if (brain::mode_d1d2[i].d1 == result.d1 && 
                 brain::mode_d1d2[i].d2 == result.d2) {
                 result.mode_index = i;

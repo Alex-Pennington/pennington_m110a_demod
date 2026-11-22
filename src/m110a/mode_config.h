@@ -59,7 +59,12 @@ enum class ModeId {
     M600V   = 12,
     M1200V  = 14,
     M2400V  = 16,
-    M4800S  = 17
+    M4800S  = 17,
+    // Harris application-specific D1/D2 codes. Table XI reserves 5,6 and
+    // 5,7 for application-specific use; it does not define them. These are
+    // the waveforms measured on Harris RT-1694D recordings (docs/harris-melpe.md).
+    M600H   = 18,   // D1,D2 = 5,7: 600 bps, short interleave
+    M1200H  = 19    // D1,D2 = 5,6: 1200 bps, short interleave
 };
 
 /**
@@ -159,7 +164,8 @@ public:
             ModeId::M600S, ModeId::M600L, ModeId::M600V,
             ModeId::M1200S, ModeId::M1200L, ModeId::M1200V,
             ModeId::M2400S, ModeId::M2400L, ModeId::M2400V,
-            ModeId::M4800S
+            ModeId::M4800S,
+            ModeId::M600H, ModeId::M1200H
         };
     }
 
@@ -179,13 +185,13 @@ private:
             ModeId::M75NS, "M75NS", 75, Modulation::BPSK, 1, 2400, 32,
             InterleaveType::SHORT, 0.6f, 3,
             {10, 9, 7, 2, 45},
-            0, 0, 0, 0  // No probe symbols, no D1/D2
+            0, 0, 7, 5  // No probe symbols; D1,D2 = 7,5 (Table XI)
         };
         modes_[ModeId::M75NL] = {
             ModeId::M75NL, "M75NL", 75, Modulation::BPSK, 1, 2400, 32,
             InterleaveType::LONG, 4.8f, 24,
             {20, 36, 7, 29, 360},
-            0, 0, 0, 0
+            0, 0, 5, 5  // D1,D2 = 5,5 (Table XI)
         };
         
         // 150 bps BPSK modes - 8x repetition (rate 1/2 Viterbi + 4x repetition)
@@ -269,11 +275,14 @@ private:
             {40, 576, 9, 559, 240},
             32, 16, 4, 4
         };
+        // 2400 bps digital voice, D1,D2 = 7,7 (Table XI, short only). The
+        // waveform is 2400S's: 32/16 frames, 40 x 72 short interleave,
+        // measured on the Harris melp2400 recording (docs/harris-melpe.md).
         modes_[ModeId::M2400V] = {
             ModeId::M2400V, "M2400V", 2400, Modulation::PSK8, 3, 2400, 1,
             InterleaveType::VOICE, 0.6f, 3,
-            {40, 72, 0, 0, 30},
-            32, 16, 6, 4
+            {40, 72, 9, 55, 30},
+            32, 16, 7, 7
         };
         
         // 4800 bps 8PSK mode - NO FEC (uncoded), 1x repetition
@@ -282,6 +291,21 @@ private:
             InterleaveType::SHORT, 0.6f, 3,
             {40, 72, 0, 0, 30},  // row_inc=0 means no row interleaving
             32, 16, 7, 6
+        };
+
+        // Harris application-specific codes (not Table XI modes). Same
+        // waveform as 600S / 1200S; only D1 differs (5 for 6).
+        modes_[ModeId::M600H] = {
+            ModeId::M600H, "M600H", 600, Modulation::BPSK, 1, 2400, 1,
+            InterleaveType::SHORT, 0.6f, 3,
+            {40, 18, 9, 1, 36},
+            20, 20, 5, 7
+        };
+        modes_[ModeId::M1200H] = {
+            ModeId::M1200H, "M1200H", 1200, Modulation::QPSK, 2, 2400, 1,
+            InterleaveType::SHORT, 0.6f, 3,
+            {40, 36, 9, 19, 36},
+            20, 20, 5, 6
         };
     }
 };
@@ -321,7 +345,8 @@ inline ModeId mode_from_string(const std::string& name) {
         {"M600S", ModeId::M600S}, {"M600L", ModeId::M600L}, {"M600V", ModeId::M600V},
         {"M1200S", ModeId::M1200S}, {"M1200L", ModeId::M1200L}, {"M1200V", ModeId::M1200V},
         {"M2400S", ModeId::M2400S}, {"M2400L", ModeId::M2400L}, {"M2400V", ModeId::M2400V},
-        {"M4800S", ModeId::M4800S}
+        {"M4800S", ModeId::M4800S},
+        {"M600H", ModeId::M600H}, {"M1200H", ModeId::M1200H}
     };
     
     auto it = name_map.find(name);

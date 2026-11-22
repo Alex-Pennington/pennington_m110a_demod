@@ -670,10 +670,12 @@ private:
      * Look up mode name from D1/D2 values
      */
     std::string lookup_mode_name(int d1, int d2) {
-        // Mode table from Brain Modem
+        // MIL-STD-188-110C/D Table XI, then the Harris application-specific
+        // codes (Table XI reserves 5,6 and 5,7 and does not define them)
         struct ModeEntry { int d1; int d2; const char* name; };
         static const ModeEntry modes[] = {
-            {0, 0, "M75N"},    // 75bps no interleave (special case)
+            {7, 5, "M75NS"},
+            {5, 5, "M75NL"},
             {7, 4, "M150S"},
             {5, 4, "M150L"},
             {6, 7, "M300S"},
@@ -685,6 +687,9 @@ private:
             {6, 4, "M2400S"},
             {4, 4, "M2400L"},
             {7, 6, "M4800S"},
+            {7, 7, "M2400V"},  // 2400 digital voice
+            {5, 7, "M600H"},   // Harris application-specific: 600 bps, short
+            {5, 6, "M1200H"},  // Harris application-specific: 1200 bps, short
         };
         
         for (const auto& m : modes) {

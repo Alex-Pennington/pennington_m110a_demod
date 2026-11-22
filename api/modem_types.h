@@ -218,6 +218,14 @@ enum class Mode {
     // 4800 bps 8-PSK uncoded
     M4800_SHORT,
     M4800_LONG,
+    
+    // 2400 bps digital voice (Table XI D1,D2 = 7,7; short only)
+    M2400_VOICE,
+    
+    // Harris application-specific D1,D2 codes, not Table XI modes:
+    // 5,7 = 600 bps short, 5,6 = 1200 bps short (docs/harris-melpe.md)
+    M600_HARRIS,
+    M1200_HARRIS,
 };
 
 /**
@@ -240,6 +248,9 @@ inline std::string mode_name(Mode mode) {
         case Mode::M2400_LONG: return "2400L";
         case Mode::M4800_SHORT: return "4800S";
         case Mode::M4800_LONG: return "4800L";
+        case Mode::M2400_VOICE: return "2400V";
+        case Mode::M600_HARRIS: return "600H";
+        case Mode::M1200_HARRIS: return "1200H";
         default: return "UNKNOWN";
     }
 }
@@ -256,11 +267,14 @@ inline int mode_bitrate(Mode mode) {
         case Mode::M300_SHORT:
         case Mode::M300_LONG: return 300;
         case Mode::M600_SHORT:
-        case Mode::M600_LONG: return 600;
+        case Mode::M600_LONG:
+        case Mode::M600_HARRIS: return 600;
         case Mode::M1200_SHORT:
-        case Mode::M1200_LONG: return 1200;
+        case Mode::M1200_LONG:
+        case Mode::M1200_HARRIS: return 1200;
         case Mode::M2400_SHORT:
-        case Mode::M2400_LONG: return 2400;
+        case Mode::M2400_LONG:
+        case Mode::M2400_VOICE: return 2400;
         case Mode::M4800_SHORT:
         case Mode::M4800_LONG: return 4800;
         default: return 0;

@@ -90,7 +90,7 @@ bool json_number(const std::string& text, const std::string& key, double& out) {
 }
 
 bool parse_mode(const std::string& s, Mode& m) {
-    for (int i = 0; i <= static_cast<int>(Mode::M4800_LONG); i++)
+    for (int i = 0; i <= static_cast<int>(Mode::M1200_HARRIS); i++)
         if (mode_name(static_cast<Mode>(i)) == s) { m = static_cast<Mode>(i); return true; }
     return false;
 }

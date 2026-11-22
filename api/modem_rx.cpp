@@ -646,8 +646,9 @@ private:
         switch (mode) {
             case ModeId::M150S:  case ModeId::M150L:  return 1.5f;
             case ModeId::M300S:  case ModeId::M300L:  return 1.5f;
-            case ModeId::M600S:  case ModeId::M600L:  return 2.75f;
-            case ModeId::M1200S:                      return 5.0f;
+            case ModeId::M600S:  case ModeId::M600L:
+            case ModeId::M600H:                       return 2.75f;
+            case ModeId::M1200S: case ModeId::M1200H: return 5.0f;
             case ModeId::M1200L:                      return 4.5f;
             default:                                  return 7.75f;
         }
@@ -760,6 +761,9 @@ private:
             case ModeId::M2400S: return Mode::M2400_SHORT;
             case ModeId::M2400L: return Mode::M2400_LONG;
             case ModeId::M4800S: return Mode::M4800_SHORT;
+            case ModeId::M2400V: return Mode::M2400_VOICE;
+            case ModeId::M600H: return Mode::M600_HARRIS;
+            case ModeId::M1200H: return Mode::M1200_HARRIS;
             default: return Mode::AUTO;
         }
     }
@@ -779,6 +783,9 @@ private:
             case Mode::M2400_SHORT: return ModeId::M2400S;
             case Mode::M2400_LONG: return ModeId::M2400L;
             case Mode::M4800_SHORT: return ModeId::M4800S;
+            case Mode::M2400_VOICE: return ModeId::M2400V;
+            case Mode::M600_HARRIS: return ModeId::M600H;
+            case Mode::M1200_HARRIS: return ModeId::M1200H;
             default: return ModeId::M2400S;  // Fallback to M2400S
         }
     }
@@ -797,6 +804,9 @@ private:
         if (name == "M2400S") return ModeId::M2400S;
         if (name == "M2400L") return ModeId::M2400L;
         if (name == "M4800S") return ModeId::M4800S;
+        if (name == "M2400V") return ModeId::M2400V;
+        if (name == "M600H") return ModeId::M600H;
+        if (name == "M1200H") return ModeId::M1200H;
         return ModeId::M2400S;
     }
     

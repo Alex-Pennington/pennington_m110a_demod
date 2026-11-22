@@ -82,6 +82,13 @@ foreach(t test_mode_detect test_decode_quality)
   set_tests_properties(${t} PROPERTIES LABELS "rx")
 endforeach()
 
+# Table XI codes 7,7 (2400 digital voice), 7,5 / 5,5 (75 bps) and the Harris
+# application-specific codes 5,7 / 5,6: own TX -> AUTO RX
+add_executable(test_table_xi_modes test/test_table_xi_modes.cpp)
+target_link_libraries(test_table_xi_modes PRIVATE m110a_modem)
+add_test(NAME test_table_xi_modes COMMAND test_table_xi_modes)
+set_tests_properties(test_table_xi_modes PROPERTIES LABELS "rx")
+
 # ---- I/Q receive path through m110a_rx ----
 # Synthetic RSP2 I/Q (test/rx/synth_iq.py: 2 MS/s cs16, dial at +100 kHz)
 # carrying the MS-DMT reference transmissions, generated at test time in the
