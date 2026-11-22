@@ -44,10 +44,13 @@ target_link_libraries(m110a_rx PRIVATE m110a_modem)
 # MIL-STD-188-110D Appendix D (3 kHz) receiver: WAV -> WID, interleaver, text
 add_executable(m110d_rx m110d_rx/main.cpp)
 
+# MIL-STD-188-110D Appendix E channel simulator for test WAVs (test/110d/channel.py drives it)
+add_executable(m110d_chan m110d_chan/main.cpp)
+
 # test_gui is Windows-only (test/test_gui/brain_client.h uses winsock without a
 # POSIX fallback); build.ps1 builds it on Windows.
 
-set_target_properties(m110a_server hfchansim m110a_rx m110d_rx PROPERTIES
+set_target_properties(m110a_server hfchansim m110a_rx m110d_rx m110d_chan PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----
