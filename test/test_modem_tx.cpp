@@ -3,7 +3,11 @@
 // level: for every standard mode at 48 kHz, RRC and rectangular pulses give the
 //        same RMS, amplitude / sqrt(2) within 0.5 dB, and RRC peaks stay below
 //        full scale at the default amplitude.
+// d1d2:  in the symbols M110ACodec sends, the probes of the last two frames of every
+//        interleaver block carry D1 and D2 (Walsh pattern twice, then zeros), all other
+//        probes are zero (MIL-STD-188-110 5.3.2.3.7.1.2).
 #include "api/modem.h"
+#include "modem/m110a_codec.h"
 
 #include <cmath>
 #include <cstdio>
@@ -55,10 +59,50 @@ void level() {
     }
 }
 
+int psk8_index(const m110a::complex_t& s) {
+    int p = static_cast<int>(std::lround(std::atan2(s.imag(), s.real()) * 4.0 / M_PI));
+    return ((p % 8) + 8) % 8;
+}
+
+void d1d2() {
+    static const int WALSH[8][8] = {
+        {0,0,0,0,0,0,0,0}, {0,4,0,4,0,4,0,4}, {0,0,4,4,0,0,4,4}, {0,4,4,0,0,4,4,0},
+        {0,0,0,0,4,4,4,4}, {0,4,0,4,4,0,4,0}, {0,0,4,4,4,4,0,0}, {0,4,4,0,4,0,0,4}};
+    const m110a::ModeId ids[] = {m110a::ModeId::M150S, m110a::ModeId::M150L, m110a::ModeId::M300S,
+        m110a::ModeId::M300L, m110a::ModeId::M600S, m110a::ModeId::M600L, m110a::ModeId::M1200S,
+        m110a::ModeId::M1200L, m110a::ModeId::M2400S, m110a::ModeId::M2400L, m110a::ModeId::M4800S};
+    for (auto id : ids) {
+        const auto& mc = m110a::ModeDatabase::get(id);
+        m110a::M110ACodec codec(id);
+        std::vector<int> bits(4000, 1);
+        auto syms = codec.encode_bits_with_probes(bits, true);
+        const int u = mc.unknown_data_len, k = mc.known_data_len, plen = u + k;
+        const int fpb = mc.interleaver.rows * mc.interleaver.cols / (mc.bits_per_symbol * u);
+        m110a::DataScramblerFixed scr;
+        int bad = 0, frames = 0, marked = 0;
+        for (size_t f = 0; (f + 1) * plen <= syms.size(); f++, frames++) {
+            for (int i = 0; i < u; i++) scr.next();
+            const int fb = static_cast<int>(f % fpb);
+            const int d = fb == fpb - 2 ? mc.d1_sequence : fb == fpb - 1 ? mc.d2_sequence : -1;
+            if (d >= 0) marked++;
+            for (int i = 0; i < k; i++) {
+                int want = (d >= 0 && i < 16) ? WALSH[d & 7][i % 8] : 0;
+                int got = (psk8_index(syms[f * plen + u + i]) - scr.next() + 8) & 7;
+                if (got != want) bad++;
+            }
+        }
+        printf("d1d2  %-6s D1,D2=%d,%d frames=%d per_block=%d D1/D2 probes=%d wrong probe symbols=%d\n",
+               mc.name.c_str(), mc.d1_sequence, mc.d2_sequence, frames, fpb, marked, bad);
+        check(bad == 0, "probe symbols: D1/D2 before each block, zero elsewhere");
+        check(marked >= 2, "at least one D1/D2 pair sent");
+    }
+}
+
 }  // namespace
 
 int main() {
     level();
+    d1d2();
     printf(failures ? "test_modem_tx: %d FAILED\n" : "test_modem_tx: all passed\n", failures);
     return failures ? 1 : 0;
 }

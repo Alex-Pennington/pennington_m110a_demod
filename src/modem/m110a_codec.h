@@ -326,10 +326,21 @@ public:
         // Apply ONE continuous scrambler to everything
         std::vector<complex_t> output;
         DataScramblerFixed scrambler;
-        int pattern_len = unknown_len + known_len;
-        
+
+        // §5.3.2.3.7.1.2: the two known segments before each new interleaver block
+        // (the last two frames of every 1440 / 11520-symbol block; 4800 bps takes the
+        // short pattern) carry D1, then D2: the 8-symbol Walsh pattern twice, then
+        // zeros when the segment is 20 symbols long. The last block carries them too,
+        // as encode_message_bits() and the Harris RT-1694D do.
+        static const int WALSH[8][8] = {
+            {0,0,0,0,0,0,0,0}, {0,4,0,4,0,4,0,4}, {0,0,4,4,0,0,4,4}, {0,4,4,0,0,4,4,0},
+            {0,0,0,0,4,4,4,4}, {0,4,0,4,4,0,4,0}, {0,0,4,4,4,4,0,0}, {0,4,4,0,4,0,0,4}};
+        const int per_frame = config_.bits_per_symbol * unknown_len;
+        const int frames_per_block = block_size % per_frame == 0 ? block_size / per_frame : 0;
+        const int d1 = config_.d1_sequence & 7, d2 = config_.d2_sequence & 7;
+
         size_t tribit_idx = 0;
-        while (tribit_idx < tribits.size()) {
+        for (int frame = 0; tribit_idx < tribits.size(); frame++) {
             // Data symbols
             for (int i = 0; i < unknown_len && tribit_idx < tribits.size(); i++) {
                 int tribit = tribits[tribit_idx++];
@@ -354,9 +365,12 @@ public:
                 output.push_back(PSK8_POINTS[sym_idx]);
             }
             
-            // Probe symbols (scrambler only, data=0)
+            // Probe symbols: scrambler only (data 0), or D1 / D2 before a new block
+            const int fb = frames_per_block > 2 ? frame % frames_per_block : -1;
+            const int d = fb < 0 ? -1 : fb == frames_per_block - 2 ? d1 : fb == frames_per_block - 1 ? d2 : -1;
             for (int i = 0; i < known_len; i++) {
-                int sym_idx = scrambler.next();
+                int pat = (d >= 0 && i < 16) ? WALSH[d][i % 8] : 0;
+                int sym_idx = (pat + scrambler.next()) & 7;
                 output.push_back(PSK8_POINTS[sym_idx]);
             }
         }
