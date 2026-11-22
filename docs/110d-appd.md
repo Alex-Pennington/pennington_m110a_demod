@@ -13,10 +13,10 @@ checks (WID 1-13)"). The sections below it hold the detail and the full measured
 
 - **Clean interop set** (60 files from another transmitter, every 3 kHz waveform, WID 0-13,
   four interleavers, five variants). It passes 60/60 on WID and interleaver and 60/60 on text
-  with EOM as expected, at 48 kHz and at 8 kHz (measured on `fix/110d-wid0`). As one
-  continuous `--stream` feed it gives the 60 messages in order, none doubled, at 48 and 8 kHz,
-  and at 8 kHz inside 1 h of noise with no extra message (measured on `fix/110d-wid0`; see
-  "Streaming input").
+  with EOM as expected, at 48 kHz and at 8 kHz (measured on `fix/110d-probe-gate`). As one
+  continuous `--stream` feed it gives the 60 messages in order, none doubled, at 48 kHz as fast
+  as it goes and at 8 kHz at real-time pace, and at 8 kHz inside 1 h of noise at 30 dB with no
+  extra message (measured on `fix/110d-probe-gate`; see "Streaming input").
 - **Implemented:**
   - preamble acquisition over +-112.5 Hz;
   - WID, interleaver and constraint-length detection;
@@ -34,8 +34,8 @@ checks (WID 1-13)"). The sections below it hold the detail and the full measured
   the Table D-LXIV value for every WID; WID 1 at D-LXIV -3 dB went from 0/10 to 5/10 with the
   probe end checks, and no other cell moved (measured; table in "Probe end checks (WID 1-13)").
 - **Checks on this branch:** `m110d_rx --selftest` gives `selftest_mismatches=0`;
-  `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 24/24
-  (measured).
+  `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 25/25;
+  every exit status 0 (measured on `fix/110d-probe-gate`).
 - **STD-AMB-001:** files 56 and 57 acquire only with the PN running continuously across the
   section. The main matrix acquires only with PN restarting per Walsh symbol. The receiver
   finds whichever is in use.
