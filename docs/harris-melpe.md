@@ -556,6 +556,121 @@ frames is 0.18, against about 0.55 for 1200_1 and 1200_2. Whether melp2400 uses 
 standard 2400 bps layout at all is under separate review. NOT DETERMINABLE here; listening
 to the decoded audio would add evidence.
 
+## Current state of the Harris work
+
+### The task
+
+Alex set it on 2026-11-22: *"on the harris melpe we know its not standard melp thats why we
+were given the task the engineers that created the code and the code that produced the
+firmware are lost."*
+
+### Proven on the eight recordings
+
+- Mode codes in the 110A preamble: D1, D2 = 5, 7 is 600 bps BPSK short interleave (600H);
+  5, 6 is 1200 bps QPSK short (1200H); 7, 7 is 2400 bps voice (2400V, in Table XI [3]).
+  See *What the preambles carry*, above.
+- All 11 messages decode to payload bits and end in the EOM, checked by re-encoding against
+  the received symbols. `m110a_rx` reports `success=1 eom=1` on every one.
+- Every stream is the 54-bit header, whole vocoder units from bit 54, and a 108-bit trailer.
+  In the 600 and 1200 files the trailer is a 54-bit word, then the same word with its last
+  bit flipped. In melp600 and melp2400 it is all ones. melp2400's trailer start is inferred,
+  because its run of ones is 109 bits (`docs/harris-600-format.md` s2).
+- 1200H is standard STANAG 4591 1200 bps after the header and decodes to speech: a male
+  talker, pitch about 100 Hz (*Results on the Harris set*, above).
+- 600H is Harris's 60-bit, 100 ms block, laid out as US 6,917,914 B2 prints it [8]. Field
+  positions, field order and the frame-pair split of the spectrum hold on the recovered bits
+  (`docs/harris-600-format.md` s3, with the verdict for each claim).
+
+### Not proven
+
+- **The 600H codebooks.** None of the sources prints them: pitch 128 × 4, voicing 16 × 4,
+  gain 2048 × 8, LSF 1024 + 512 entries × 20 plus a mean vector, and the two fixed Fourier
+  magnitude vectors [7], [8]. The recordings carry indices, not parameters. So no 600H
+  audio can be synthesised from what is at hand (`docs/harris-600-format.md` s7).
+- **The bit significance inside each 600H field.** [8] says LSB first. The bits are only
+  indirectly consistent with that (`docs/harris-600-format.md` s3, claim P6).
+- **The melp2400 layout.** It is not standard MELPe 2400: a quarter of its frames carry
+  pitch codes the standard never sends, its parity fails, and 12 bit orders were tried. It is
+  not LPC-10e in any bit order (`docs/harris-blind.md` s A).
+
+### Alex's rulings, 2026-11-22
+
+All in the question dialog unless noted.
+
+- Recovering the Harris format is the task (his words above).
+- He chose "Merge and push, standing": verified Harris and 110A receive branches merge to
+  master and push without asking. The label is the coordinator's option text.
+- He chose "Yes, tables may go in": the quantiser tables printed in STANAG 4591 may be
+  committed as data. The label is the coordinator's option text.
+- He chose "Yes, use NATO copy": the MELPe codebooks may come from NATO's electronic
+  distribution (STANAG 4591 Annex C) and be committed as data. Copying from the Microsoft
+  reference coder stays forbidden. The label is the coordinator's option text, and the rest
+  of this item restates the ruling as Tyr relayed it. Those are STANAG 4591's codebooks,
+  not Harris's 600H codebooks (`docs/harris-600-format.md` s7).
+- His authority statement for the open-source interop modem, in his words: *"you have the
+  full authority to proceed with interop, we will soon have a Steve Sykes on the team with
+  a internet connected Falcon II and III, Steve is a retired Harris employee - he is the
+  person who told us the codebooks were lost"*.
+- On the recordings: *"yes send the list to your orchestrator for inclusion in the
+  report"*. Then, relayed by the MARS-relations Tyr: *"it needs to include them in its own
+  report"*. The list is in the proofs report, under "What we need next".
+
+### Branches
+
+- Merged to master: `feat/harris-mode`, `feat/harris-2400rx`, `feat/harris-melpe`,
+  `feat/harris-600v`.
+- Not merged:
+  - `feat/harris-blind`: the LPC-10e test, the patent sources and the review of the patent
+    layout against the 600H bits.
+  - `feat/harris-synth`: a clean-room MELP synthesiser in `src/melp_synth/`, with no tables.
+    Its fast ctest passed 17/17 at handoff. The slow sweeps were not run.
+  - `feat/harris-tx`: `docs/harris-tx.md` only. It records what TX does today and what is
+    missing: zeros where the D1/D2 known symbols belong at block boundaries, no EOM, no
+    interleaver flush, no Harris framing.
+
+### The radio play-back route (unchecked)
+
+The sender's note says the recordings were played back to the RT-1694D and that it decoded
+them. That suggests a route to the codebooks:
+
+1. Build 600H transmissions whose 60-bit blocks we choose.
+2. Have the operator play them into the radio and record its audio output.
+3. Read the codebooks off the radio's own synthesiser, which takes about 15 to 20 minutes
+   of audio.
+
+Risks:
+
+- the radio mutes or conceals unlikely frames;
+- it smooths across blocks;
+- the header carries something we do not understand;
+- it rejects our modulation;
+- the operator's audio chain colours the output.
+
+None of it is built: there is no step-1 WAV, no probe design and no audio set. It first
+needs a TX for the Harris modes, with byte-exact loopback tests.
+
+### Next, in order
+
+1. Build a TX for the Harris modes. Then make the step-1 WAV: one of their transmissions
+   re-made by our modem.
+2. Design and pilot the probe set. Prepare the fallback audio set, public-domain speech
+   only.
+3. Review and merge `feat/harris-blind`.
+4. Once the codebooks are in hand, build a 600H decoder on the synthesiser.
+
+### Rebuild and score
+
+From a worktree of master:
+
+```sh
+cmake -S . -B build && cmake --build build -j2
+ctest --test-dir build
+python3 -I test/harris/score.py --help   # --rx, --score, --proofs DIR
+```
+
+The trusted payloads regenerate byte for byte from master. The proofs writer puts `t7.json`
+and `t7-audio/` into the proofs inbox.
+
 ## References
 
 [1] *Interoperability and Performance Standards for Data Modems*, MIL-STD-188-110C,
@@ -581,3 +696,7 @@ to the decoded audio would add evidence.
 
 [7] M. W. Chamberlain, "A 600 bps MELP vocoder for use on HF channels," in Proc. IEEE
     MILCOM 2001. Harris Corporation, RF Communications Division. Not filed in this repo.
+
+[8] M. W. Chamberlain, "Voice over bandwidth constrained lines with mixed excitation linear
+    prediction transcoding," U.S. Patent 6 917 914 B2, Harris Corporation. Filed in this
+    repo at `docs/standards/US6917914B2.pdf`.
