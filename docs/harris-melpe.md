@@ -515,8 +515,8 @@ The sync bit then alternates in 100 % of frames; random bits reach at most 0.59.
 the same 54 bits: `011111011010100110011010100100000100111110000011110010` (stream order).
 They differ from bit 54 on. The 1200 bps frames start right after it. That the header is
 the STANAG 4591 Annex O frame synchronization sequence [4, Annex O] is an inference:
-Annex O is not in the edition at hand. The 600 bps format worker (feat/harris-600v,
-`docs/harris-600-format.md`, not yet reviewed) measured that every stream also ends in a
+Annex O is not in the edition at hand. The 600 bps format work
+(`docs/harris-600-format.md` s2; its s3 gives the 600H layout and a verdict per claim) measured that every stream also ends in a
 108-bit trailer on a vocoder-unit boundary: a repeated 54-bit word in the 600 and 1200
 files, and 108 ones in melp600 and melp2400. The scorer drops both before cutting frames,
 and before the frame-period check. After the cut, the melp2400 grid is at offset 6 of the
