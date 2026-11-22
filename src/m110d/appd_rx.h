@@ -287,7 +287,14 @@ struct RxResult {
     int chips_wid = 0, chip_err_wid = 0;
     std::vector<int> fixed_sym_err;  // chip errors per fixed Walsh symbol
     std::vector<int> boundary_frames;  // data frames followed by the cyclically shifted probe
+    int walsh_alt_blocks = -1;  // WID 0: blocks whose last symbol matched the alternate Walsh set
 };
+
+}  // namespace m110d
+
+#include "m110d/appd_walsh.h"  // WID 0 decoder (D.5.1.2.3, D.5.1.4)
+
+namespace m110d {
 
 class AppDRx {
 public:
@@ -301,6 +308,11 @@ public:
         y_ = to_baseband(audio, fs, sps_);
         if (!acquire(r)) return r;
         if (!read_preamble(r)) return r;
+        if (r.wid.waveform == 0) {  // WID 0: Walsh data, no frames or probes (Tables D-XI, D-XII)
+            decode_walsh({[this](long n) { return sample((double)n); }, data_start_sym_, h0_,
+                          ((long)y_.size() - t0_) / sps_, opt_.verbose}, r);
+            return r;
+        }
         decode_payload(r);
         return r;
     }

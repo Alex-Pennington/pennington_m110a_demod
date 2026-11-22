@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
             std::string v = next();
             opt.code_reversed = v == "d9" ? 0 : v == "alt" ? 1 : -1;
         } else if (a == "--selftest") {
-            int bad = tables_selftest();
+            int bad = tables_selftest() + walsh_selftest();
             std::printf("selftest_mismatches=%d\n", bad);
             return bad ? 1 : 0;
         } else if (a == "-v") {
@@ -108,6 +108,7 @@ int main(int argc, char** argv) {
         std::printf("eom=%d\n", r.eom ? 1 : 0);
         std::printf("bytes=%zu\n", r.bytes.size());
         std::printf("text=%s\n", escape(r.bytes).c_str());
+        if (r.walsh_alt_blocks >= 0) std::printf("walsh_alt_last=%d/%d\n", r.walsh_alt_blocks, r.blocks_decoded);
     }
     return 0;
 }
