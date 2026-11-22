@@ -13,9 +13,10 @@
 // Synchronisation: the preamble is searched in time and over 25 Hz frequency bins (+-112 Hz);
 // the clock ratio is fitted from the fixed-subsection timing of every super-frame; WID 1-13
 // track residual frequency and symbol timing on the D.5.2.2 mini-probes, WID 0 with a
-// decision-directed carrier and timing loop. Channel estimation is one complex gain per
-// mini-probe, interpolated across the frame: there is no equaliser. An equaliser would replace
-// the per-symbol `h` in decode_payload, with the tracked `tau` and frequency ramp kept.
+// decision-directed carrier and timing loop. WID 1-13 are equalised per data frame: a CIR
+// least-squares fit on every mini-probe and a block MMSE-DFE between two probes, under the
+// tracked `tau` and frequency ramp (appd_eq.h, setup_eq, equalise_frame). RxOptions::eq = 0
+// keeps one complex gain per mini-probe, interpolated across the frame.
 //
 // Not decoded: K=9.
 #ifndef M110D_APPD_RX_H
