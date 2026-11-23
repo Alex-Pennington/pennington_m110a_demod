@@ -1115,8 +1115,12 @@ void rx_loop() {
             preroll.clear();
             burst.insert(burst.end(), x.begin(), x.end());
         } else {
+            // 0.1 s of pre-roll. The 110A AUTO receiver finds the preamble only near the start
+            // of its buffer: measured on a 600S transmit WAV with digital silence before it,
+            // it decodes with up to 9600 samples (0.2 s) of lead and fails from 9840 on
+            // (docs/110d-appa-lan.md). 0.1 s plus one 10 ms block stays inside that.
             preroll.push_back(x);
-            if (preroll.size() > 20) preroll.pop_front();  // 0.2 s
+            if (preroll.size() > 10) preroll.pop_front();
         }
         if (ns < blk) break;
     }
