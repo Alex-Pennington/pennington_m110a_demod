@@ -333,15 +333,22 @@ public:
         // data where it is found. Without it, fall back to the older ModemTX ending
         // of 4 frames of zero data, which decode as trailing zero bytes.
         long eom_bit = cut_at_eom(decoded);
-        // Without the EOM the message ends where the signal does: decode only the frames
-        // up to the last one carrying signal, and keep the bytes those frames carry.
+        // Without the EOM the message ends where the signal does, in whole interleaver
+        // blocks: a block counts when the signal frames reach to within 4 frames of its
+        // end (a partial block cannot be trusted: its erased part is spread over all of it).
+        // Decode only those blocks and keep the bytes they carry.
         const size_t pattern = static_cast<size_t>(mode_cfg.unknown_data_len + mode_cfg.known_data_len);
-        const size_t keep = signal_frames(phase_corrected, mode_cfg.unknown_data_len,
-                                          mode_cfg.known_data_len) * pattern;
-        if (eom_bit < 0 && keep < equalized_symbols.size()) {
-            equalized_symbols.resize(keep);
-            decoded = keep ? run_codec(equalized_symbols) : std::vector<uint8_t>();
-            decoded.resize(std::min(decoded.size(), info_bytes(mode_cfg, keep / pattern)));
+        const size_t sig = signal_frames(phase_corrected, mode_cfg.unknown_data_len,
+                                         mode_cfg.known_data_len);
+        const size_t bf = static_cast<size_t>(block_frames_);
+        const size_t whole = bf > 0 ? (sig + 4) / bf * bf : sig;
+        const size_t blocks_seen = bf > 0 ? (phase_corrected.size() / pattern + bf - 1) / bf : 0;
+        if (eom_bit < 0) {
+            if (whole * pattern < equalized_symbols.size()) {
+                equalized_symbols.resize(whole * pattern);
+                decoded = whole ? run_codec(equalized_symbols) : std::vector<uint8_t>();
+            }
+            decoded.resize(std::min(decoded.size(), info_bytes(mode_cfg, whole)));
             eom_bit = cut_at_eom(decoded);
         }
         result.eom_sequence = eom_bit >= 0;
@@ -358,7 +365,7 @@ public:
         // the EOM says it is shorter (a 4800S message can be 2 frames long), or the
         // signal is (no signal after the preamble: nothing is scored, no success).
         const int span = std::min<int>(quality_span(mode_cfg, eom_bit),
-                                       static_cast<int>(eom_bit < 0 ? keep : equalized_symbols.size()));
+                                       static_cast<int>(eom_bit < 0 ? sig * pattern : equalized_symbols.size()));
         double dfe_err = 0.0, dfe_ref = 0.0;
         for (const auto& f : dfe_probe_frames_) {
             if (f[0] <= span) { dfe_err += f[1]; dfe_ref += f[2]; }
@@ -374,6 +381,12 @@ public:
         result.quality_threshold_db = quality_threshold_db(mode_id);
         result.success = result.quality_db >= result.quality_threshold_db;
         if (!result.success) result.error = low_quality_error(result);
+        if (result.success && eom_bit < 0 && decoded.empty()) {
+            result.success = false;
+            result.error = Error(ErrorCode::RX_DECODE_FAILED,
+                                 "Signal covers 0 of " + std::to_string(blocks_seen) +
+                                 " interleaver blocks; no bytes reported");
+        }
         const std::string other = config_.mode == Mode::AUTO ? "" : preamble_contradicts(brain_result, mode_id);
         if (result.success && !other.empty()) {
             result.success = false;

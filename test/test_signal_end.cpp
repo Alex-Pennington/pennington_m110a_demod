@@ -9,8 +9,9 @@
  *   - whole blocks, then 5 s of noise: AUTO and the forced mode must give success, the
  *     payload, and at most the one padding byte of the last block, no bytes from the noise;
  *   - 600S cut 1.5 blocks before its end (a burst that stops without EOM), then 5 s of
- *     noise: success, the first 2 blocks exact, and 112.5 bytes +/- 2 frames (2.5 blocks
- *     of 45 bytes at 1.25 bytes a frame);
+ *     noise: success and exactly the 2 whole blocks the signal covers (90 bytes); the
+ *     half block's bytes are not reported;
+ *   - 300L stopping 1.2 s into its first block, then noise: no whole block, success=0, no bytes;
  *   - 300L, 2 blocks, the signal off for 1 s mid-message under noise: the whole
  *     message, exact (a fade is not the end of the signal);
  *   - a 300L transmission from its last 3 preamble frames on (what m110a_rx hands
@@ -112,7 +113,7 @@ int main() {
         }
     }
 
-    // 2. A burst cut mid-block: the bytes follow the signal to within 2 frames.
+    // 2. A burst cut mid-block: the whole blocks the signal covers, no more.
     {
         const auto data = payload(179, 9);  // 600S: 4 blocks of 45 bytes, 0.6 s each
         Samples sig = tx(Mode::M600_SHORT, data);
@@ -125,7 +126,23 @@ int main() {
                               std::equal(data.begin(), data.begin() + 90, r.data.begin());
             snprintf(what, sizeof what, "600S cut at 2.5 blocks + 5 s noise, %s",
                      m == Mode::AUTO ? "AUTO" : "forced");
-            check(what, r, r.success && head && r.data.size() >= 110 && r.data.size() <= 115);
+            check(what, r, r.success && head && r.data.size() == 90);
+        }
+    }
+
+    // 2a. The signal stops 1.2 s into 300L's first 4.8 s block (the on-air slice's shape):
+    // no whole block, so success=0 and no bytes.
+    {
+        const auto data = payload(179, 19);
+        Samples sig = tx(Mode::M300_LONG, data);
+        const float level = rms(sig);
+        sig.resize(static_cast<size_t>(288 + 24 * 480) * 20 + static_cast<size_t>(1.2f * FS));
+        const Samples s = with_noise(sig, 10.0f, level, 29);
+        for (Mode m : {Mode::AUTO, Mode::M300_LONG}) {
+            DecodeResult r = quiet_decode(s, m);
+            snprintf(what, sizeof what, "300L stops 1.2 s into block 1, %s",
+                     m == Mode::AUTO ? "AUTO" : "forced");
+            check(what, r, !r.success && r.data.empty());
         }
     }
 
