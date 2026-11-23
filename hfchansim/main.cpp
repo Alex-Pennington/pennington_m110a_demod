@@ -28,6 +28,7 @@
 #include "../src/channel/awgn.h"
 #include "../src/channel/watterson.h"
 #include "../src/channel/multipath.h"
+#include "../src/channel/appe_channel.h"
 #include "../api/version.h"
 
 namespace fs = std::filesystem;
@@ -370,16 +371,24 @@ void apply_preset(Config& cfg, const std::string& name) {
 // Frequency Offset Application
 // ============================================================
 
+// A frequency offset is a shift of the spectrum, f -> f + freq_hz. Multiplying the real
+// audio by cos(2 pi f t) is not one: it puts a copy at each of f - freq_hz and f + freq_hz,
+// at half amplitude each. So form the analytic signal x + jH{x} (FFT form, appe::analytic,
+// zero-padded so the kernel's circular wrap lands in padding), rotate it by
+// exp(j 2 pi freq_hz t), and keep the real part.
 void apply_freq_offset(std::vector<float>& samples, float freq_hz, float sample_rate) {
-    if (std::abs(freq_hz) < 0.001f) return;
-    
-    float phase = 0.0f;
-    float phase_inc = 2.0f * M_PI * freq_hz / sample_rate;
-    
+    if (std::abs(freq_hz) < 0.001f || samples.empty()) return;
+
+    std::vector<double> x(samples.begin(), samples.end());
+    std::vector<appe::cd> xa = appe::analytic(x);
+
+    const double inc = 2.0 * appe::kPi * freq_hz / sample_rate;
+    double phase = 0.0;
     for (size_t i = 0; i < samples.size(); i++) {
-        samples[i] *= std::cos(phase);
-        phase += phase_inc;
-        if (phase > M_PI) phase -= 2.0f * M_PI;
+        samples[i] = static_cast<float>(std::real(xa[i] * std::polar(1.0, phase)));
+        phase += inc;
+        if (phase > appe::kPi) phase -= 2.0 * appe::kPi;
+        if (phase < -appe::kPi) phase += 2.0 * appe::kPi;
     }
 }
 
