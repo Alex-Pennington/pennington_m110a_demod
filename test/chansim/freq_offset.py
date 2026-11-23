@@ -10,9 +10,9 @@ Two checks, both through the hfchansim binary:
   [--snr S] -> I/Q (test/harris/modem.py's route) -> m110a_rx (AUTO). Each case passes
   when m110a_rx prints one message, success=1, eom=1, the mode from D1/D2 and the payload
   bytes exactly. A case with |F| above --afc is printed and does not fail the run unless
-  --strict-afc. m110a_rx's preamble search acquires to +/-37 Hz, and the acquisition
-  frequency is right there, but the decode after it holds to +/-28 Hz in every standard
-  mode (at +/-30 Hz it fails at 10 dB, from +/-32 Hz it fails clean), so --afc is 28.
+  --strict-afc. m110a_rx acquires over +/-87.5 Hz (sync/preamble_acq.h: three offset
+  hypotheses, -50, 0 and +50 Hz) and ModemRX accepts a coarse offset to +/-80 Hz, so --afc
+  is 75, the offset MIL-STD-188-110D tests at (C.6.3, D.6.4).
 
 hfchansim's --snr is its own measure: AWGN against the whole-file power over the whole
 0..24 kHz band, so --snr 10 is about 19 dB in 3 kHz.
@@ -20,7 +20,7 @@ hfchansim's --snr is its own measure: AWGN against the whole-file power over the
 Usage: python3 -I -B test/chansim/freq_offset.py --chansim HFCHANSIM --work DIR
            [--tones] [--offsets 5,-5,20,-20,75,-75] [--image-db 60]
            [--loopback --tool MODEM_TX_WAV --rx M110A_RX --modes 600S,...
-            --snr inf,10 --afc 28]
+            --snr inf,10 --afc 75]
 """
 import argparse
 import os
@@ -151,7 +151,7 @@ def main():
     ap.add_argument("--rx")
     ap.add_argument("--modes", default="150S,150L,300S,300L,600S,600L,1200S,1200L,2400S,2400L")
     ap.add_argument("--snr", default="inf,10")
-    ap.add_argument("--afc", type=float, default=28.0)
+    ap.add_argument("--afc", type=float, default=75.0)
     ap.add_argument("--strict-afc", action="store_true")
     a = ap.parse_args()
     a.offsets = [float(s) for s in a.offsets.split(",")]
