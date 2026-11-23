@@ -109,6 +109,13 @@ target_link_libraries(test_late_start PRIVATE m110a_modem)
 add_test(NAME test_late_start COMMAND test_late_start)
 set_tests_properties(test_late_start PROPERTIES LABELS "rx" TIMEOUT 3600)
 
+# The bytes follow the signal when it ends without EOM, and no success for noise or for a
+# forced mode whose D1/D2 the preamble contradicts (fix/m110a-forced-mode-gate)
+add_executable(test_signal_end test/test_signal_end.cpp)
+target_link_libraries(test_signal_end PRIVATE m110a_modem)
+add_test(NAME test_signal_end COMMAND test_signal_end)
+set_tests_properties(test_signal_end PROPERTIES LABELS "rx" TIMEOUT 3600)
+
 # ModemTX output level and configuration checks (docs/TX_CHAIN.md)
 add_executable(test_modem_tx test/test_modem_tx.cpp)
 target_link_libraries(test_modem_tx PRIVATE m110a_modem)
