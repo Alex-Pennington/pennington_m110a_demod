@@ -46,7 +46,7 @@ struct BrainDecoderConfig {
     float freq_search_range = 10.0f;  // Hz, search Â± this range for carrier
     float freq_search_step = 1.0f;    // Hz, step size for frequency search
     bool use_fft_coarse_afc = true;   // Enable two-stage AFC (FFT coarse + preamble fine)
-    float coarse_search_range = 30.0f; // Hz, largest coarse (preamble) estimate accepted
+    float coarse_search_range = 80.0f; // Hz, largest coarse (preamble) estimate accepted
     float fine_search_range = 2.5f;    // Hz, preamble fine search range around coarse estimate
     bool verbose = false;
     
@@ -136,7 +136,7 @@ public:
             // The 288-symbol common segment is correlated in nine 32-symbol
             // blocks; block magnitudes find it at any carrier offset, and
             // the block-to-block phase step measures the offset
-            // (sync/preamble_acq.h, unambiguous over +/-37.5 Hz).
+            // (sync/preamble_acq.h, three offset hypotheses, +/-87.5 Hz).
             // This replaces a delay-multiply estimate on the data, whose
             // product of two 8-PSK symbols carries a random multiple of 45
             // degrees: it averaged to noise, so decoding failed beyond about

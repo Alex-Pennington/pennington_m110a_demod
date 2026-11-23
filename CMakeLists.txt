@@ -196,8 +196,8 @@ if(M110A_HAVE_SCIPY)
   set_tests_properties(tx_noise_gate PROPERTIES LABELS "iq;tx" TIMEOUT 3600)
 
   # hfchansim --freq is a true frequency shift: one tone at f + F, the image at f - F at
-  # least 60 dB down; and ModemTX -> hfchansim --freq -> m110a_rx decodes inside the
-  # receiver's decode range, +/-28 Hz (test/chansim/freq_offset.py)
+  # least 60 dB down; and ModemTX -> hfchansim --freq -> m110a_rx decodes to +/-75 Hz,
+  # the offset MIL-STD-188-110D tests at (test/chansim/freq_offset.py)
   set(_fo ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/chansim/freq_offset.py
           --chansim $<TARGET_FILE:hfchansim>)
   add_test(NAME hfchansim_freq_tones
@@ -206,7 +206,7 @@ if(M110A_HAVE_SCIPY)
   set_tests_properties(hfchansim_freq_tones PROPERTIES LABELS "fast;chansim" TIMEOUT 600)
   add_test(NAME hfchansim_freq_loopback
            COMMAND ${_fo} --loopback --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>
-                   --modes 150S,600S,2400S,1200L --offsets 5,-5,20,-20 --snr inf,10
+                   --modes 150S,600S,2400S,1200L --offsets=5,-5,20,-20,40,-40,75,-75 --snr inf,10
                    --work ${CMAKE_BINARY_DIR}/rx_work/hfchansim_freq_loopback)
   set_tests_properties(hfchansim_freq_loopback PROPERTIES LABELS "iq;chansim" TIMEOUT 3600)
 
