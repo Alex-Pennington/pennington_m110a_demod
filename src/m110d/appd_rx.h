@@ -996,7 +996,8 @@ private:
     // Symbol timing tracking on the same probes: tau is the timing offset in samples at a
     // probe, dtau its change per frame (residual clock error after rate_). The probe is
     // correlated at tau_pred and +-sps/4 and |gain| is fitted with a parabola; the update is
-    // skipped on a probe below quality 0.6 (a fade), and dtau is held to +-1000 ppm.
+    // skipped on a probe below probe_q_track (a fade, or no signal), and dtau is held to
+    // +-1000 ppm.
     // Every probe position up to the end of the input is recorded.
     void track_probes(int U, int K, const std::vector<cplx>& probe, const std::vector<cplx>& probe_b,
                       std::vector<ProbeRec>& recs) const {
@@ -1028,7 +1029,7 @@ private:
             const bool use_b = qb > qa;
             const std::vector<cplx>& pr = use_b ? probe_b : probe;
             double tau_next = tau_pred;
-            if (std::max(qa, qb) >= 0.6) {
+            if (std::max(qa, qb) >= probe_q_track(K)) {
                 double vl = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred - dl));
                 double vc = std::abs(use_b ? hb : ha);
                 double vr = std::abs(probe_gain(next_probe, pr, nullptr, fr_pred, tau_pred + dl));
@@ -1053,10 +1054,10 @@ private:
             pr_.th = th;
             pr_.th_pred = th_pred;
             recs.push_back(pr_);
-            // Below quality 0.3 (a deep fade, or no signal) the probe neither updates the
-            // frequency loop nor becomes the phase reference; the callers decide where the
-            // signal ends (decode_payload).
-            if (pr_.q < 0.3) {
+            // Below the end cutoff (probe_q_end: a deep fade, or no signal) the probe neither
+            // updates the frequency loop nor becomes the phase reference; the callers decide
+            // where the signal ends (decode_payload).
+            if (pr_.q < probe_q_end(K)) {
                 recs.back().th = th_pred;
                 fr = fr_pred;
                 h_prev *= std::polar(1.0, th_pred);  // phase reference advanced by the prediction
@@ -1099,6 +1100,11 @@ private:
     // is X / sqrt(K): X has mean 1.15, sd 0.42, p90 1.70 to 1.73 at K = 24, 32 and 48
     // (measured, 300 s of noise after a burst, 6 seeds per K).
     static double probe_q_end(int K) { return 1.75 / std::sqrt((double)K); }
+    // The timing loop moves only on a probe that noise does not reach: q above the noise
+    // p99.99 (X about 3.0; 0.43, 0.53, 0.61 at K = 48, 32, 24). A fixed 0.6 held WID 1 at -6 dB
+    // (q about 0.48) for most of the burst, so the preamble clock error (tens of ppm there) was
+    // never trimmed ("Tracking gates" in docs/110d-appd.md).
+    static double probe_q_track(int K) { return 3.0 / std::sqrt((double)K); }
     // Equaliser fit quality on noise: the fraction a T-tap fit explains of N observations is
     // Beta(T, N - T), so qfit has mean 0 and sd sqrt(T / ((N - T)(N + 1))); its p90 is 1.32
     // to 1.38 sd for N = 12 to 48, T = 1 to 6 (Monte Carlo). Measured on noise: sd 0.023 at
