@@ -19,6 +19,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -925,15 +926,50 @@ int listen_tcp(int port) {
         logf("cannot listen on %s:%d: %s", cfg.bind.c_str(), port, strerror(errno));
         exit(1);
     }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);  // accept_loop drains until EAGAIN
     return fd;
 }
 
-void accept_loop(int lfd, bool rci) {
+// One thread accepts on both the TCP data socket and the control connection, so the DTE slot
+// (A.4.1) goes to connections in the order the kernel completed their handshakes, not in the
+// order two racing threads happen to run. On each wake it takes every pending connection from
+// both listeners, then hands them out oldest first by TCP_INFO tcpi_last_ack_recv (ms since the
+// handshake's final ACK; 1 ms resolution at HZ=1000). Two handshakes completed in the same
+// millisecond cannot be ordered from user space; that tie goes to the control connection.
+void claim(int fd, bool rci, sockaddr_in peer);
+
+struct Pending {
+    int fd;
+    bool rci;
+    sockaddr_in peer;
+    uint32_t age_ms;
+};
+
+void accept_loop(int tl, int rl) {
     for (;;) {
-        sockaddr_in peer{};
-        socklen_t pl = sizeof peer;
-        int fd = ::accept(lfd, reinterpret_cast<sockaddr*>(&peer), &pl);
-        if (fd < 0) { if (M.stop) return; continue; }
+        pollfd pf[2] = {{rl, POLLIN, 0}, {tl, POLLIN, 0}};
+        if (::poll(pf, 2, -1) < 0) { if (M.stop) return; continue; }
+        std::vector<Pending> pend;
+        for (int i = 0; i < 2; i++) {
+            for (;;) {
+                Pending p{-1, i == 0, {}, 0};
+                socklen_t pl = sizeof p.peer;
+                p.fd = ::accept4(pf[i].fd, reinterpret_cast<sockaddr*>(&p.peer), &pl, 0);
+                if (p.fd < 0) break;  // the listeners are non-blocking: EAGAIN ends the drain
+                tcp_info ti{};
+                socklen_t tl2 = sizeof ti;
+                if (getsockopt(p.fd, IPPROTO_TCP, TCP_INFO, &ti, &tl2) == 0) p.age_ms = ti.tcpi_last_ack_recv;
+                pend.push_back(p);
+            }
+        }
+        // oldest first; stable, so FIFO within a port and the control connection first on a tie
+        std::stable_sort(pend.begin(), pend.end(), [](const Pending& a, const Pending& b) { return a.age_ms > b.age_ms; });
+        for (auto& p : pend) claim(p.fd, p.rci, p.peer);
+    }
+}
+
+void claim(int fd, bool rci, sockaddr_in peer) {
+    {
         int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
         timeval tv{5, 0};
@@ -944,7 +980,7 @@ void accept_loop(int lfd, bool rci) {
             lk.unlock();
             logf("%s: second DTE rejected", rci ? "rci" : "tcp");
             ::close(fd);
-            continue;
+            return;
         }
         if (rci) {
             M.rci_fd = fd;
@@ -1206,8 +1242,7 @@ int main(int argc, char** argv) {
     logf("ready: tcp %d, rci %d, udp %d, tx %s %u bps blocking factor %u", cfg.tcp_port, cfg.rci_port, cfg.udp_port,
          cfg.mode_name.c_str(), unsigned(mode_bitrate(cfg.mode)), blocking_factor(cfg.mode));
 
-    std::thread(accept_loop, tl, false).detach();
-    std::thread(accept_loop, rl, true).detach();
+    std::thread(accept_loop, tl, rl).detach();
     std::thread(udp_loop).detach();
     std::thread(timer_loop).detach();
     std::thread(tx_loop).detach();

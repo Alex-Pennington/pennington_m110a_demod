@@ -63,7 +63,20 @@ Closing the control connection ends the UDP session.
 
 The modem holds one DTE at a time, across both interfaces. While a DTE holds the TCP data
 socket or the control connection, a new connection on either port is accepted and closed at
-once, with no bytes sent. The appendix says the attempt "shall be rejected" and does not name
+once, with no bytes sent.
+
+One thread accepts on both ports, and the slot goes to connections in the order their
+handshakes completed (TCP_INFO `tcpi_last_ack_recv`, 1 ms resolution). Two handshakes
+completed in the same millisecond can't be ordered from user space, so that tie goes to the
+control connection.
+
+Measured on 6 cores with all cores busy: 300 rounds of "control connection, then TCP
+connection". The earlier design, one accept thread per port, gave the TCP DTE the modem in 95
+of 300 rounds. The single acceptor did so in 2 of 300. In both of those, the kernel queued the
+TCP connection before the control connection, in separate wake-ups.
+
+Inferred: under that load, the loopback deferred the final ACK of the earlier handshake.
+Nothing in the modem can see an order that the kernel itself reversed. The appendix says the attempt "shall be rejected" and does not name
 a way to reject it. Closing the connection is this implementation's reading. Measured:
 `appa_lan_dte` checks a second TCP DTE, a second control connection, and a TCP DTE while a UDP
 DTE holds control.
