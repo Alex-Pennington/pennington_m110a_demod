@@ -204,6 +204,8 @@ if(M110A_HAVE_SCIPY)
     "tx_loopback_rect|--modes ${_coded} --snr inf,10 --rect"
     # message lengths around frame, block and byte boundaries
     "tx_loopback_lengths|--modes 150S,600S,2400S,1200L,4800S --snr inf --bytes 1,23,157,158,159,400"
+    # the sender's clock 36 ppm off the receiver's, as on air (docs/m110a-timing-steps.md)
+    "tx_loopback_drift|--modes 150L,300L,600L,1200L --snr 10 --bytes 400 --ppm 36,-36"
   )
   foreach(c ${_tx_cases})
     string(REPLACE "|" ";" _p "${c}")
