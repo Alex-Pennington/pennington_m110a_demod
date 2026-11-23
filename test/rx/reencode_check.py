@@ -14,8 +14,11 @@ with the received ones:
     windows +-50 symbols so a timing step does not break it. The probes repeat every
     lcm(160, frame) symbols, so the data start is tried at each such period from the
     preamble on, and the one the decoded bytes agree with best is kept.
-  - Each frame is phased from its own probes and the next frame's, and each symbol is
-    decided among the mode's points (BPSK, QPSK, 8PSK) turned by its scrambler value.
+  - The carrier offset is measured from the probes (their phase step from frame to frame,
+    to +-30 Hz) and removed. Each frame is then phased from its own probes and the next
+    frame's, and each symbol is decided among the mode's points (BPSK, QPSK, 8PSK) turned by
+    its scrambler value. Without the offset removed, the data, 20 symbols ahead of the probes,
+    turned 35 degrees against them at +11.6 Hz on air, and right bytes scored as wrong.
   - probe agreement: probe symbols decided right, the channel's raw symbol accuracy.
   - data agreement: data symbols equal to the re-encoded ones.
   - random-bytes control: the same for random bytes of the same length, i.e. chance.
@@ -204,6 +207,10 @@ def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
     ref = PSK8[scr]
     z = r * np.conj(ref)
     zs = np.where(isp, z, 0).reshape(nf, -1).sum(1)
+    # the carrier offset, from the probes' phase step frame to frame (unambiguous to +-30 Hz)
+    z = z * np.exp(-1j * np.angle(np.sum(zs[1:] * np.conj(zs[:-1]))) / (u + k) * n)
+    zs = np.where(isp, z, 0).reshape(nf, -1).sum(1)
+    r = z * ref
     g = zs + np.append(zs[1:], 0)  # each frame phased from its own probes and the next frame's
     # decide each symbol among the mode's points (BPSK, QPSK or 8PSK) turned by its scrambler value
     st = STEP8[rate]
