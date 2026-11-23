@@ -265,6 +265,24 @@ public:
     }
     
     /**
+     * Where to cut rf_samples so its first preamble lies inside the windows decode() searches
+     * (the fine AFC tries starts in the first 200 symbols, find_preamble in the first
+     * max_search_symbols). The whole buffer is scanned a quarter symbol apart with
+     * PreambleCorrelator (+/-87.5 Hz; about 0.17 on noise, 1 on a clean preamble); the first
+     * start whose metric reaches threshold, less margin_symbols, is returned. 0 when no start
+     * reaches threshold, so decode() then sees the buffer as before.
+     */
+    size_t first_preamble_cut(const std::vector<float>& rf_samples, float threshold = 0.45f,
+                              int margin_symbols = 96) {
+        const auto bb = downconvert_and_filter(rf_samples);
+        PreambleCorrelator corr(sps_, config_.baud_rate);
+        for (size_t t = 0; t + corr.span() <= bb.size(); t += std::max(1, sps_ / 4))
+            if (corr.evaluate(&bb[t]) >= threshold)
+                return t > static_cast<size_t>(margin_symbols * sps_) ? t - margin_symbols * sps_ : 0;
+        return 0;
+    }
+
+    /**
      * Get expected preamble pattern (for external use)
      */
     const std::vector<uint8_t>& common_pattern() const {
