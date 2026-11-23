@@ -116,16 +116,16 @@ struct RxConfig {
     
     /// Enable two-stage AFC (coarse + preamble fine)
     // When true: coarse estimate from the common preamble's block-to-block
-    //            phase step (sync/preamble_acq.h, unambiguous over ±37.5 Hz),
-    //            then preamble search ±fine_search_range around it
+    //            phase step over three offset hypotheses (sync/preamble_acq.h,
+    //            ±87.5 Hz), then preamble search ±fine_search_range around it
     // When false: Uses legacy preamble-only AFC (±2 Hz practical limit)
     bool use_fft_coarse_afc = true;
     
     /// Largest coarse AFC estimate accepted (Hz)
-    // Only used when use_fft_coarse_afc = true. Default ±30 Hz: margin
-    // beyond the ±10 Hz of MIL-STD-188-110A and an SDR's clock error
-    // (1 ppm is 7 Hz at 7 MHz).
-    float coarse_search_range = 30.0f;
+    // Only used when use_fft_coarse_afc = true. Default ±80 Hz: margin
+    // beyond the ±75 Hz offset MIL-STD-188-110D tests at (C.6.3, D.6.4),
+    // which covers SSB tuning error and an SDR's clock error.
+    float coarse_search_range = 80.0f;
     
     /// Fine AFC search range (Hz) - preamble correlation around coarse estimate
     // Only used when use_fft_coarse_afc = true

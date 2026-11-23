@@ -4,7 +4,7 @@
  * Chain: I/Q -> shift dial to 0 Hz (offset + clock-error correction)
  *        -> IQSource decimation to 48 kHz -> USB 300-3300 Hz -> audio
  *        -> preamble scan over the whole stream (any start time, any carrier
- *           offset within +/-37 Hz) -> per message: find its end, normalise
+ *           offset within +/-87 Hz) -> per message: find its end, normalise
  *           its level, decode with ModemRX -> cut at EOM -> print.
  *
  * Usage: m110a_rx [options] INPUT
