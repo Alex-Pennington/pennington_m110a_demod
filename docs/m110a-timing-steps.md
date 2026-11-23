@@ -213,11 +213,28 @@ probe agreement:
 On bursts 2–4 the receiver's bytes are the same (sha256) as those from the base receiver on
 the audio with the drift resampled out.
 
-**The re-encode check needs the carrier near 0 Hz.** It phases each frame from its own probes
-and the next frame's and removes no frequency offset. At the RSP2 burst's +11.6 Hz the data,
-20 symbols ahead of the probes, turns about 35° against them, and the check scores the receiver's
-bytes 0.712 / 0.953 and 0.716 / 0.948, "do not fit". The same bytes, by sha256, fit on the
-audio shifted by −11.6 Hz. The check is unchanged here.
+**The re-encode check now removes the carrier offset.** It phased each frame from its own
+probes and the next frame's and removed no frequency offset. At the RSP2 burst's +11.6 Hz the
+data, 20 symbols ahead of the probes, turned about 35° against them. So the check scored the
+receiver's bytes 0.712 / 0.953 and 0.716 / 0.948, "do not fit", and the same bytes (sha256)
+fitted on the audio shifted by −11.6 Hz. It now measures the offset from the probes' phase step
+from frame to frame (to ±30 Hz) and removes it first. Measured with the new check:
+
+| Input | Old check | New check |
+|---|---|---|
+| RSP2 burst, as recorded | 0.712 / 0.953, 0.716 / 0.948, do not fit | 0.973 / 0.973, 0.973 / 0.973, fit |
+| Our TX, 300L, +15 Hz and −15 Hz, 15 dB (exact decodes) | data 0.507–0.519, do not fit | data 1.000 / probe 0.997, fit |
+| Our TX, 1200S, ±15 Hz | data 0.225–0.294, do not fit | 1.000 / 0.978, fit |
+| Our TX, 2400S, ±15 Hz | probe 0.04–0.20 | 0.933–0.967 / 0.933–0.950, fit |
+| FT-897D 3 (+2.4 Hz) | 0.964–0.965 / 0.957–0.964, fit | 0.968–0.971 / 0.958–0.965, fit |
+| 12:37Z (−1.5 Hz) | 0.761 / 0.908, 0.698 / 0.898 | 0.764 / 0.910, 0.698 / 0.897, do not fit |
+
+The random-bytes control stays at chance: 0.236–0.260 for QPSK (chance 0.250), 0.503–0.507 for
+BPSK (chance 0.500).
+
+**`ctest tx_loopback_drift`:** our TX resampled by +36 and −36 ppm, 10 dB, 400 bytes, 150L,
+300L, 600L and 1200L. This receiver decodes 8/8 exact with EOM. The base receiver decodes 0/8:
+six give no bytes, and 300L at −36 ppm reports `success=1` with 156 of 400 bytes wrong.
 
 **The 12:37Z burst is not explained.** Its drift
 is +25 ppm, and removing it changes nothing. Its timing also moves ±0.5 symbol every 1–2 s,
