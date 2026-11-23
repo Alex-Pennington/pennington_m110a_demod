@@ -97,6 +97,13 @@ foreach(t test_mode_detect test_decode_quality)
   set_tests_properties(${t} PROPERTIES LABELS "rx")
 endforeach()
 
+# AUTO decode when the signal starts up to 10 s into the buffer, after silence
+# or noise (fix/m110a-auto-late-start)
+add_executable(test_late_start test/test_late_start.cpp)
+target_link_libraries(test_late_start PRIVATE m110a_modem)
+add_test(NAME test_late_start COMMAND test_late_start)
+set_tests_properties(test_late_start PROPERTIES LABELS "rx" TIMEOUT 3600)
+
 # ModemTX output level and configuration checks (docs/TX_CHAIN.md)
 add_executable(test_modem_tx test/test_modem_tx.cpp)
 target_link_libraries(test_modem_tx PRIVATE m110a_modem)

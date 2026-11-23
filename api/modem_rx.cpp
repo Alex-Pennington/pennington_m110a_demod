@@ -64,9 +64,9 @@ public:
         return Result<void>();
     }
     
-    DecodeResult decode(const Samples& samples) {
+    DecodeResult decode(const Samples& buffer) {
         std::lock_guard<std::mutex> lock(mutex_);
-        
+
         state_ = RxState::SEARCHING;
         DecodeResult result;
         auto valid = config_.validate();  // the constructor takes the config unchecked
@@ -75,7 +75,15 @@ public:
             state_ = RxState::DECODE_ERROR;
             return result;
         }
-        
+
+        // BrainDecoder looks for the preamble in the first 0.2 s only: start the buffer
+        // just before its first preamble, wherever that is
+        BrainDecoderConfig scan_cfg;
+        scan_cfg.sample_rate = config_.sample_rate;
+        scan_cfg.carrier_freq = config_.carrier_freq;
+        const Samples samples(buffer.begin() + BrainDecoder(scan_cfg).first_preamble_cut(buffer),
+                              buffer.end());
+
         ModeId mode_id;
         float detected_freq_offset = 0.0f;
         
