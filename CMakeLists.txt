@@ -62,7 +62,12 @@ add_executable(harris_score test/harris/harris_score.cpp)
 add_executable(modem_tx_wav test/tx/modem_tx_wav.cpp)
 target_link_libraries(modem_tx_wav PRIVATE m110a_modem)
 
-set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_chan harris_score modem_tx_wav PROPERTIES
+# MIL-STD-188-110D Appendix A LAN interface (TCP and UDP data sockets) in front of the 110A
+# modem; audio in and out through files or stdin/stdout (docs/110d-appa-lan.md)
+add_executable(m110_lan m110_lan/main.cpp)
+target_link_libraries(m110_lan PRIVATE m110a_modem)
+
+set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_chan harris_score modem_tx_wav m110_lan PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----
@@ -263,4 +268,20 @@ if(Python3_Interpreter_FOUND)
   else()
     message(STATUS "python3 with numpy not found: Harris MELPe scorer test skipped")
   endif()
+endif()
+
+# ---- m110_lan: MIL-STD-188-110D Appendix A (docs/110d-appa-lan.md) ----
+# Protocol layer: CRC, TCP/UDP framing, RS(GF16) erasure FEC and interleaver vs the appendix
+add_executable(test_appa_proto test/lan/test_appa_proto.cpp)
+add_test(NAME test_appa_proto COMMAND test_appa_proto)
+set_tests_properties(test_appa_proto PROPERTIES LABELS "fast;unit;lan")
+# A DTE over TCP and over UDP against the running server: handshake, second DTE refused,
+# transmit to WAV, that WAV back as receive audio, every packet type checked byte by byte
+if(Python3_Interpreter_FOUND)
+  add_test(NAME appa_lan_dte
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_dte.py
+                   --server $<TARGET_FILE:m110_lan> --work ${CMAKE_BINARY_DIR}/lan_work)
+  set_tests_properties(appa_lan_dte PROPERTIES LABELS "lan" TIMEOUT 600 RUN_SERIAL TRUE)
+else()
+  message(STATUS "python3 not found: appa_lan_dte test skipped")
 endif()
