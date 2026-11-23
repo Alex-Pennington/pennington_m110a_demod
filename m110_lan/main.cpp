@@ -934,8 +934,9 @@ int listen_tcp(int port) {
 // (A.4.1) goes to connections in the order the kernel completed their handshakes, not in the
 // order two racing threads happen to run. On each wake it takes every pending connection from
 // both listeners, then hands them out oldest first by TCP_INFO tcpi_last_ack_recv (ms since the
-// handshake's final ACK; 1 ms resolution at HZ=1000). Two handshakes completed in the same
-// millisecond cannot be ordered from user space; that tie goes to the control connection.
+// handshake's final ACK; 1 ms resolution at HZ=1000), all read against one clock tick. Two
+// handshakes completed in the same millisecond cannot be ordered from user space; that tie
+// goes to the control connection.
 void claim(int fd, bool rci, sockaddr_in peer);
 
 struct Pending {
@@ -956,15 +957,35 @@ void accept_loop(int tl, int rl) {
                 socklen_t pl = sizeof p.peer;
                 p.fd = ::accept4(pf[i].fd, reinterpret_cast<sockaddr*>(&p.peer), &pl, 0);
                 if (p.fd < 0) break;  // the listeners are non-blocking: EAGAIN ends the drain
-                tcp_info ti{};
-                socklen_t tl2 = sizeof ti;
-                if (getsockopt(p.fd, IPPROTO_TCP, TCP_INFO, &ti, &tl2) == 0) p.age_ms = ti.tcpi_last_ack_recv;
                 pend.push_back(p);
             }
         }
+        // The ages are "ms before now", so they compare only when read against the same now:
+        // read them all, and read again until two passes agree (no clock tick in between).
+        auto read_ages = [&pend] {
+            std::vector<uint32_t> v;
+            for (auto& p : pend) {
+                tcp_info ti{};
+                socklen_t len = sizeof ti;
+                v.push_back(getsockopt(p.fd, IPPROTO_TCP, TCP_INFO, &ti, &len) == 0 ? ti.tcpi_last_ack_recv : 0);
+            }
+            return v;
+        };
+        std::vector<uint32_t> ages = read_ages();
+        for (int tries = 0; tries < 10; tries++) {
+            std::vector<uint32_t> again = read_ages();
+            if (again == ages) break;
+            ages = again;
+        }
+        for (size_t i = 0; i < pend.size(); i++) pend[i].age_ms = ages[i];
         // oldest first; stable, so FIFO within a port and the control connection first on a tie
         std::stable_sort(pend.begin(), pend.end(), [](const Pending& a, const Pending& b) { return a.age_ms > b.age_ms; });
-        for (auto& p : pend) claim(p.fd, p.rci, p.peer);
+        static unsigned drain = 0;
+        drain++;
+        for (auto& p : pend) {
+            if (cfg.verbose) logf("accept: %s, handshake %u ms ago, drain %u", p.rci ? "rci" : "tcp", p.age_ms, drain);
+            claim(p.fd, p.rci, p.peer);
+        }
     }
 }
 
@@ -1194,6 +1215,7 @@ int main(int argc, char** argv) {
         else if (a == "--udp-port") cfg.udp_port = atoi(val().c_str());
         else if (a == "--bind") cfg.bind = val();
         else if (a == "--rx-fast") cfg.rx_realtime = false;
+        else if (a == "--verbose") cfg.verbose = true;
         else if (a == "--rx-gap") cfg.rx_gap = atof(val().c_str());
         else if (a == "--rx-squelch") cfg.rx_squelch = atof(val().c_str());
         else if (a == "--tx-lead") cfg.tx_lead = atof(val().c_str());

@@ -39,6 +39,7 @@ build/bin/m110_lan --mode 600S --tx-out tx_%d.wav --rx-in -      # receive audio
 | `--tx-lead S`, `--tx-tail S` | Silence before and after each transmission (default 0.5 s and 1.0 s). |
 | `--tx-queue BYTES` | Transmit queue size (default 1 MiB). |
 | `--min-latency MS`, `--max-latency MS` | The Initial Setup socket latency fields (default 100 and 5000). |
+| `--verbose` | Log each accepted connection with its handshake age. |
 
 Logs go to stderr. The 110A decoder prints to stdout, so fd 1 is pointed at stderr at
 startup. Audio for `--tx-out -` goes to a copy of the original stdout, so its bytes stay clean.
@@ -65,21 +66,24 @@ The modem holds one DTE at a time, across both interfaces. While a DTE holds the
 socket or the control connection, a new connection on either port is accepted and closed at
 once, with no bytes sent.
 
-One thread accepts on both ports, and the slot goes to connections in the order their
-handshakes completed (TCP_INFO `tcpi_last_ack_recv`, 1 ms resolution). Two handshakes
-completed in the same millisecond can't be ordered from user space, so that tie goes to the
-control connection.
+One thread accepts on both ports. On each wake it takes every pending connection from both,
+then hands the slot out in the order the handshakes completed. The order comes from TCP_INFO
+`tcpi_last_ack_recv` (ms before now, 1 ms resolution at HZ=1000). All the ages are read
+against one clock tick: they are read again until two passes agree. Two handshakes completed
+in the same millisecond can't be ordered from user space, so that tie goes to the control
+connection.
 
-Measured on 6 cores with all cores busy: 300 rounds of "control connection, then TCP
-connection". The earlier design, one accept thread per port, gave the TCP DTE the modem in 95
-of 300 rounds. The single acceptor did so in 2 of 300. In both of those, the kernel queued the
-TCP connection before the control connection, in separate wake-ups.
+Measured with `--verbose`, which logs each accept with its age and its drain: 1000 rounds of
+"control connection, then TCP connection", on 6 cores.
 
-Inferred: under that load, the loopback deferred the final ACK of the earlier handshake.
-Nothing in the modem can see an order that the kernel itself reversed. The appendix says the attempt "shall be rejected" and does not name
-a way to reject it. Closing the connection is this implementation's reading. Measured:
-`appa_lan_dte` checks a second TCP DTE, a second control connection, and a TCP DTE while a UDP
-DTE holds control.
+| Acceptor | Idle machine | All cores busy |
+|---|---|---|
+| One thread per port | not run | 95 of 300 gave the TCP DTE the modem |
+| One thread, ages read one by one | 7 of 1000 | 2 of 300 |
+| One thread, ages read against one tick | 0 of 1000 | 0 of 1000 |
+
+The middle row's failures were a clock tick between two reads, which made the later-read
+socket look older.
 
 ## TCP data socket (A.5.1): field-by-field
 
