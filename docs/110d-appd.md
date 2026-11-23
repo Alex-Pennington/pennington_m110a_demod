@@ -2,18 +2,20 @@
 
 ## Handoff
 
-This section describes the receiver on `fix/110d-probe-gate`, cut from master `fd4a952`: the
+This section describes the receiver on `fix/110d-track-gates`, cut from master `fbe0089`: the
 equaliser receiver with streaming input (`m110d_rx --stream`) and the band-limiting channel
 condition (`m110d_chan --bandpass`), with presence gates sized to each correlation's noise
 floor, which take WID 0 to its Table D-LXIV AWGN value (see "Presence gates and WID 0"). The
 WID 1-13 end-of-signal checks on the mini-probes are now set the same way (see "Probe end
-checks (WID 1-13)"). The sections below it hold the detail and the full measured tables.
+checks (WID 1-13)"). The symbol-timing loop's update gate is now sized from the probe noise floor
+too, and the frequency loop's gate stays at 0.3 (see "Tracking gates (WID 1-13)"). The sections
+below it hold the detail and the full measured tables.
 
 ### State of the receiver
 
 - **Clean interop set** (60 files from another transmitter, every 3 kHz waveform, WID 0-13,
   four interleavers, five variants). It passes 60/60 on WID and interleaver and 60/60 on text
-  with EOM as expected, at 48 kHz and at 8 kHz (measured on `fix/110d-probe-gate`). As one
+  with EOM as expected, at 48 kHz and at 8 kHz (measured on `fix/110d-track-gates`). As one
   continuous `--stream` feed it gives the 60 messages in order, none doubled, at 48 kHz as fast
   as it goes and at 8 kHz at real-time pace, and at 8 kHz inside 1 h of noise at 30 dB with no
   extra message (measured on `fix/110d-probe-gate`; see "Streaming input").
@@ -31,11 +33,13 @@ checks (WID 1-13)"). The sections below it hold the detail and the full measured
   value; 8/10 at -7 and -8 dB, 7/10 at -9 dB. Master `40683df` gave 0/10 at -6 dB and below,
   and 9/10 from -5 to -2 dB (measured).
 - **WID 1-13 in AWGN** (the SHORT file of each WID, 10 seeds, D-LXIV -9 to +20 dB): 10/10 at
-  the Table D-LXIV value for every WID; WID 1 at D-LXIV -3 dB went from 0/10 to 5/10 with the
-  probe end checks, and no other cell moved (measured; table in "Probe end checks (WID 1-13)").
+  the Table D-LXIV value for every WID. WID 1 at D-LXIV -3 dB went from 0/10 to 5/10 with the
+  probe end checks, then from 5/10 to 9/10 with the timing gate. No other cell moved at either
+  step (measured; tables in "Probe end checks (WID 1-13)" and "Tracking gates (WID 1-13)").
 - **Checks on this branch:** `m110d_rx --selftest` gives `selftest_mismatches=0`;
-  `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 25/25;
-  every exit status 0 (measured on `fix/110d-probe-gate`).
+  `m110d_chan --selftest` gives PASS, including the band-pass checks; `ctest` passes 33/33;
+  every exit status 0 (measured on `fix/110d-track-gates`, and the same on master `fbe0089`).
+  `stream.py` was not rerun on this branch.
 - **STD-AMB-001:** files 56 and 57 acquire only with the PN running continuously across the
   section. The main matrix acquires only with PN restarting per Walsh symbol. The receiver
   finds whichever is in use.
@@ -45,16 +49,24 @@ checks (WID 1-13)"). The sections below it hold the detail and the full measured
 Default files: WID 0, 3, 13, 7 and 10, all SHORT. Seeds: 3, and 10 for fading. Each cell is
 one decode of a burst, not a BER figure.
 
-| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` | master `db8329a` | `feat/110d-stream` | `fix/110d-wid0` | master `fd4a952` | `fix/110d-probe-gate` |
-|---|---|---|---|---|---|---|---|---|---|
-| default (110) | 87 | 95 | 104 | 104 | 104 | 104 | 109 | 109 | 109 |
-| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 | 116 | 116 | 121 | 121 | 121 |
-| foff (240) | 135 | 240 | 240 | 240 | 240 | 240 | 240 | 240 | 240 |
-| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 | 105 | 105 | 105 | 105 | 105 |
-| ppm and ppm drift (270) | 144 | 270 | 270 | 270 | 270 | 270 | 270 | 270 | 270 |
-| static (45) | 6 | 6 | 36 | 36 | 36 | 36 | 36 | 36 | 36 |
-| fading, 10 seeds (400) | 70 | 93 | 322 | 322 | 322 | 322 | 367 | 367 | 367 |
+| Matrix | Before tracking (`c10b5da`) | Tracking (`79de273`) | Equaliser, master `1f02930` | Equaliser, `fix/110d-drift` | master `db8329a` | `feat/110d-stream` | `fix/110d-wid0` | master `fd4a952` | `fix/110d-probe-gate` | master `fbe0089` | `fix/110d-track-gates` |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| default (110) | 87 | 95 | 104 | 104 | 104 | 104 | 109 | 109 | 109 | 109 | 109 |
+| awgn (150) | not split out (the baseline ran awgn in one combined table) | 111 | 116 | 116 | 116 | 116 | 121 | 121 | 121 | 121 | 121 |
+| foff (240) | 135 | 240 | 240 | 240 | 240 | 240 | 240 | 240 | 240 | 240 | 240 |
+| drift and D.6.5 sweep (105) | 60 | 105 | 100 | 105 | 105 | 105 | 105 | 105 | 105 | 105 | 105 |
+| ppm and ppm drift (270) | 144 | 270 | 270 | 270 | 270 | 270 | 270 | 270 | 270 | 270 | 270 |
+| static (45) | 6 | 6 | 36 | 36 | 36 | 36 | 36 | 36 | 36 | 36 | 36 |
+| fading, 10 seeds (400) | 70 | 93 | 322 | 322 | 322 | 322 | 367 | 367 | 367 | 367 | 367 |
 
+- The last two columns are full runs from fresh builds of master `fbe0089` and of
+  `fix/110d-track-gates`, compared cell for cell from their CSVs. All 280 cells at 3 seeds are
+  equal. Two of the 40 cells at 10 seeds differ, both on WID 7: Poor noiseless 10/10 to 9/10
+  (seed 9) and Poor at D-LXIV Poor 9/10 to 10/10 (seed 5). At 40 seeds those two cells read 38/40
+  to 37/40 and 35/40 to 36/40, and the other six WID 7 fading cells are equal (296/320 on both).
+  The loss is the same one seed. The default files include no WID 1, 2, 11 or 12, so drift, ppm
+  and fading were also run on those four SHORT files: 100 cells at 3 seeds and 32 at 10 seeds,
+  every cell equal (measured).
 - The last two columns are full runs from fresh builds of master `fd4a952` and of
   `fix/110d-probe-gate`, compared cell for cell from their CSVs: every cell is equal (280
   cells at 3 seeds, 40 at 10). Master `fd4a952` reproduces the `fix/110d-wid0` column. None of
@@ -99,7 +111,7 @@ one decode of a burst, not a BER figure.
   `feat/110d-qam`, `feat/110d-integrate`, `docs/110d-std-pdf`, `feat/110d-chan`,
   `feat/110d-8k`, `feat/110d-proofs`, `feat/110d-sync`, `feat/110d-eq`, `feat/110d-stream`,
   `fix/110d-wid0`. None holds anything that master lacks.
-- **This branch:** `fix/110d-probe-gate`, worktree `m110a-wt-110d-probegate`, not merged.
+- **This branch:** `fix/110d-track-gates`, worktree `m110a-wt-110d-trackgates`, not merged.
 - **Worktree left in place:** `m110a-wt-110d-proofs` (`feat/110d-proofs`, merged). It holds
   an untracked `test/110d/__pycache__/`. Deleting that folder was refused by a permission
   denial, so the worktree was not removed. Nothing in it is unmerged.
@@ -159,12 +171,10 @@ pre-equaliser one-tap path.
   Table D-LXV pairs that channel with WID 2, which decodes.
 - The equaliser thresholds were set on named cases, not swept. Fractional (T/2) spacing was
   not tried. The probe end checks are now set from noise ("Probe end checks (WID 1-13)").
-- WID 1 at D-LXIV -3 dB (-6 dB) passes 5/10. Three of the five misses end where the fit score
-  falls to 0.01-0.03 on two probes in a row mid-burst, below the noise p90, so no end cutoff
-  keeps them. The one-tap score drifts down before each dip, which points at the tracking
-  loops. They still use fixed cutoffs: a timing update needs q >= 0.6 and a frequency update
-  q >= 0.3, and at -6 dB WID 1 scores about 0.48, so timing is held most of the burst. Not
-  measured further; not changed.
+- WID 1 at D-LXIV -3 dB (-6 dB) passes 9/10. The miss (seed 4) fails the preamble WID
+  checksum, so it is not a tracking miss (measured).
+- The frequency loop keeps its fixed 0.3 gate. Every noise-floor cutoff tried for it cost
+  seeds on ITU Poor and helped no cell (measured; "Tracking gates (WID 1-13)").
 
 ### Open questions
 
@@ -912,6 +922,67 @@ value on both builds; the table's figures are for the LONG interleaver and a 20-
 preamble at BER 1E-5, so a SHORT burst passing at the value is not the requirement met. On
 WID 2 at -6 dB the branch runs 9 of 10 bursts to their end (master: 1) and they still fail on
 the payload, as do WID 3 at -6 dB and the WID 4-13 misses.
+
+## Tracking gates (WID 1-13)
+
+Source: `AppDRx::track_probes` and `AppDRx::probe_q_track` in `src/m110d/appd_rx.h`.
+
+### Cause (measured)
+
+The timing loop updated only on a probe whose one-tap `q` was at least 0.6. The frequency loop
+updated only at 0.3 or above. At -6 dB, WID 1 (K = 48) scores about 0.48, so the timing loop
+held for most of the burst. At that SNR the preamble clock fit is off: on WID 1 at -6 dB (true
+clock error 0, seeds 1-10 less seed 4) it read -60 to +95 ppm. The loop is there to trim that
+error and rarely got to. The few updates it made came from probes that noise had lifted above
+0.6.
+
+With `tau` and `fr` printed per probe (temporary build, not kept), seed 3 (fit +72.7 ppm) shows
+`tau` walking linearly to -10 samples, half a symbol at 48 kHz, by the burst's end. `q` falls
+from about 0.5 to 0.2. On seed 9, once `q` reached noise, the frequency loop ran away to
++66 Hz. Those are the probes where the equaliser's end check then stopped the burst.
+
+### Fix
+
+The timing loop now updates on a probe above the one-tap noise p99.99, X about 3.0 in
+`q = X / sqrt(K)` ("Probe end checks (WID 1-13)", noise distributions). That is 0.43, 0.53 and
+0.61 at K = 48, 32 and 24. A timing update moves the loop with no evidence when the probe is
+noise, so the cutoff is the far tail the presence gates use, not the end checks' p90. The
+frequency gate stays 0.3 (below).
+
+### Measured
+
+Master `fbe0089` and this branch from fresh builds, compared cell for cell from their CSVs:
+
+- AWGN, `channel.py --matrix awgn --seeds 10 --files 1,5,9,...,53` (WID 0 and the SHORT file
+  of each WID 1-13, D-LXIV -9 to +20 dB): one cell of 140 moved, WID 1 at D-LXIV -3 dB, 5/10
+  to 9/10. WID 0 is equal in every cell (it has no probes). The per-WID table in "Probe end
+  checks (WID 1-13)" holds with that one cell changed.
+- Channel matrices: see "Channel matrix as it stands". The only cells that differ are on WID 7
+  Poor, one seed each way: noiseless 38/40 to 37/40, and at D-LXIV Poor 35/40 to 36/40, at 40
+  seeds. The 10-seed screen below traces the noiseless loss (seed 9) to the timing gate.
+- On the 9 WID 1 seeds that acquire at -6 dB, the mean probe quality stays 0.49 to 0.51. On
+  master, the failing seeds fell to 0.41 to 0.45.
+
+### Frequency gate: noise-floor cutoffs measured, not adopted
+
+Each variant keeps the timing gate at 3.0 / sqrt(K). It was a temporary build with the
+cutoffs set from the environment, not kept. 23 cells at 10 seeds: ITU Poor (noiseless, @30,
+@30 +75 Hz) on WID 1, 2, 3, 7 and 13; WID 1 Poor @3 and @13; WID 7 Poor @19; AWGN on WID 1 at
+-6 dB, WID 2 and 3 at -3 dB, WID 11 at 21 dB and WID 12 at 24 dB. Counted against master
+`fbe0089`:
+
+| Frequency gate | Cells worse | Cells better |
+|---|---|---|
+| fixed 0.3 (adopted) | 1: WID 7 Poor noiseless 10 to 9 | 2: WID 1 AWGN -6 dB 5 to 9, WID 7 Poor @19 9 to 10 |
+| 1.75 / sqrt(K), noise p90 | 3: WID 1 Poor noiseless and Poor @30 +75 Hz 10 to 9, plus WID 7 as above | the same 2 |
+| 2.3 / sqrt(K), noise p99 | 5: WID 1 Poor @30 10 to 9, WID 3 Poor noiseless, @30 and @30 +75 Hz 10 to 9 each, plus WID 7 | 3: the same 2, plus WID 1 Poor @13 9 to 10 |
+| 3.0 / sqrt(K), noise p99.99 | 2: WID 1 Poor @3 5 to 3, plus WID 7 | 3: the same 2, plus WID 1 Poor @13 9 to 10 |
+
+No frequency cutoff helped a cell that the timing gate alone did not, so the gate stays 0.3.
+The p90 variant was the first version of this branch. Its full matrices also lost WID 1 Poor
+noiseless and D.6.4 Poor +75 Hz, one seed each (10 seeds). Switching each gate on alone
+traced the noiseless loss to the frequency gate. The +75 Hz loss came only with both gates
+on. Why a lower frequency gate costs seeds on Poor was not measured further.
 
 ## Equaliser (WID 1-13)
 
