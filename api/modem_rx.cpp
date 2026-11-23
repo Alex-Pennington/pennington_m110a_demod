@@ -309,21 +309,19 @@ public:
         
         // Step 5: Decode using M110ACodec
         M110ACodec codec(mode_id);
-        std::vector<uint8_t> decoded;
-        
-        // Use SNR-weighted demapper if enabled
-        if (config_.use_snr_weighted_demapper) {
-            float snr_db = config_.assumed_snr_db;
-            if (config_.estimate_snr_from_probes) {
-                snr_db = codec.estimate_snr_from_probes(equalized_symbols);
+        auto run_codec = [&](const std::vector<complex_t>& syms) {
+            // Use SNR-weighted demapper if enabled
+            if (config_.use_snr_weighted_demapper) {
+                float snr_db = config_.assumed_snr_db;
+                if (config_.estimate_snr_from_probes) {
+                    snr_db = codec.estimate_snr_from_probes(syms);
+                }
+                return codec.decode_with_probes(syms, DecodeOptions::snr_weighted(snr_db));
             }
-            DecodeOptions opts = DecodeOptions::snr_weighted(snr_db);
-            decoded = codec.decode_with_probes(equalized_symbols, opts);
-        } else {
-            // Legacy demapper
-            decoded = codec.decode_with_probes(equalized_symbols);
-        }
-        
+            return codec.decode_with_probes(syms);  // Legacy demapper
+        };
+        std::vector<uint8_t> decoded = run_codec(equalized_symbols);
+
         if (decoded.empty()) {
             result.success = false;
             result.error = Error(ErrorCode::RX_DECODE_FAILED, "Viterbi decode failed");
@@ -334,7 +332,18 @@ public:
         // Step 6: Detect EOM (End of Message). The 110A EOM word 4B65A5B2 ends the
         // data where it is found. Without it, fall back to the older ModemTX ending
         // of 4 frames of zero data, which decode as trailing zero bytes.
-        const long eom_bit = cut_at_eom(decoded);
+        long eom_bit = cut_at_eom(decoded);
+        // Without the EOM the message ends where the signal does: decode only the frames
+        // up to the last one carrying signal, and keep the bytes those frames carry.
+        const size_t pattern = static_cast<size_t>(mode_cfg.unknown_data_len + mode_cfg.known_data_len);
+        const size_t keep = signal_frames(phase_corrected, mode_cfg.unknown_data_len,
+                                          mode_cfg.known_data_len) * pattern;
+        if (eom_bit < 0 && keep < equalized_symbols.size()) {
+            equalized_symbols.resize(keep);
+            decoded = keep ? run_codec(equalized_symbols) : std::vector<uint8_t>();
+            decoded.resize(std::min(decoded.size(), info_bytes(mode_cfg, keep / pattern)));
+            eom_bit = cut_at_eom(decoded);
+        }
         result.eom_sequence = eom_bit >= 0;
         result.eom_detected = result.eom_sequence;
         if (!result.eom_detected) {
@@ -342,12 +351,14 @@ public:
                                              mode_cfg.known_data_len);
             if (result.eom_detected) decoded = strip_eom_padding(decoded);
         }
-        
+
         // Step 7: Decode quality. With the DFE, score its own output on the
         // known probes; otherwise score the probes in the stream the codec read.
         // Either way over the quality span, or only the message's own symbols when
-        // the EOM says it is shorter (a 4800S message can be 2 frames long).
-        const int span = quality_span(mode_cfg, eom_bit);
+        // the EOM says it is shorter (a 4800S message can be 2 frames long), or the
+        // signal is (no signal after the preamble: nothing is scored, no success).
+        const int span = std::min<int>(quality_span(mode_cfg, eom_bit),
+                                       static_cast<int>(eom_bit < 0 ? keep : equalized_symbols.size()));
         double dfe_err = 0.0, dfe_ref = 0.0;
         for (const auto& f : dfe_probe_frames_) {
             if (f[0] <= span) { dfe_err += f[1]; dfe_ref += f[2]; }
@@ -363,10 +374,16 @@ public:
         result.quality_threshold_db = quality_threshold_db(mode_id);
         result.success = result.quality_db >= result.quality_threshold_db;
         if (!result.success) result.error = low_quality_error(result);
+        const std::string other = config_.mode == Mode::AUTO ? "" : preamble_contradicts(brain_result, mode_id);
+        if (result.success && !other.empty()) {
+            result.success = false;
+            result.error = Error(ErrorCode::RX_DECODE_FAILED,
+                                 "Preamble D1/D2 read " + other + ", not the forced mode; bytes not trusted");
+        }
         result.data = decoded;
         result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
         result.freq_offset_hz = freq_offset_hz;
-        
+
         // Update stats
         if (result.success) {
             stats_.bytes_received += decoded.size();
@@ -948,6 +965,70 @@ private:
     /// The quality span: QUALITY_SPAN_SYMBOLS, or the message when it is shorter
     static int quality_span(const ModeConfig& m, long eom_bit) {
         return static_cast<int>(std::min<size_t>(QUALITY_SPAN_SYMBOLS, message_symbols(m, eom_bit)));
+    }
+
+    /// Data bytes that `frames` frames of mode m carry (rate 1/2 code but 4800S, BPSK repetition)
+    static size_t info_bytes(const ModeConfig& m, size_t frames) {
+        size_t bits = frames * static_cast<size_t>(m.unknown_data_len * m.bits_per_symbol);
+        if (m.bps != 4800) bits /= 2;
+        if (m.symbol_repetition > 1 && m.modulation == Modulation::BPSK) bits /= m.symbol_repetition;
+        return bits / 8;
+    }
+
+    /**
+     * Data frames up to the last one that carries signal. A frame's probe coherence is
+     * |sum rx conj(ref)|^2 / (sum |rx|^2 * K) over its K probes: s / (1 + s) at probe SNR s,
+     * about 1/K (0.05-0.06) on noise, phase and gain free. The signal ends after the last
+     * frame whose coherence reaches 0.5 while the mean over it and the 7 counted frames
+     * before it reaches 0.25. Searched from the end, so a fade inside the message does not
+     * end it. Block-boundary probes (D1/D2 on some transmitters) are not counted; the
+     * uncounted frames right after the last signal frame (a block's last two) are kept.
+     */
+    size_t signal_frames(const std::vector<complex_t>& s, int unknown_len, int known_len) const {
+        const int pattern_len = unknown_len + known_len;
+        if (unknown_len <= 0 || known_len <= 0) return s.size() / std::max(1, pattern_len);
+        const size_t nf = s.size() / pattern_len;
+        std::vector<float> rho(nf, -1.0f);
+        DataScramblerFixed scrambler;
+        for (size_t f = 0; f < nf; f++) {
+            for (int i = 0; i < unknown_len; i++) scrambler.next();
+            complex_t num(0, 0);
+            double pw = 0.0;
+            for (int i = 0; i < known_len; i++) {
+                const float ph = scrambler.next() * static_cast<float>(PI) / 4.0f;
+                const complex_t x = s[f * pattern_len + unknown_len + i];
+                num += x * complex_t(std::cos(ph), -std::sin(ph));
+                pw += std::norm(x);
+            }
+            if (!block_boundary_probe(static_cast<int>(f), block_frames_))
+                rho[f] = pw > 0.0 ? static_cast<float>(std::norm(num) / (pw * known_len)) : 0.0f;
+        }
+        for (size_t f = nf; f-- > 0;) {
+            if (rho[f] < 0.5f) continue;
+            double sum = 0.0;
+            int n = 0;
+            for (size_t k = f + 1; k-- > 0 && n < 8;)
+                if (rho[k] >= 0.0f) { sum += rho[k]; n++; }
+            if (sum / n < 0.25) continue;
+            while (f + 1 < nf && rho[f + 1] < 0.0f) f++;  // the block's uncounted last frames
+            return f + 1;
+        }
+        return 0;
+    }
+
+    /**
+     * In a forced mode, the standard 110A mode the preamble's D1/D2 name instead, or "".
+     * Only when both read clearly (best at least 1.5 x the runner-up, as for the countdown
+     * digits) and name a Table XI data mode other than the forced one. Forced Harris modes
+     * and the 2400V, Harris and reserved codes never refuse.
+     */
+    static std::string preamble_contradicts(const BrainDecodeResult& b, ModeId forced) {
+        if (forced == ModeId::M600H || forced == ModeId::M1200H || forced == ModeId::M2400V) return "";
+        static const char* const STANDARD[] = {"M150S", "M150L", "M300S", "M300L", "M600S", "M600L",
+                                               "M1200S", "M1200L", "M2400S", "M2400L", "M4800S"};
+        if (std::find(std::begin(STANDARD), std::end(STANDARD), b.mode_name) == std::end(STANDARD)) return "";
+        if (b.d1_corr < 1.5f * b.d1_corr2 || b.d2_corr < 1.5f * b.d2_corr2) return "";
+        return string_to_mode_id(b.mode_name) == forced ? "" : b.mode_name.substr(1);
     }
 
     /**

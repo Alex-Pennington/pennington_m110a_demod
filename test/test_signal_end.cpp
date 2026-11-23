@@ -3,10 +3,11 @@
  * @brief The bytes follow the signal, and success is never reported for noise
  *        or for a forced mode the signal does not carry.
  *
- * This modem's own TX (ModemTX, no EOM, so the data ends at its interleaver block),
+ * This modem's own TX (ModemTX, no EOM: the data, a 6-bit encoder tail, zeros to the end
+ * of its interleaver block; payloads are one byte short of whole blocks so the tail fits),
  * then white noise at the signal's RMS:
- *   - whole blocks, then 5 s of noise: AUTO and the forced mode must give success and
- *     exactly the payload, no bytes from the noise;
+ *   - whole blocks, then 5 s of noise: AUTO and the forced mode must give success, the
+ *     payload, and at most the one padding byte of the last block, no bytes from the noise;
  *   - 600S cut 1.5 blocks before its end (a burst that stops without EOM), then 5 s of
  *     noise: success, the first 2 blocks exact, and 112.5 bytes +/- 2 frames (2.5 blocks
  *     of 45 bytes at 1.25 bytes a frame);
@@ -21,6 +22,7 @@
  */
 
 #include "api/modem.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -78,6 +80,10 @@ static Samples with_noise(Samples s, float tail_s, float level, unsigned seed) {
     return s;
 }
 
+static bool starts_with(const std::vector<uint8_t>& d, const std::vector<uint8_t>& p) {
+    return d.size() >= p.size() && std::equal(p.begin(), p.end(), d.begin());
+}
+
 static void check(const char* what, const DecodeResult& r, bool pass) {
     printf("%-44s success=%d q=%.1f/%.1f bytes=%zu eom=%d ... %s\n", what, r.success ? 1 : 0,
            r.quality_db, r.quality_threshold_db, r.data.size(), r.eom_sequence ? 1 : 0,
@@ -91,9 +97,9 @@ int main() {
 
     // 1. Whole interleaver blocks, then noise: the bytes are the payload, no more.
     struct Whole { Mode mode; const char* tag; size_t bytes; };
-    const Whole whole[] = {{Mode::M150_SHORT, "150S", 45},  {Mode::M600_SHORT, "600S", 90},
-                           {Mode::M1200_SHORT, "1200S", 180}, {Mode::M2400_SHORT, "2400S", 360},
-                           {Mode::M300_LONG, "300L", 180}};
+    const Whole whole[] = {{Mode::M150_SHORT, "150S", 44},  {Mode::M600_SHORT, "600S", 89},
+                           {Mode::M1200_SHORT, "1200S", 179}, {Mode::M2400_SHORT, "2400S", 359},
+                           {Mode::M300_LONG, "300L", 179}};
     for (const auto& w : whole) {
         const auto data = payload(w.bytes, 7);
         const Samples sig = tx(w.mode, data);
@@ -102,13 +108,13 @@ int main() {
             DecodeResult r = quiet_decode(s, m);
             snprintf(what, sizeof what, "%s %zu B + 5 s noise, %s", w.tag, w.bytes,
                      m == Mode::AUTO ? "AUTO" : "forced");
-            check(what, r, r.success && r.data == data);
+            check(what, r, r.success && starts_with(r.data, data) && r.data.size() <= data.size() + 1);
         }
     }
 
     // 2. A burst cut mid-block: the bytes follow the signal to within 2 frames.
     {
-        const auto data = payload(180, 9);  // 600S: 4 blocks of 45 bytes, 0.6 s each
+        const auto data = payload(179, 9);  // 600S: 4 blocks of 45 bytes, 0.6 s each
         Samples sig = tx(Mode::M600_SHORT, data);
         const float level = rms(sig);
         sig.resize(sig.size() - static_cast<size_t>(0.9f * FS));  // 1.5 blocks short
@@ -127,7 +133,7 @@ int main() {
     // from 3 s into the data, noise throughout and 5 s of it after. The signal end is the
     // last frame that carries signal, so the fade must not cut the message.
     {
-        const auto data = payload(360, 21);
+        const auto data = payload(359, 21);
         Samples sig = tx(Mode::M300_LONG, data);
         const float level = rms(sig);
         const size_t data0 = static_cast<size_t>(288 + 24 * 480) * 20;
@@ -139,9 +145,9 @@ int main() {
         for (auto& v : s) v += n(rng);
         for (Mode m : {Mode::AUTO, Mode::M300_LONG}) {
             DecodeResult r = quiet_decode(s, m);
-            snprintf(what, sizeof what, "300L 360 B, 1 s fade mid-message, %s",
+            snprintf(what, sizeof what, "300L 359 B, 1 s fade mid-message, %s",
                      m == Mode::AUTO ? "AUTO" : "forced");
-            check(what, r, r.success && r.data == data);
+            check(what, r, r.success && starts_with(r.data, data) && r.data.size() <= data.size() + 1);
         }
     }
 
