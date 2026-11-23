@@ -1054,10 +1054,12 @@ private:
             pr_.th = th;
             pr_.th_pred = th_pred;
             recs.push_back(pr_);
-            // Below the end cutoff (probe_q_end: a deep fade, or no signal) the probe neither
-            // updates the frequency loop nor becomes the phase reference; the callers decide
-            // where the signal ends (decode_payload).
-            if (pr_.q < probe_q_end(K)) {
+            // Below quality 0.3 (a deep fade, or no signal) the probe neither updates the
+            // frequency loop nor becomes the phase reference; the callers decide where the
+            // signal ends (decode_payload). Noise-floor cutoffs here (1.75, 2.3 and 3.0 /
+            // sqrt(K)) each cost seeds on ITU Poor and helped no cell ("Tracking gates" in
+            // docs/110d-appd.md).
+            if (pr_.q < 0.3) {
                 recs.back().th = th_pred;
                 fr = fr_pred;
                 h_prev *= std::polar(1.0, th_pred);  // phase reference advanced by the prediction
