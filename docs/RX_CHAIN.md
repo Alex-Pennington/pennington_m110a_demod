@@ -133,6 +133,13 @@ if (result.eom_detected) {
   due to interleaver padding also producing trailing zeros
 - EOM detection is probabilistic, not guaranteed
 
+## Timing steps in the data
+
+The data is sampled on a grid the preamble sets. `BrainDecoder::grid_steps` moves that grid
+when the probes leave it all at once and turn up 8 to 50 symbols away, as an audio skip or
+repeat of a few milliseconds causes. `-v` logs each step. `test/rx/reencode_check.py` checks
+decoded bytes against the signal without a CRC. See `docs/m110a-timing-steps.md`.
+
 ## Files
 
 - `api/modem_rx.cpp` - Main RX implementation

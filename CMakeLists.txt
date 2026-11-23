@@ -116,6 +116,13 @@ target_link_libraries(test_signal_end PRIVATE m110a_modem)
 add_test(NAME test_signal_end COMMAND test_signal_end)
 set_tests_properties(test_signal_end PROPERTIES LABELS "rx" TIMEOUT 3600)
 
+# A 15 ms timing step mid-message (silence or replay inserted, or deleted): the data grid
+# follows it and the payload decodes exact (fix/m110a-onair-tracking)
+add_executable(test_grid_step test/test_grid_step.cpp)
+target_link_libraries(test_grid_step PRIVATE m110a_modem)
+add_test(NAME test_grid_step COMMAND test_grid_step)
+set_tests_properties(test_grid_step PROPERTIES LABELS "rx" TIMEOUT 3600)
+
 # ModemTX output level and configuration checks (docs/TX_CHAIN.md)
 add_executable(test_modem_tx test/test_modem_tx.cpp)
 target_link_libraries(test_modem_tx PRIVATE m110a_modem)

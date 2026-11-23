@@ -117,6 +117,7 @@ public:
         
         // Generate expected common preamble pattern (288 symbols)
         generate_common_pattern();
+        data_scrambler_ = RefScrambler().generate_sequence();
     }
     
     /**
@@ -294,6 +295,7 @@ private:
     int sps_;  // Samples per symbol
     std::vector<float> rrc_taps_;
     std::vector<uint8_t> common_pattern_;  // 288-symbol expected pattern
+    std::vector<uint8_t> data_scrambler_;  // 160-symbol data scrambler sequence (probe values)
     
     /**
      * Generate expected common preamble pattern
@@ -824,8 +826,16 @@ private:
                   << " filtered.size()=" << filtered.size()
                   << " sps=" << sps_ << std::endl;
         
-        // Extract data symbols
-        for (int idx = data_start; idx < static_cast<int>(filtered.size()); idx += sps_) {
+        // Extract data symbols, the grid moved at each step grid_steps() finds
+        const auto steps = grid_steps(filtered, result, data_start);
+        const long pattern_len = config_.unknown_data_len + config_.known_data_len;
+        size_t next_step = 0;
+        long shift = 0;
+        for (long n = 0;; n++) {
+            while (next_step < steps.size() && steps[next_step].first * pattern_len <= n)
+                shift = steps[next_step++].second;
+            const long idx = data_start + n * sps_ + shift;
+            if (idx >= static_cast<long>(filtered.size())) break;
             result.data_symbols.push_back(
                 filtered[idx] * derotation(result, (idx - result.start_sample) / sps_));
         }
@@ -833,6 +843,87 @@ private:
         std::cout << "[RX] extracted " << result.data_symbols.size() << " data symbols" << std::endl;
     }
     
+    /**
+     * Probe coherence |sum x conj(ref)|^2 / (sum |x|^2 * K) of data frames [f0, f1) read on the
+     * data grid moved by shift samples: s / (1 + s) at probe SNR s, about 1/K on noise (K the
+     * probes counted). -1 when a probe falls outside the buffer.
+     */
+    double grid_coherence(const std::vector<complex_t>& filtered, const BrainDecodeResult& r,
+                          long data_start, long f0, long f1, long shift) const {
+        const long u = config_.unknown_data_len, p = u + config_.known_data_len;
+        complex_t num(0, 0);
+        double pw = 0.0;
+        long k = 0;
+        for (long n = f0 * p; n < f1 * p; n++) {
+            if (n % p < u) continue;
+            const long idx = data_start + n * sps_ + shift;
+            if (idx < 0 || idx >= static_cast<long>(filtered.size())) return -1.0;
+            const complex_t x = filtered[idx] * derotation(r, (idx - r.start_sample) / sps_);
+            const uint8_t c = data_scrambler_[n % 160];
+            num += x * std::conj(complex_t(brain::psk8_i[c], brain::psk8_q[c]));
+            pw += std::norm(x);
+            k++;
+        }
+        return pw > 0.0 ? std::norm(num) / (pw * k) : 0.0;
+    }
+
+    /**
+     * Steps in the data's timing: (first frame, grid shift in samples), in frame order.
+     * A sender or recorder whose audio skips or repeats a few milliseconds (a sound-card
+     * underrun) moves every later symbol at once; on air a 300L burst moved 36.8 symbols
+     * (15.3 ms) 1.2 s into its data, and the fixed grid lost its probes for the rest.
+     * At frame f the grid steps when, on the current grid, the W frames before f reach
+     * coherence 0.25 and the W after fall under 0.1, and a grid MIN_STEP..MAX_STEP symbols
+     * away reaches 0.25 on both the 2W frames from f and its second W alone. Noise gives
+     * about 1/(W K) = 0.006-0.008 per window (K = 20 or 16 probes), the largest of the 400 grids
+     * searched about 0.04. Steps under MIN_STEP are left to the DFE (+-5 symbols), so an
+     * echo inside the equalizer's span never moves the grid. A fade or the end of the signal
+     * leaves no other grid at 0.25 and changes nothing. The step takes effect at the first
+     * frame from f whose probes the new grid reads better than the old.
+     */
+    std::vector<std::pair<long, long>> grid_steps(const std::vector<complex_t>& filtered,
+                                                  const BrainDecodeResult& r, long data_start) const {
+        constexpr long W = 8, MIN_STEP = 8, MAX_STEP = 50;
+        constexpr double ON = 0.25, OFF = 0.1;
+        std::vector<std::pair<long, long>> steps;
+        const long p = config_.unknown_data_len + config_.known_data_len;
+        if (config_.unknown_data_len <= 0 || config_.known_data_len <= 0 ||
+            data_start >= static_cast<long>(filtered.size()))
+            return steps;
+        const long nf = (static_cast<long>(filtered.size()) - data_start) / (p * sps_);
+        auto coh = [&](long f0, long f1, long s) { return grid_coherence(filtered, r, data_start, f0, f1, s); };
+        long shift = 0;
+        for (long f = W; f + 2 * W <= nf; f++) {
+            if (coh(f - W, f, shift) < ON) continue;
+            const double after = coh(f, f + W, shift);
+            if (after < 0.0 || after >= OFF) continue;
+            long best = shift;
+            double bc = ON;
+            for (long s = shift - MAX_STEP * sps_; s <= shift + MAX_STEP * sps_; s += std::max(1, sps_ / 4)) {
+                if (std::labs(s - shift) < MIN_STEP * sps_) continue;
+                const double c = coh(f, f + 2 * W, s);
+                if (c >= bc) { bc = c; best = s; }
+            }
+            if (best == shift) continue;
+            for (long s = best - sps_ / 4; s <= best + sps_ / 4; s++) {
+                const double c = coh(f, f + 2 * W, s);
+                if (c > bc) { bc = c; best = s; }
+            }
+            if (coh(f + W, f + 2 * W, best) < ON) continue;
+            long g = f;
+            while (g + 1 < f + W && coh(g, g + 1, best) <= coh(g, g + 1, shift)) g++;
+            std::cout << "[RX] grid step at data frame " << g << " (data +"
+                      << static_cast<double>(g * p) / config_.baud_rate << " s): "
+                      << static_cast<double>(best - shift) / sps_ << " symbols ("
+                      << 1000.0 * (best - shift) / config_.sample_rate << " ms), coherence "
+                      << coh(g, g + W, best) << " on the new grid, " << after << " on the old" << std::endl;
+            steps.emplace_back(g, best);
+            shift = best;
+            f = g;
+        }
+        return steps;
+    }
+
     /**
      * Descramble and demap data symbols to soft bits
      * 
