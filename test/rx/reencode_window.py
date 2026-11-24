@@ -5,13 +5,18 @@ let wrong bytes pass, and the existing output lines keep their form.
            same block with 7 far-off data symbols in its clean frames, as a wrong codeword leaves
            them, is not; crashes that put probes and data far off alike leave it real.
   clean    ModemTX (300L, 400 bytes) in white noise at 10 dB -> reencode_check.py: every block
-           "fit the signal" and window check verdict real.
+           "fit the signal", window check verdict real, and the tail (bytes 360-399, EOM,
+           flush, padding) checked as block 3, real; with one byte of the tail wrong, block 3
+           is NOT REAL and blocks 1 and 2 stay real.
   fade     the same message with a 3 s -12 dB fade inside block 1 (noise seeds 4 and 6). The receiver's
            bytes are checked, and then two claimed payloads with --bytes: the sent bytes (verdict
            real), and the sent bytes with the run m110a_rx gave for this audio when this test was
            written, one or two wrong bytes (verdict NOT REAL in block 1, though the old per-block
            comparison says it fits). Whatever the receiver decodes now, its verdict must be real
            exactly when its block is exact.
+  short    ModemTX 2400S, 40 bytes with EOM, at 15 dB: under one block, so the block lines say
+           'not checked (no whole block)'; the tail check calls it real, and with one wrong bit
+           NOT REAL.
   format   gale-rx's parse of the output (its BLOCK_RE and HEAD_RE) finds exactly one block line
            per block and the same numbers as the block lines, and no window line matches them.
 
@@ -39,6 +44,7 @@ FADE = (6.8, 3.0, -12.0)  # start (s from the message start, 2.0 s into the data
 BLOCK_RE = re.compile(r"block \d+: probe agreement ([0-9.]+), data agreement ([0-9.]+)")
 HEAD_RE = re.compile(r": (\S+) start \S+ s success=(\d) bytes=(\d+)(?: sha256 ([0-9a-f]+))?")
 WCHECK_RE = re.compile(r"^  block (\d+) window check: .*; verdict (real|NOT REAL)", re.M)
+TAIL_RE = re.compile(r"^  tail block (\d+) \(", re.M)
 # Bytes m110a_rx gave for the fade audio at 10 dB, per noise seed: (first wrong byte, the run).
 # One or two wrong bytes in block 1, and the old per-block comparison calls each block fit.
 BAD = {4: (62, 'ac'), 5: (112, '04'), 6: (120, '2cbd')}
@@ -50,11 +56,11 @@ def payload():
     return (head + bytes(r.randrange(256) for _ in range(NBYTES)))[:NBYTES]
 
 
-def audio(a, data, snr, fade, seed, tag):
+def audio(a, data, snr, fade, seed, tag, mode=MODE):
     b, w = (os.path.join(a.work, tag + e) for e in ('.bin', '.tx.wav'))
     with open(b, 'wb') as f:
         f.write(data)
-    subprocess.run([a.tool, '--mode', MODE, '--lead', '0', '--tail', '0', b, w], check=True, capture_output=True)
+    subprocess.run([a.tool, '--mode', mode, '--lead', '0', '--tail', '0', b, w], check=True, capture_output=True)
     _, x = wavfile.read(w)
     os.remove(b)
     os.remove(w)
@@ -99,13 +105,14 @@ def form_ok(out, tag):
     """gale-rx's parse: one block line per window check, the same numbers, no window line matched."""
     lines = out.splitlines()
     blocks = [ln for ln in lines if re.match(r'^  block \d+: probe agreement ', ln)]
+    tails = [ln for ln in lines if re.match(r'^  tail block \d+ \(', ln)]
     found = BLOCK_RE.findall(out)
-    ok = len(found) == len(blocks) == len(verdicts(out)) and len(HEAD_RE.findall(out)) >= 1
+    ok = len(found) == len(blocks) and len(blocks) + len(tails) == len(verdicts(out)) and len(HEAD_RE.findall(out)) >= 1
     ok = ok and all(BLOCK_RE.search(ln) is None for ln in lines if ln not in blocks)
     ok = ok and all(re.fullmatch(r'  block \d+: probe agreement [0-9.]+, data agreement [0-9.]+, random-bytes control '
                                  r'[0-9.]+ \(chance [0-9.]+\): the bytes (fit the signal|DO NOT FIT the signal '
                                  r'\(bit errors\))', ln) for ln in blocks)
-    print(f'{tag} format: {len(blocks)} block lines, gale-rx parse {len(found)}, window checks '
+    print(f'{tag} format: {len(blocks)} block lines, {len(tails)} tail block lines, gale-rx parse {len(found)}, window checks '
           f'{len(verdicts(out))} -> {"PASS" if ok else "FAIL"}', flush=True)
     return ok
 
@@ -141,12 +148,37 @@ def case_counts():
 def case_clean(a, data):
     wav = audio(a, data, 10.0, None, 1, 'clean')
     out = run_check(a, wav)
-    os.remove(wav)
     v = verdicts(out)
-    ok = form_ok(out, 'clean') and len(v) >= 2 and all(x == 'real' for x in v.values()) \
+    tails = [int(b) for b in TAIL_RE.findall(out)]
+    ok = form_ok(out, 'clean') and len(v) == 3 and tails == [3] and all(x == 'real' for x in v.values()) \
         and all(ln.endswith('fit the signal') for ln in out.splitlines() if BLOCK_RE.search(ln))
-    print(f'clean: window check verdicts {v} -> {"PASS" if ok else "FAIL"}', flush=True)
-    return ok
+    print(f'clean: window check verdicts {v}, tail blocks {tails} -> {"PASS" if ok else "FAIL"}', flush=True)
+    # one wrong byte in the tail (bytes 360-399, then EOM, flush and padding in block 3)
+    bad = bytearray(data)
+    bad[380] ^= 0x5a
+    v2 = verdicts(run_check(a, wav, bytes(bad)))
+    good = v2.get(1) == v2.get(2) == 'real' and v2.get(3) == 'NOT REAL'
+    print(f'clean wrong byte in the tail: verdicts {v2} -> {"PASS" if good else "FAIL"}', flush=True)
+    os.remove(wav)
+    return ok and good
+
+
+def case_short(a):
+    """A message under one interleaver block (2400S, 40 bytes, eom=1): the block lines leave it
+    'not checked (no whole block)'; the tail check covers it."""
+    data = (b'DE AAM402 short ' + bytes(random.Random('reencode_window/short').randrange(256) for _ in range(40)))[:40]
+    wav = audio(a, data, 15.0, None, 1, 'short', mode='2400S')
+    out = run_check(a, wav)
+    v = verdicts(out)
+    ok = 'not checked (no whole block)' in out and form_ok(out, 'short') and v == {1: 'real'}
+    print(f'short: tail verdicts {v} -> {"PASS" if ok else "FAIL"}', flush=True)
+    bad = bytearray(data)
+    bad[20] ^= 0x01
+    v2 = verdicts(run_check(a, wav, bytes(bad)))
+    good = v2 == {1: 'NOT REAL'}
+    print(f'short one wrong bit: tail verdicts {v2} -> {"PASS" if good else "FAIL"}', flush=True)
+    os.remove(wav)
+    return ok and good
 
 
 def case_fade(a, data, seed):
@@ -194,14 +226,14 @@ def main():
     ap.add_argument('--work', required=True)
     ap.add_argument('--fade-snr', type=float, default=10.0)
     ap.add_argument('--fade-seeds', default='4,6', help=f'noise seeds of the fade case, of {sorted(BAD)}')
-    ap.add_argument('--cases', default='counts,clean,fade')
+    ap.add_argument('--cases', default='counts,clean,short,fade')
     a = ap.parse_args()
     os.makedirs(a.work, exist_ok=True)
     data = payload()
     ok = True
     for c in a.cases.split(','):
         ok &= {'counts': lambda: case_counts(), 'clean': lambda: case_clean(a, data),
-               'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')])}[c]()
+               'short': lambda: case_short(a), 'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')])}[c]()
     print('reencode_window: all cases pass' if ok else 'reencode_window: FAILED')
     return 0 if ok else 1
 

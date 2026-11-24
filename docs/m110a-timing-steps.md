@@ -186,13 +186,35 @@ parses it:
   block 1: probe agreement 0.911, data agreement 0.898, random-bytes control 0.498 (chance 0.500): the bytes fit the signal
     block 1 window 1 frames 1-8: probes 1.000 (160/160 right), data 0.994 (159/160 agree), far off 0 probes, 1 data
     ...
-  block 1 window check: far off (over 15 noise powers) 0/5720 probes, 34/5720 data, expected for right bytes 0.00, p 1e-85 (not real under 1e-06); verdict NOT REAL: data symbols far off where the probes are not (bit errors)
+  block 1 window check: far off (over 15 noise powers) 0/5720 probes, 35/5720 data, expected for right bytes 0.00, p 3.1e-137 (not real under 1e-06); verdict NOT REAL: data symbols far off where the probes are not (bit errors)
+  tail block 2 (data end, EOM, flush, zero padding): probe agreement 0.983, data agreement 0.987, random-bytes control 0.927 (chance 0.500): the bytes fit the signal
+    block 2 window 1 frames 289-296: ...
+  block 2 window check: far off (over 15 noise powers) 0/5720 probes, 0/5720 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
 ```
-
 The verdict is `real`, `NOT REAL: data below the probes over the block (bit errors)` (the old
 comparison) or `NOT REAL: data symbols far off where the probes are not (bit errors)`.
 gale-rx works out its own "content ok" from the block line's two numbers, so it does not see
 this verdict until it reads the `window check` line.
+
+**The tail.** The block lines cover `len // block_bytes` whole blocks. A message with EOM ends
+with the data's last bytes, then EOM 4B65A5B2, 144 flush bits and zeros to the end of the
+interleaver block (`api/modem_tx.cpp`, `M110ACodec::encode_bits_with_probes`). m110a_rx cuts the
+payload at the EOM, so that last block was never compared, and a message under one block was
+not checked at all. When m110a_rx reports `eom=1`, the check now also compares blocks up to
+ceil((8 × bytes + 32 + 144) / data bits per block), counted in bits because 150S and 300S
+blocks hold 11.25 and 22.5 bytes. Each is printed as `tail block N (data end, EOM, flush,
+zero padding): ...`, a form gale-rx's block pattern does not match, followed by its window rows
+and window check. A message under one block keeps its `not checked (no whole block)` line, and
+a `tail check (eom=1, ...)` header and the tail lines follow it. The random-bytes control is
+high in a tail (0.93 above) because the padding is the same for any bytes. Limits:
+
+- It assumes the sender pads with zeros after the flush, as ModemTX does. That is unverified
+  for other senders, Harris among them. A sender that pads otherwise makes a right tail look
+  wrong.
+- It does nothing for `eom=0`. A message cut before its EOM has no known end, and its last
+  partial block stays unchecked.
+- It needs the signal to last to the end of the last block, and says `tail not checked`
+  otherwise.
 
 `--bytes FILE` checks the given bytes in place of the receiver's. `--frames-json FILE` writes
 the per-frame counts used for calibration. `ctest rx_reencode_window` covers the window check.
