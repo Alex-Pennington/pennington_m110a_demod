@@ -47,7 +47,14 @@ codeword's symbols over the block, so some land where the signal is clean, and t
 symbol sits on the point that was sent, a whole constellation step (tens of noise powers) from
 the re-encoded one. Right bytes put data symbols far off only as noise or a crash puts probes
 there. The verdict is NOT REAL when the block does not fit, or when its far-off data symbols
-are less likely than ALPHA for right bytes (window_check), and real otherwise.
+are less likely than ALPHA for right bytes (window_check), and real otherwise. For the verdict,
+"fit" is read over the frames window_check reads (the block's last TAIL frames, whose probes
+are D1/D2, left out), and data below the probes by more than FIT is "not fit" only when right
+bytes leave such a gap with odds under ALPHA (fits(): a short block's agreements are samples).
+
+With eom=1, the blocks after the block lines (the data end, EOM, flush and zero padding) are
+compared too, as "tail block N" lines with their own window check; when the block lines already
+reach the message's last block, one "tail check" line says so.
 
 Sweep (--sweep T0 T1 STEP MS): delete MS ms of audio at each position from T0 to T1 s,
 STEP s apart, decode each and count the different payloads. A cut that repairs a timing
@@ -329,27 +336,34 @@ def window_check(pok, dok, deep_p, deep_d, u, k):
     fp, fd = int(deep_p[:n].sum()), int(deep_d[:n].sum())
     expected = RHO * fp * nd / npr + nd * np.exp(-TAU)
     p = poisson_sf(fd, expected)
-    return rows, dict(probes=npr, data=nd, far_probes=fp, far_data=fd, expected=expected, p=p,
-                      verdict='not real' if p < ALPHA else 'real')
+    return rows, dict(probes=npr, data=nd, probe_ok=int(pok[:n].sum()), data_ok=int(dok[:n].sum()),
+                      far_probes=fp, far_data=fd, expected=expected, p=p, verdict='not real' if p < ALPHA else 'real')
 
 
 EOM_BITS = 32 + 144  # EOM 4B65A5B2 and the coder flush, after the data (M110ACodec)
 
 
-def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps):
+def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, first):
     """With eom=1, the blocks the per-block check leaves out: the data's last, partial block, the
     EOM and flush, and zero padding to the end of the interleaver block, all of which the
     re-encoded reference carries (ModemTX, include_eom). Printed as 'tail block N' lines with
-    their window rows and window checks. d: the data start the whole blocks chose, or None."""
+    their window rows and window checks. d: the data start the whole blocks chose, or None.
+    first: the blocks the block lines printed. Those count a block in whole bytes (22 B for
+    300S's 22.5, 11 B for 150S's 11.25), so they can already reach the EOM's block; the blocks
+    here are counted in bits, and when the block lines reach the last block one line says so."""
     if kv.get('eom') != '1':
         return
     u, k = FRAME[rate]
     p = u + k
     pre_s = 4.8 if mode[-1] == 'L' else 0.6
     bits = int(round(BPS[rate] * pre_s))            # data bits per interleaver block
-    first = len(payload) // int(BPS[rate] * pre_s / 8)  # whole blocks the block lines cover
     total = -(-(8 * len(payload) + EOM_BITS) // bits)
     if total <= first:
+        data_end = max(1, -(-8 * len(payload) // bits))
+        print(f'  tail check (eom=1, {total} block{"s" if total > 1 else ""}): the block lines cover the data end '
+              f'(block {data_end}), EOM, flush and zero padding (block {total})'
+              + ('' if first == total else f'; block line {first} lies past the message end' if first == total + 1
+                 else f'; block lines {total + 1}-{first} lie past the message end'))
         return
     fpb = int(round(pre_s * 2400 / p))
     nframes = total * fpb
@@ -375,9 +389,8 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps):
         print('  tail not checked (the signal ends before the last block does)')
         return
     off = track(bb, d, u, k, nframes)
-    rows = agreement(bb, d, tb, t0, rate, nframes, total, off)
     ctb, ct0 = tbs['control']
-    ctl = agreement(bb, d, ctb, ct0, rate, min(nframes, (len(ctb) - ct0) // (p * SPS) - 1), total, off)
+    _, cdok = frame_agreement(bb, d, ctb, ct0, rate, min(nframes, (len(ctb) - ct0) // (p * SPS) - 1), off)
     pok, dok, deep_p, deep_d, sep = frame_agreement(bb, d, tb, t0, rate, nframes, off, soft=True)
     if first == 0:
         steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
@@ -392,16 +405,34 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps):
                       'probe_ok': pok.tolist(), 'data_ok': dok.tolist(), 'taus': list(TAUS),
                       'deep_probe': deep_p.tolist(), 'deep_data': deep_d.tolist(),
                       'sep': [round(float(v), 2) for v in sep]})
+    # The tail block's figures and fit come from the frames the window check reads (its last TAIL
+    # frames left out), as the window check's verdict does: there the probes are D1/D2, not the
+    # scrambler, and the data of the message's last frames is phased from them alone.
+    n = max(1, fpb - TAIL)
     for b in range(first, total):
-        (pa, da), ca = rows[b], (ctl[b][1] if b < len(ctl) else float('nan'))
-        verdict = 'fit the signal' if da >= pa - FIT else 'DO NOT FIT the signal (bit errors)'
+        f0 = b * fpb
+        pa, da = pok[f0:f0 + n].sum() / (k * n), dok[f0:f0 + n].sum() / (u * n)
+        ca = cdok[f0:f0 + n].sum() / (u * n) if f0 + n <= len(cdok) else float('nan')
+        verdict = 'fit the signal' if fits(pa, da, k * n, u * n) else 'DO NOT FIT the signal (bit errors)'
         print(f'  tail block {b + 1} (data end, EOM, flush, zero padding): probe agreement {pa:.3f}, data agreement '
               f'{da:.3f}, random-bytes control {ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
-        print_window_check(b, b * fpb, fpb, pa, da, pok, dok, deep_p, deep_d, u, k)
+        print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k)
 
 
-def print_window_check(b, f0, fpb, pa, da, pok, dok, deep_p, deep_d, u, k):
-    """The new lines after block b's line: its window rows and its window check verdict."""
+def fits(pa, da, npr, nd):
+    """Data agreement within FIT of the probe agreement or above, or below it by no more than right
+    bytes leave with odds of ALPHA: the probe and data agreements of a short block are samples, and
+    a 2400S block at 8 dB (448 probes, 896 data symbols over its window frames) spreads their
+    difference by about 0.02 with right bytes."""
+    from scipy.stats import norm
+    se = np.sqrt(max(pa * (1 - pa), 0.0) * (1 / npr + 1 / nd))
+    return da >= pa - max(FIT, float(norm.isf(ALPHA)) * se)
+
+
+def print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k):
+    """The new lines after block b's line: its window rows and its window check verdict. The verdict's
+    probe and data agreements come from the window frames (window_check: the block's last TAIL
+    frames left out), not from the block line's figures over every frame."""
     ti = TAUS.index(TAU)
     wrows, s = window_check(pok[f0:f0 + fpb], dok[f0:f0 + fpb], deep_p[f0:f0 + fpb, ti],
                             deep_d[f0:f0 + fpb, ti], u, k)
@@ -409,7 +440,7 @@ def print_window_check(b, f0, fpb, pa, da, pok, dok, deep_p, deep_d, u, k):
         print(f'    block {b + 1} window {i + 1} frames {f0 + w0 + 1}-{f0 + w1 + 1}: probes {1 - pe / pn:.3f} '
               f'({pn - pe}/{pn} right), data {1 - de / dn:.3f} ({dn - de}/{dn} agree), '
               f'far off {fp} probes, {fd} data')
-    if da < pa - FIT:
+    if not fits(s['probe_ok'] / s['probes'], s['data_ok'] / s['data'], s['probes'], s['data']):
         final = 'NOT REAL: data below the probes over the block (bit errors)'
     elif s['verdict'] == 'not real':
         final = 'NOT REAL: data symbols far off where the probes are not (bit errors)'
@@ -453,7 +484,7 @@ def check(a, x, sr, work):
             tb = tx_symbols(a.tx, mode, pl, work)
             tbs[which] = (tb, find_data_start(tb, 0, len(tb) - 1, u, k)[1])
         if blocks == 0:
-            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, None, tbs, dumps)
+            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, None, tbs, dumps, 0)
             continue
         # The probe grid repeats every period, so the probes alone leave the data start open
         # by whole periods: try each from the found preamble's start on, keep the one the
@@ -494,9 +525,9 @@ def check(a, x, sr, work):
                   f'{ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
             # New lines (the block line above is unchanged): the window check of this block.
             fpb = nf // blocks
-            print_window_check(b, b * fpb, fpb, pa, da, pok, dok, deep_p, deep_d, u, k)
+            print_window_check(b, b * fpb, fpb, pok, dok, deep_p, deep_d, u, k)
         if blocks:
-            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps)
+            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, blocks)
     if not found:
         print(f'{a.capture}: no message')
     if a.frames_json:
