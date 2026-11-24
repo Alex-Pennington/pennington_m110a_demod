@@ -466,8 +466,8 @@ def one_byte_power(s, sep, rate):
     shift = d * max(pa - c * (1 - pa), 0.0) / s['data']
     allow = fit_allowance(pa, s['probes'], s['data'])
     ok = far_power >= POWER or shift > allow
-    return ok, (f'one wrong byte moves {d} data symbols: far-off power {far_power:.2f} ({need} more far off needed), '
-                f'gap shift {shift:.3f} against {allow:.3f}')
+    return ok, (f"a one-byte error would not show at this block's SNR ({d} data symbols moved, far-off power "
+                f'{far_power:.2f} with {need} more far off needed, gap shift {shift:.3f} against {allow:.3f})')
 
 
 def print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k, sep, rate):

@@ -56,6 +56,23 @@ FADE = (6.8, 3.0, -12.0)  # start (s from the message start, 2.0 s into the data
 BLOCK_RE = re.compile(r"block \d+: probe agreement ([0-9.]+), data agreement ([0-9.]+)")
 HEAD_RE = re.compile(r": (\S+) start \S+ s success=(\d) bytes=(\d+)(?: sha256 ([0-9a-f]+))?")
 WCHECK_RE = re.compile(r"^  block (\d+) window check: .*; verdict (real|NOT REAL|NOT VERIFIABLE)", re.M)
+# gale-rx's strict parse of a window check line: one of three verdicts, a non-empty reason after the colon
+STRICT_RE = re.compile(r"^  block (\d+) window check: .*; verdict (real|NOT REAL: \S.*|NOT VERIFIABLE: \S.*)$")
+
+
+def strict_ok(out):
+    """gale-rx's strict rules: every window check line ends in one of the three verdict forms, and no message
+    gives one block two verdicts (a head line, unindented, starts a message)."""
+    seen = set()
+    for ln in out.splitlines():
+        if not ln.startswith(' '):
+            seen = set()
+        elif ln.startswith('  block ') and ' window check: ' in ln:
+            m = STRICT_RE.match(ln)
+            if not m or m.group(1) in seen:
+                return False
+            seen.add(m.group(1))
+    return True
 TAIL_RE = re.compile(r"^  tail block (\d+) \(", re.M)
 # Bytes m110a_rx gave for the fade audio at 10 dB, per noise seed: (first wrong byte, the run).
 # One or two wrong bytes in block 1, and the old per-block comparison calls each block fit.
@@ -120,6 +137,7 @@ def form_ok(out, tag):
     tails = [ln for ln in lines if re.match(r'^  tail block \d+ \(', ln)]
     found = BLOCK_RE.findall(out)
     ok = len(found) == len(blocks) and len(blocks) + len(tails) == len(verdicts(out)) and len(HEAD_RE.findall(out)) >= 1
+    ok = ok and strict_ok(out)
     ok = ok and all(BLOCK_RE.search(ln) is None for ln in lines if ln not in blocks)
     ok = ok and all(re.fullmatch(r'  block \d+: probe agreement [0-9.]+, data agreement [0-9.]+, random-bytes control '
                                  r'[0-9.]+ \(chance [0-9.]+\): the bytes (fit the signal|DO NOT FIT the signal '
@@ -161,8 +179,22 @@ def case_counts():
     hi, why_hi = rc.one_byte_power(blk(0.999), [60.0] * 28, '2400')
     lo, why_lo = rc.one_byte_power(blk(0.87), [4.6] * 28, '2400')
     ok &= hi and not lo
-    print(f'counts one-byte power, 2400S at 20 dB: {"verifiable" if hi else "not verifiable"} ({why_hi})')
+    print(f'counts one-byte power, 2400S at 20 dB: {"verifiable" if hi else "not verifiable: " + why_hi}')
     print(f'counts one-byte power, 2400S at 8 dB: {"verifiable" if lo else "not verifiable"} ({why_lo})')
+    # gale-rx's strict parse accepts the three verdict forms as the check prints them, and fails a bare
+    # NOT VERIFIABLE, an unknown word and a second verdict for one block
+    head = ': 2400S start 3.005 s success=1 bytes=540 sha256 0123456789ab: data start 3.6055 s'
+    line = lambda b, v: (f'  block {b} window check: far off (over 15 noise powers) 0/448 probes, 0/896 data, expected '
+                         f'for right bytes 0.00, p 1 (not real under 1e-06); verdict {v}')
+    nv = 'NOT VERIFIABLE: ' + rc.one_byte_power(blk(0.87), [4.6] * 28, '2400')[1]
+    good = '\n'.join([head, line(1, 'real'), line(2, 'NOT REAL: data below the probes over the block (bit errors)'),
+                      line(3, nv), head, line(1, 'real')])
+    bad = {'bare': line(1, 'NOT VERIFIABLE'), 'unknown': line(1, 'MAYBE: x'), 'empty reason': line(1, 'NOT REAL: '),
+           'two verdicts': line(1, 'real') + '\n' + line(1, nv)}
+    parse = strict_ok(good) and not any(strict_ok(head + '\n' + v) for v in bad.values())
+    ok &= parse
+    print(f'counts gale-rx strict parse: three forms accepted, {", ".join(bad)} refused -> '
+          f'{"PASS" if parse else "FAIL"}')
     print(f'counts -> {"PASS" if ok else "FAIL"}', flush=True)
     return ok
 
