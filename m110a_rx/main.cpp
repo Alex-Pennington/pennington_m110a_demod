@@ -4,8 +4,9 @@
  * Chain: I/Q -> shift dial to 0 Hz (offset + clock-error correction)
  *        -> IQSource decimation to 48 kHz -> USB 300-3300 Hz -> audio
  *        -> preamble scan over the whole stream (any start time, any carrier
- *           offset within +/-87 Hz) -> per message: find its end, normalise
- *           its level, decode with ModemRX -> cut at EOM -> print.
+ *           offset within +/-87 Hz) -> per preamble chain: find its end,
+ *           normalise its level, decode with ModemRX -> cut at EOM -> the chains
+ *           of one preamble merged (Receiver::process_messages) -> print one.
  *
  * A message's end, for the decode window: the power steps down and stays down
  * (see Receiver::find_step). Measured only from the message's own audio, so it is
