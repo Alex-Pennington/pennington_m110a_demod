@@ -36,6 +36,7 @@
 #include "m110a/brain_preamble.h"
 #include "m110a/m75_acq.h"
 #include "m110a/m75_codec.h"
+#include "m110a/m75_excise.h"
 #include "m110a/mode_config.h"
 
 #include <algorithm>
@@ -63,7 +64,15 @@ struct RxTuning {
     double min_quality_db = 11.25;  // success: quality_db = 10 log10((1 - p) / p) at least this
     double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
+    bool excise = true;             // narrowband interference excision (m75_excise.h) in front
 };
+
+/// The tuning ModemRX's 75 bps path uses. A test tool may change it (m75_ber --no-excise);
+/// ModemRX itself never does.
+inline RxTuning& default_tuning() {
+    static RxTuning t;
+    return t;
+}
 
 /// Success needs quality_db at or above this
 inline float quality_threshold_db(const RxTuning& t) { return static_cast<float>(t.min_quality_db); }
@@ -270,6 +279,7 @@ struct RxOut {
     double p = 0.5;           // channel bit disagreement over the message
     double p_block = 0.5;     // the same over the worst interleaver block of it
     double snr_db = 0.0;      // estimated, 3 kHz noise bandwidth
+    long excised_frames = 0;  // excision frames hit (0: the input went in untouched)
     std::string error;
 };
 
@@ -307,6 +317,30 @@ inline Acquisition acquire_cached(const std::vector<float>& rf, float fs, float 
     return last;
 }
 
+/// rf with narrowband interference excised (m75_excise.h), or rf itself when the excision
+/// found none: then the receiver sees its input sample for sample. Cached like
+/// acquire_cached, since the AUTO pass and the decode look at the same audio. `hit` (if
+/// given) receives the excision's statistics.
+inline const std::vector<float>& excised(const std::vector<float>& rf, float fs, float carrier,
+                                         ExciseStats* hit = nullptr) {
+    using Key = std::array<double, 12>;
+    thread_local Key key{};
+    thread_local bool cut = false;
+    thread_local std::vector<float> out;
+    thread_local ExciseStats st;
+    Key k{};
+    k[0] = static_cast<double>(rf.size()); k[1] = fs; k[2] = carrier;
+    for (int i = 0; i < 9; i++) k[3 + i] = rf.empty() ? 0.0 : rf[(rf.size() - 1) * i / 8];
+    if (!(k == key)) {
+        st = ExciseStats();
+        cut = excise(rf, fs, carrier, out, &st);
+        if (!cut) { out.clear(); out.shrink_to_fit(); }
+        key = k;
+    }
+    if (hit) *hit = st;
+    return cut ? out : rf;
+}
+
 /// The audio ModemRX hands the 75 bps path: `cut` (its buffer from its first preamble cut
 /// on) with up to 5 s of `buffer` before it put back. At low SNR first_preamble_cut fires
 /// on whichever preamble frame first crosses its threshold, which can be inside a 75 bps
@@ -329,7 +363,10 @@ inline bool clear_d(const Acquisition& a, double ratio = 1.25) { return a.pair_r
 inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
                      const RxTuning& t = RxTuning()) {
     RxOut r;
-    r.acq = acquire_cached(rf, fs, carrier, frange);
+    ExciseStats ex;
+    const std::vector<float>& in = t.excise ? excised(rf, fs, carrier, &ex) : rf;
+    r.excised_frames = ex.hit_frames;
+    r.acq = acquire_cached(in, fs, carrier, frange);
     if (!r.acq.found) {
         char buf[120];
         snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
@@ -340,7 +377,7 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     const int sps = static_cast<int>(std::lround(fs / 2400.0f));
     const long data_start = r.acq.data_start;
     const long lo = data_start - static_cast<long>(brain::P_FRAME_LENGTH + 64) * sps;
-    const auto y = matched_filter(rf, fs, carrier + r.acq.freq_offset_hz, sps, lo);
+    const auto y = matched_filter(in, fs, carrier + r.acq.freq_offset_hz, sps, lo);
 
     // the last preamble frame as sent (countdown 0)
     auto pre_syms = BrainPreambleEncoder().encode(mode == ModeId::M75NS ? 0 : 1, mode == ModeId::M75NL);
@@ -442,7 +479,9 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
              "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f snr=%.1f dB shift=%ld",
              r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.snr_db,
              rake.shift());
-    std::cout << buf << std::endl;
+    std::cout << buf;
+    if (r.excised_frames > 0) std::cout << " excised_frames=" << r.excised_frames << " cut=" << ex.cut_share;
+    std::cout << std::endl;
     return r;
 }
 
@@ -466,7 +505,8 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
 /// ModemRX's AUTO pass, when the shared acquisition found no preamble: is there a 75 bps
 /// one, found and with D1/D2 read clearly as 7,5 or 5,5? Its mode in `mode`.
 inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
-    const Acquisition a = acquire_cached(rf, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
+    const std::vector<float>& in = default_tuning().excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
+    const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
     if (!a.found || !a.is_75 || !clear_d(a, 1.1)) return false;
     mode = a.mode;
     return true;
@@ -477,10 +517,11 @@ inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg,
  * receive of `rf` in `mode`. forced: the mode was given, not read from the preamble.
  */
 inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId mode,
-                                api::DecodeResult res, bool forced, const RxTuning& t = RxTuning()) {
+                                api::DecodeResult res, bool forced, const RxTuning& t = default_tuning()) {
     // AUTO: the mode D1/D2 name, read over the whole preamble, when they name a 75 bps one
     if (!forced) {
-        const Acquisition a = acquire_cached(rf, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
+        const std::vector<float>& in = t.excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
+        const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
         if (a.found && a.is_75 && clear_d(a, 1.1)) mode = a.mode;
     }
     const RxOut r = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);

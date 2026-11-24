@@ -164,6 +164,16 @@ set_tests_properties(test_m75 PROPERTIES LABELS "rx;tx;m75" TIMEOUT 1800)
 add_executable(m75_wav_rx test/m75/wav_rx.cpp)
 target_link_libraries(m75_wav_rx PRIVATE m110a_modem)
 set_target_properties(m75_wav_rx PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+# 75 bps BER in process: ModemTX -> Appendix E channel -> interference -> ModemRX
+# (test/m75/ber.cpp, test/m75/ber_sweep.py; docs/m110a-75bps.md, STANAG 4415 section)
+add_executable(m75_ber test/m75/ber.cpp)
+target_link_libraries(m75_ber PRIVATE m110a_modem)
+set_target_properties(m75_ber PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+# The Appendix E fading model at 0.5-50 Hz Doppler and the two-path, 10 ms channel built on it
+add_executable(m75_fading_check test/m75/fading_check.cpp)
+set_target_properties(m75_fading_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+add_test(NAME m75_fading_check COMMAND m75_fading_check --seconds 0.5)
+set_tests_properties(m75_fading_check PROPERTIES LABELS "fast;chansim;m75" TIMEOUT 900)
 
 # ---- I/Q receive path through m110a_rx ----
 # Synthetic RSP2 I/Q (test/rx/synth_iq.py: 2 MS/s cs16, dial at +100 kHz)
