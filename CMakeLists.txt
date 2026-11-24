@@ -358,6 +358,13 @@ if(Python3_Interpreter_FOUND)
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_rx_stream.py
                    --server $<TARGET_FILE:m110_lan> --work ${CMAKE_BINARY_DIR}/lan_rx_work)
   set_tests_properties(appa_rx_stream PROPERTIES LABELS "lan" TIMEOUT 900 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+  # 75S and 75L both ways over the TCP data socket (transmit WAV through ModemRX and m110a_rx;
+  # that WAV back in real time, clean and at -6 dB); the chunk framing of every mode
+  add_test(NAME appa_lan_75
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_m75.py
+                   --server $<TARGET_FILE:m110_lan> --rx $<TARGET_FILE:m110a_rx>
+                   --wav-rx $<TARGET_FILE:m75_wav_rx> --work ${CMAKE_BINARY_DIR}/lan_75_work)
+  set_tests_properties(appa_lan_75 PROPERTIES LABELS "lan" TIMEOUT 1200 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
 else()
   message(STATUS "python3 not found: appa_lan_dte test skipped")
 endif()

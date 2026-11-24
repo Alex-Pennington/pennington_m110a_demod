@@ -289,6 +289,203 @@ inline Acquisition acquire(const std::vector<float>& rf, float fs, float carrier
     return a;
 }
 
+/**
+ * The coarse search of acquire() run on a stream, sample by sample, for a receiver that
+ * looks for 75 bps preambles in live audio (m110_lan). acquire() over a window recomputes
+ * every segment energy of the window at every coarse carrier offset; here each is computed
+ * once, as its samples arrive, and each possible end of preamble T is scored once, as soon as
+ * its last frame is in. Same matched filter, segment shares, frame sums and significance as
+ * acquire() (3 and 24 frames), on the decimated grid of the stream rather than of a window,
+ * over a carrier grid of step_hz. No fine offset search and no D1/D2: a caller that sees a
+ * significance near the threshold runs acquire() on the window for those. acquire() itself
+ * is unchanged.
+ */
+class SlidingAcq {
+public:
+    struct Best {
+        double z = -1e30;  // coarse significance
+        long end = -1;     // end of preamble, input samples from the first pushed
+        int frames = 0;
+        float freq_offset_hz = 0.0f;
+    };
+
+    /// hold_s: how far back best() can look. step_hz: the carrier grid (acquire() uses 7.5).
+    SlidingAcq(float fs, float carrier, float frange, double hold_s, double step_hz) {
+        sps_ = static_cast<int>(std::lround(fs / 2400.0f));
+        ok_ = sps_ >= 2 && std::fabs(sps_ * 2400.0f - fs) <= 1.0f && step_hz > 0.0;
+        if (!ok_) return;
+        D_ = sps_ % 2 == 0 ? sps_ / 2 : 1;
+        sd_ = sps_ / D_;
+        const double fsd = fs / D_;
+        taps_ = generate_srrc_taps(0.35f, 6, static_cast<float>(sps_));
+        half_ = static_cast<long>(taps_.size() / 2);
+        w_ = 2.0 * M_PI * carrier / fs;
+        for (double f = -frange; f <= frange + 1e-9; f += step_hz) {
+            fhz_.push_back(static_cast<float>(f));
+            wf_.push_back(-2.0 * M_PI * f / fsd);
+        }
+        nf_ = fhz_.size();
+        for (int i = 0; i < SEG; i++)
+            descr_[i] = std::complex<float>(brain::psk8_i[brain::pscramble[i]], -brain::psk8_q[brain::pscramble[i]]);
+        for (int ch = 0; ch < 8; ch++)
+            for (int k = 0; k < 8; k++) sign_[ch][k] = brain::psymbol[ch][k] ? -1 : 1;
+        common_ = detail::frame_symbols(0, 0);
+        for (int k = 1; k <= 24; k++) {
+            const auto fr = detail::frame_symbols(0, k - 1);
+            for (int c = 0; c < 3; c++) count_[k - 1][c] = fr[11 + c];  // 4..7 (C1 C2 C3)
+        }
+        span_ = static_cast<long>(SEG - 1) * sd_;
+        segd_ = static_cast<long>(SEG) * sd_;
+        framed_ = static_cast<long>(FRAME) * sd_;
+        zmask_ = pow2(span_ + 1) - 1;
+        emask_ = pow2(15 * segd_ + span_ + 1) - 1;
+        rmask_ = pow2(25 * framed_) - 1;
+        bmask_ = pow2(static_cast<long>(std::ceil(hold_s * fsd)) + 1) - 1;
+        zr_.assign(nf_ * static_cast<size_t>(zmask_ + 1), std::complex<float>(0, 0));
+        E_.assign(static_cast<size_t>(emask_ + 1) * nf_ * 8, 0.125f);
+        rec_.assign(static_cast<size_t>(rmask_ + 1) * nf_ * REC, 0.0f);
+        best_.assign(static_cast<size_t>(bmask_ + 1), Best());
+    }
+
+    bool ok() const { return ok_; }
+
+    /// The next n input samples
+    void push(const float* x, size_t n) {
+        if (!ok_) return;
+        for (size_t i = 0; i < n; i++) {
+            const double ph = std::fmod(w_ * static_cast<double>(nin_), 2.0 * M_PI);
+            bb_.push_back(std::complex<float>(static_cast<float>(x[i] * std::cos(ph)),
+                                              static_cast<float>(-x[i] * std::sin(ph))));
+            nin_++;
+        }
+        // matched filter at the decimated points (samples before the start count 0)
+        while (ny_ * D_ + half_ < nin_) {
+            const long c = ny_ * D_;
+            std::complex<float> acc(0, 0);
+            for (long j = std::max(0L, half_ - c); j < static_cast<long>(taps_.size()); j++)
+                acc += bb_[static_cast<size_t>(c - half_ + j - bb0_)] * taps_[static_cast<size_t>(j)];
+            for (size_t f = 0; f < nf_; f++) {
+                const double ph = std::fmod(wf_[f] * static_cast<double>(ny_), 2.0 * M_PI);
+                zr_[f * static_cast<size_t>(zmask_ + 1) + static_cast<size_t>(ny_ & zmask_)] =
+                    acc * std::complex<float>(static_cast<float>(std::cos(ph)), static_cast<float>(std::sin(ph)));
+            }
+            ny_++;
+            while (ne_ + span_ < ny_) { energies(ne_); ne_++; }          // the segment just completed
+            while (nk_ + 14 * segd_ < ne_) { record(nk_); nk_++; }      // frames whose last segment is in
+            while (nt_ - framed_ < nk_) { score(nt_); nt_++; }          // ends whose last frame is in
+        }
+        const long keep = ny_ * D_ - half_;
+        if (keep - bb0_ > 4096) {
+            bb_.erase(bb_.begin(), bb_.begin() + (keep - bb0_));
+            bb0_ = keep;
+        }
+    }
+
+    /// The most significant end of preamble T, from <= T < to (input samples), among those
+    /// scored and still held
+    Best best(long from, long to) const {
+        Best b;
+        if (!ok_) return b;
+        const long t0 = std::max({(from + D_ - 1) / D_, nt_ - bmask_, 0L});
+        const long t1 = std::min(nt_, (to + D_ - 1) / D_);
+        for (long t = t0; t < t1; t++) {
+            const Best& c = best_[static_cast<size_t>(t & bmask_)];
+            if (c.z > b.z) b = c;
+        }
+        return b;
+    }
+
+private:
+    static constexpr int SEG = 32, FRAME = 480, REC = 16;  // REC: Kc, then E of C1..C3 for 4..7
+
+    static long pow2(long n) { long p = 1; while (p < n) p <<= 1; return p; }
+    const float* E(long m, size_t f) const { return &E_[(static_cast<size_t>(m & emask_) * nf_ + f) * 8]; }
+    float* rec(long m, size_t f) { return &rec_[(static_cast<size_t>(m & rmask_) * nf_ + f) * REC]; }
+
+    void energies(long m) {
+        for (size_t f = 0; f < nf_; f++) {
+            const std::complex<float>* z = &zr_[f * static_cast<size_t>(zmask_ + 1)];
+            std::complex<float> u[8] = {};
+            for (int i = 0; i < SEG; i++) u[i & 7] += z[(m + static_cast<long>(i) * sd_) & zmask_] * descr_[i];
+            double all = 0.0;
+            float e[8];
+            for (int ch = 0; ch < 8; ch++) {
+                std::complex<float> c(0, 0);
+                for (int k = 0; k < 8; k++) c += sign_[ch][k] > 0 ? u[k] : -u[k];
+                e[ch] = std::norm(c);
+                all += e[ch];
+            }
+            float* out = &E_[(static_cast<size_t>(m & emask_) * nf_ + f) * 8];
+            for (int ch = 0; ch < 8; ch++) out[ch] = all > 0.0 ? static_cast<float>(e[ch] / all) : 0.125f;
+        }
+    }
+
+    // Per frame start m: the 10 segments every frame shares, and C1..C3's shares of words 4..7
+    void record(long m) {
+        for (size_t f = 0; f < nf_; f++) {
+            float* r = rec(m, f);
+            double k = 0.0;
+            for (int seg : {0, 1, 2, 3, 4, 5, 6, 7, 8, 14}) k += E(m + static_cast<long>(seg) * segd_, f)[common_[seg]];
+            r[0] = static_cast<float>(k);
+            for (int c = 0; c < 3; c++) {
+                const float* e = E(m + static_cast<long>(11 + c) * segd_, f);
+                for (int v = 0; v < 4; v++) r[1 + 4 * c + v] = e[4 + v];
+            }
+        }
+    }
+
+    void score(long T) {
+        Best b;
+        b.end = T * D_;
+        const long lo = std::max(0L, nk_ - rmask_);  // oldest frame start held
+        auto z_of = [](double s, int inside) {
+            const int n = inside * 13;
+            return n ? (s - n / 8.0) / std::sqrt(n * 7.0 / 576.0) : 0.0;
+        };
+        for (size_t f = 0; f < nf_; f++) {
+            double s = 0.0;
+            int inside = 0;
+            double z3 = 0.0;
+            for (int k = 1; k <= 24; k++) {
+                const long f0 = T - static_cast<long>(k) * framed_;
+                if (f0 < lo) break;
+                const float* r = rec(f0, f);
+                s += r[0] + r[1 + count_[k - 1][0] - 4] + r[5 + count_[k - 1][1] - 4] + r[9 + count_[k - 1][2] - 4];
+                inside++;
+                if (k == 3) z3 = z_of(s, inside);
+            }
+            if (inside < 3) z3 = z_of(s, inside);
+            const double z24 = z_of(s, inside);
+            if (z3 > b.z) { b.z = z3; b.frames = 3; b.freq_offset_hz = fhz_[f]; }
+            if (z24 > b.z) { b.z = z24; b.frames = 24; b.freq_offset_hz = fhz_[f]; }
+        }
+        best_[static_cast<size_t>(T & bmask_)] = b;
+    }
+
+    bool ok_ = false;
+    int sps_ = 0, D_ = 1, sd_ = 1;
+    std::vector<float> taps_;
+    long half_ = 0;
+    double w_ = 0.0;
+    std::vector<float> fhz_;
+    std::vector<double> wf_;
+    size_t nf_ = 0;
+    std::complex<float> descr_[SEG];
+    int sign_[8][8] = {};
+    std::array<int, 15> common_{};
+    int count_[24][3] = {};
+    long span_ = 0, segd_ = 0, framed_ = 0;
+    long zmask_ = 0, emask_ = 0, rmask_ = 0, bmask_ = 0;
+
+    std::vector<std::complex<float>> bb_;  // input times the carrier, from input sample bb0_
+    long bb0_ = 0, nin_ = 0;
+    long ny_ = 0, ne_ = 0, nk_ = 0, nt_ = 0;  // next matched filter output, segment, frame record, end
+    std::vector<std::complex<float>> zr_;  // per offset: the last outputs, rotated by the offset
+    std::vector<float> E_;                 // segment shares: [m][offset][word]
+    std::vector<float> rec_;               // frame records: [m][offset][REC]
+    std::vector<Best> best_;               // per end of preamble: the best over offsets and counts
+};
+
 }  // namespace m75
 }  // namespace m110a
 
