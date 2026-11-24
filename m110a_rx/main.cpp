@@ -66,7 +66,7 @@ constexpr long TOL_SCAN = 2L * SPS_SCAN;       // frame spacing tolerance
 constexpr long BLOCK = 4800;                   // 0.1 s power blocks
 // End step: the power before the step at least STEP_RATIO times every 0.5 s mean of the
 // STEP_HOLD blocks from it.
-constexpr int STEP_HOLD = 25;                  // 2.5 s
+constexpr int STEP_HOLD = 40;                  // 4 s
 constexpr double STEP_RATIO = 2.0;             // 3 dB
 constexpr long END_PAD = static_cast<long>(0.5 * FS);  // audio kept after the step
 constexpr float TARGET_RMS = 7000.0f / 32768.0f;  // MS-DMT reference level
