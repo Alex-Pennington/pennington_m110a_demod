@@ -10,7 +10,7 @@
 #include "api/modem.h"
 #include "dsp/fir_filter.h"
 #include "m110_lan/appa_proto.h"
-#include "m110a/brain_decoder.h"
+#include "m110a/brain_preamble.h"
 #include "sync/preamble_acq.h"
 
 #include <arpa/inet.h>
@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -43,8 +44,6 @@
 #include <vector>
 
 using namespace m110a::api;
-using m110a::BrainDecoder;
-using m110a::BrainDecoderConfig;
 using m110a::PreambleCorrelator;
 using m110a::generate_srrc_taps;
 using Clock = std::chrono::steady_clock;
@@ -1132,7 +1131,8 @@ void tx_loop() {
 // Three threads, so that nothing waits on a decode:
 //   rx_reader  reads the input into a queue; it blocks only on the input, so no audio is dropped
 //   rx_scan    finds each burst by its preamble (correlation, not level), reads the mode from
-//              D1/D2, raises CARRIER DETECTED, and ends the burst where its own level falls away
+//              its D1/D2 blocks, raises CARRIER DETECTED, and ends the burst where its own
+//              level falls away
 //   rx_decode  decodes each whole burst with the 110A receiver, one at a time, and hands the
 //              bytes to the modem
 // ---------------------------------------------------------------------------------------------
@@ -1141,7 +1141,6 @@ constexpr long kDecim = 5;                 // scan baseband at 9600 Hz
 constexpr int kSps = 4;                    // 9600 / 2400 baud
 constexpr long kBlock = 96;                // 10 ms of scan baseband: the burst-end level block
 constexpr long kHold = 40 * kSps;          // a correlation peak is the best within 40 symbols
-constexpr long kModeRead = kFs * 3 / 10;   // D1/D2 read from the first 0.3 s after the hit
 constexpr long kPreroll = kFs / 4;         // decode from 0.25 s before the hit (a whole frame)
 
 struct AudioQueue {
@@ -1176,16 +1175,17 @@ std::mutex g_dec_mu;
 std::condition_variable g_dec_cv;
 std::deque<DecodeJob> g_dec_q;
 
-// BrainDecoder's mode name (MIL-STD-188-110 Table XI by D1/D2) to the API mode
-bool mode_from_name(const std::string& n, Mode& m) {
-    static const std::map<std::string, Mode> k = {
-        {"M75NS", Mode::M75_SHORT}, {"M75NL", Mode::M75_LONG}, {"M150S", Mode::M150_SHORT},
-        {"M150L", Mode::M150_LONG}, {"M300S", Mode::M300_SHORT}, {"M300L", Mode::M300_LONG},
-        {"M600S", Mode::M600_SHORT}, {"M600L", Mode::M600_LONG}, {"M1200S", Mode::M1200_SHORT},
-        {"M1200L", Mode::M1200_LONG}, {"M2400S", Mode::M2400_SHORT}, {"M2400L", Mode::M2400_LONG},
-        {"M4800S", Mode::M4800_SHORT}, {"M2400V", Mode::M2400_VOICE}, {"M600H", Mode::M600_HARRIS},
-        {"M1200H", Mode::M1200_HARRIS}};
-    auto it = k.find(n);
+// Preamble D1, D2 to the mode: MIL-STD-188-110 Table XI, and the Harris application-specific
+// codes this repo's receiver decodes (5,7 600H and 5,6 1200H; Table XI reserves them)
+bool mode_from_d1d2(int d1, int d2, Mode& m) {
+    static const std::map<std::pair<int, int>, Mode> k = {
+        {{7, 5}, Mode::M75_SHORT}, {{5, 5}, Mode::M75_LONG}, {{7, 4}, Mode::M150_SHORT},
+        {{5, 4}, Mode::M150_LONG}, {{6, 7}, Mode::M300_SHORT}, {{4, 7}, Mode::M300_LONG},
+        {{6, 6}, Mode::M600_SHORT}, {{4, 6}, Mode::M600_LONG}, {{6, 5}, Mode::M1200_SHORT},
+        {{4, 5}, Mode::M1200_LONG}, {{6, 4}, Mode::M2400_SHORT}, {{4, 4}, Mode::M2400_LONG},
+        {{7, 6}, Mode::M4800_SHORT}, {{7, 7}, Mode::M2400_VOICE}, {{5, 7}, Mode::M600_HARRIS},
+        {{5, 6}, Mode::M1200_HARRIS}};
+    auto it = k.find({d1, d2});
     if (it == k.end()) return false;
     m = it->second;
     return true;
@@ -1292,7 +1292,13 @@ private:
         const long span = long(corr_.span());
         for (;;) {
             if (st_ == St::SYNC_WAIT) {
-                if (audio_end_ < mode_need_ && !eof) break;
+                if (bb_end() < mode_need_bb_) {
+                    if (!eof) break;
+                    logf("rx: preamble correlation %.2f at %.2f s of input, cut off by the end of input", hit_m_,
+                         sec(hit_a_));
+                    st_ = St::IDLE;
+                    continue;
+                }
                 read_mode(eof);
                 continue;
             }
@@ -1314,10 +1320,7 @@ private:
             }
             scan_t_++;
         }
-        if (eof) {
-            if (st_ == St::SYNC_WAIT) read_mode(true);
-            if (st_ == St::BURST) close_burst(audio_end_, "end of input");
-        }
+        if (eof && st_ == St::BURST) close_burst(audio_end_, "end of input");
         trim();
     }
 
@@ -1332,34 +1335,72 @@ private:
         hit_t_ = t;
         hit_a_ = a;
         hit_m_ = metric;
-        mode_tries_ = 0;
-        mode_need_ = a + kModeRead;
+        mode_frames_ = 0;
+        frames_used_ = 0;
+        d1_sc_.fill(0.0f);
+        d2_sc_.fill(0.0f);
+        // D2 ends 352 symbols into the frame (the next frame's common-segment check needs less)
+        mode_need_bb_ = t + 352L * kSps + 1;
     }
 
-    // D1/D2 from the frame found, BrainDecoder's own preamble reader. Two tries, the second
-    // with one more frame; a hit whose mode cannot be read is not a preamble.
+    // Match of the 32 symbols of block `block` (9 = D1, 10 = D2) of the preamble frame whose
+    // common segment starts at scan sample t, against each of the 8 Walsh patterns, with the
+    // carrier offset f taken out. Coherent over the block, so 0 for a wrong pattern.
+    std::array<float, 8> walsh_scores(long t, int block, float f) const {
+        std::array<float, 8> sc{};
+        std::complex<float> x[32];
+        for (int i = 0; i < 32; i++) {
+            const int n = block * 32 + i;
+            const double w = -2.0 * M_PI * f * n / 2400.0;
+            x[i] = bb(t + long(n) * kSps) * std::complex<float>(float(std::cos(w)), float(std::sin(w)));
+        }
+        for (int d = 0; d < 8; d++) {
+            std::complex<float> acc(0.0f, 0.0f);
+            for (int i = 0; i < 32; i++) {
+                const int s = (m110a::brain::psymbol[d][i % 8] + m110a::brain::pscramble[i]) % 8;
+                acc += x[i] * std::complex<float>(m110a::brain::psk8_i[s], -m110a::brain::psk8_q[s]);
+            }
+            sc[d] = std::abs(acc);
+        }
+        return sc;
+    }
+    static int best_of(const std::array<float, 8>& sc, float& ratio) {
+        int b = 0;
+        for (int d = 1; d < 8; d++) if (sc[d] > sc[b]) b = d;
+        float second = 0;
+        for (int d = 0; d < 8; d++) if (d != b) second = std::max(second, sc[d]);
+        ratio = sc[b] / std::max(second, 1e-12f);
+        return b;
+    }
+
+    // D1/D2 (MIL-STD-188-110 Table XI) from the preamble frames from the hit on: the Walsh
+    // matches of each frame whose common segment correlates are summed until one pattern leads
+    // the next by 2:1 in both, over up to 3 frames. A hit with no readable mode is not a preamble.
     void read_mode(bool eof) {
-        const long a0 = std::max(audio_base_, hit_a_ - kFs / 20);
-        const long a1 = std::min(audio_end_, mode_need_);
-        std::vector<float> s(size_t(std::max(0L, a1 - a0)));
-        for (long n = a0; n < a1; n++) s[size_t(n - a0)] = at(n);
-        BrainDecoderConfig dc;
-        dc.sample_rate = float(kFs);
-        dc.carrier_freq = 1800.0f;
-        dc.baud_rate = 2400.0f;
-        dc.freq_search_step = 0.5f;
-        auto res = BrainDecoder(dc).decode(s);
+        const long fr = 480L * kSps;
+        const long tf = hit_t_ + long(mode_frames_) * fr;
+        if (mode_frames_ == 0) corr_.evaluate(&bb(hit_t_), &hit_f_);
+        const bool frame_ok = mode_frames_ == 0 || corr_.evaluate(&bb(tf)) >= cfg.rx_threshold;
+        if (frame_ok) {
+            auto s1 = walsh_scores(tf, 9, hit_f_), s2 = walsh_scores(tf, 10, hit_f_);
+            for (int d = 0; d < 8; d++) { d1_sc_[d] += s1[d]; d2_sc_[d] += s2[d]; }
+            frames_used_++;
+        }
+        mode_frames_++;
+        float r1, r2;
+        const int d1 = best_of(d1_sc_, r1), d2 = best_of(d2_sc_, r2);
         Mode mode;
-        if (res.correlation >= 0.5f && mode_from_name(res.mode_name, mode)) {
+        const bool known = mode_from_d1d2(d1, d2, mode);
+        if (known && r1 >= 2.0f && r2 >= 2.0f) {
             start_burst(mode);
             return;
         }
-        if (++mode_tries_ < 2 && !eof) {
-            mode_need_ += kFs / 5;
+        if (mode_frames_ < 3 && !eof) {
+            mode_need_bb_ = hit_t_ + long(mode_frames_) * fr + 352L * kSps + 1;
             return;
         }
-        logf("rx: preamble correlation %.2f at %.2f s of input, mode not read (%s, %.2f): ignored", hit_m_,
-             sec(hit_a_), res.mode_name.c_str(), res.correlation);
+        logf("rx: preamble correlation %.2f at %.2f s of input, mode not read (D1 %d %.1f:1, D2 %d %.1f:1, "
+             "%d frames): ignored", hit_m_, sec(hit_a_), d1, r1, d2, r2, frames_used_);
         st_ = St::IDLE;
     }
 
@@ -1465,8 +1506,10 @@ private:
     St st_ = St::IDLE;
     long hit_t_ = 0, hit_a_ = 0;
     float hit_m_ = 0;
-    int mode_tries_ = 0;
-    long mode_need_ = 0;
+    float hit_f_ = 0;  // carrier offset, Hz, from the hit's common segment
+    int mode_frames_ = 0, frames_used_ = 0;
+    std::array<float, 8> d1_sc_{}, d2_sc_{};
+    long mode_need_bb_ = 0;
 
     uint64_t next_id_ = 0, id_ = 0;
     Mode mode_ = Mode::AUTO;

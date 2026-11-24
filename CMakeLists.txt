@@ -316,6 +316,12 @@ if(Python3_Interpreter_FOUND)
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_dte.py
                    --server $<TARGET_FILE:m110_lan> --work ${CMAKE_BINARY_DIR}/lan_work)
   set_tests_properties(appa_lan_dte PROPERTIES LABELS "lan" TIMEOUT 600 RUN_SERIAL TRUE)
+  # The receiver against real-time stdin audio: nothing dropped during a long decode, carrier at
+  # preamble sync, bursts found by preamble in noise, --rx-low-quality (needs numpy; 77 = skip)
+  add_test(NAME appa_rx_stream
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_rx_stream.py
+                   --server $<TARGET_FILE:m110_lan> --work ${CMAKE_BINARY_DIR}/lan_rx_work)
+  set_tests_properties(appa_rx_stream PROPERTIES LABELS "lan" TIMEOUT 900 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
 else()
   message(STATUS "python3 not found: appa_lan_dte test skipped")
 endif()
