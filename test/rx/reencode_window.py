@@ -219,6 +219,92 @@ def case_fade(a, data, seed):
     return ok
 
 
+SWEEP_MODES = ('150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L')
+
+
+def block_bits(mode):
+    """Data bits per interleaver block: a block lasts as long as the preamble."""
+    return int(round(rc.BPS[mode[:-1]] * (4.8 if mode[-1] == 'L' else 0.6)))
+
+
+def block_bytes(mode, b, n):
+    """Byte range [lo, hi) of a payload of n bytes whose bits block b (1-based) carries."""
+    bits = block_bits(mode)
+    return min(n, (b - 1) * bits // 8), min(n, -(-b * bits // 8))
+
+
+def sweep_one(a, mode, snr, i):
+    """One random-length eom=1 message: the receiver's bytes (each verdict against whether its block is
+    exact), the sent bytes (every verdict real) and the sent bytes with one bit flipped (its block NOT REAL)."""
+    r = random.Random(f'reencode_window/sweep {mode} {snr} {i}')
+    bits = block_bits(mode)
+    n = r.randrange(8, (3 if mode[-1] == 'S' else 2) * bits // 8 + 1)
+    data = (b'DE AAM402 sweep ' + r.randbytes(n))[:n]
+    w = argparse.Namespace(**vars(a))
+    w.work = os.path.join(a.work, f'sweep_{mode}_{snr:g}_{i}')
+    os.makedirs(w.work, exist_ok=True)
+    wav = audio(w, data, snr, None, 100 + i, 'msg', mode=mode)
+    res = dict(mode=mode, snr=snr, n=n, rx_false=0, rx_true_rej=0, rx_real_wrong=0, rx_ok=0, sent_false=0,
+               sent_blocks=0, flip_rej=None, missing=[], eom=0)
+    out = run_check(w, wav)
+    msgs = list(rc.messages(out))
+    pls = [pl for _, pl in msgs]
+    res['eom'] = sum(kv.get('eom') == '1' for kv, _ in msgs)
+    v = verdicts(out)
+    pl = pls[0] if pls else b''
+    for b, verdict in v.items():
+        lo, hi = block_bytes(mode, b, n)
+        exact = len(pl) == n and pl[lo:hi] == data[lo:hi]
+        if verdict == 'NOT REAL':
+            res['rx_false' if exact else 'rx_true_rej'] += 1
+        else:
+            res['rx_ok' if exact else 'rx_real_wrong'] += 1
+    out = run_check(w, wav, data)
+    v = verdicts(out)
+    total = -(-(8 * n + rc.EOM_BITS) // bits)
+    cover = re.search(r'^  tail check \(eom=1, \d+ blocks?\): the block lines cover', out, re.M)
+    res['missing'] = [b for b in range(1, total + 1) if b not in v]
+    if not (cover or TAIL_RE.search(out)):
+        res['missing'].append('silent tail')
+    if 'no message' in out or not v:
+        res['missing'] = ['no message']
+    res['sent_blocks'] = len(v)
+    res['sent_false'] = sum(x == 'NOT REAL' for x in v.values())
+    at = r.randrange(16, n) if n > 16 else n - 1
+    bad = bytearray(data)
+    bad[at] ^= 1 << r.randrange(8)
+    blk = 8 * at // bits + 1
+    v = verdicts(run_check(w, wav, bytes(bad)))
+    res['flip_rej'] = (v.get(blk) == 'NOT REAL') if v else None
+    os.remove(wav)
+    return res
+
+
+def case_sweep(a):
+    """Random-length eom=1 messages in all ten probe modes at each --sweep-snr: no right bytes NOT REAL, no
+    block left without a verdict. Wrong bytes are reported, not required (a block at low SNR can hide one bit)."""
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = [(m, float(s), i) for s in a.sweep_snr.split(',') for m in SWEEP_MODES for i in range(a.sweep_n)]
+    with ThreadPoolExecutor(a.jobs) as ex:
+        results = list(ex.map(lambda j: sweep_one(a, *j), jobs))
+    ok = True
+    print('sweep: mode  SNR  msgs  eom=1  rx exact real/NOT REAL  rx wrong NOT REAL/real  sent NOT REAL/blocks  '
+          'one bit flipped NOT REAL  blocks without a verdict')
+    for s in a.sweep_snr.split(','):
+        for m in SWEEP_MODES:
+            rs = [x for x in results if x['mode'] == m and x['snr'] == float(s)]
+            g = lambda key: sum(x[key] for x in rs)
+            flips = [x['flip_rej'] for x in rs if x['flip_rej'] is not None]
+            miss = [(x['n'], x['missing']) for x in rs if x['missing']]
+            bad = g('rx_false') or g('sent_false') or miss
+            ok &= not bad
+            print(f"sweep: {m:5} {float(s):4.0f} {len(rs):5}  {g('eom'):5}  {g('rx_ok'):5}/{g('rx_false'):<5}  "
+                  f"{g('rx_true_rej'):5}/{g('rx_real_wrong'):<5}  {g('sent_false'):4}/{g('sent_blocks'):<5}  "
+                  f"{sum(flips):3}/{len(flips):<3}  {miss or 'none'}{'  FAIL' if bad else ''}", flush=True)
+    print(f'sweep -> {"PASS" if ok else "FAIL"}', flush=True)
+    return ok
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--tool', required=True)
@@ -226,14 +312,19 @@ def main():
     ap.add_argument('--work', required=True)
     ap.add_argument('--fade-snr', type=float, default=10.0)
     ap.add_argument('--fade-seeds', default='4,6', help=f'noise seeds of the fade case, of {sorted(BAD)}')
-    ap.add_argument('--cases', default='counts,clean,short,fade')
+    ap.add_argument('--cases', default='counts,clean,short,fade',
+                    help='of counts,clean,short,fade,sweep (sweep is long and not in the default)')
+    ap.add_argument('--sweep-snr', default='8,20')
+    ap.add_argument('--sweep-n', type=int, default=4, help='messages per mode and SNR')
+    ap.add_argument('--jobs', type=int, default=4)
     a = ap.parse_args()
     os.makedirs(a.work, exist_ok=True)
     data = payload()
     ok = True
     for c in a.cases.split(','):
         ok &= {'counts': lambda: case_counts(), 'clean': lambda: case_clean(a, data),
-               'short': lambda: case_short(a), 'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')])}[c]()
+               'short': lambda: case_short(a), 'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')]),
+               'sweep': lambda: case_sweep(a)}[c]()
     print('reencode_window: all cases pass' if ok else 'reencode_window: FAILED')
     return 0 if ok else 1
 
