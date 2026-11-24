@@ -289,6 +289,28 @@ if(M110A_HAVE_SCIPY)
                                    --work ${CMAKE_BINARY_DIR}/rx_work/${_name})
     set_tests_properties(${_name} PROPERTIES LABELS "slow" TIMEOUT 7200)
   endforeach()
+
+  # 75 bps robustness gates (test/m75/m75_sweep.py, docs/m110a-75bps.md): 64-byte messages
+  # starting "DE AAM402", noise in 3 kHz; each listed seed must decode exact (success=1,
+  # eom=1, mode named, bytes equal) and no decode may succeed with wrong bytes.
+  set(_m75 ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/m75/m75_sweep.py
+           --tool $<TARGET_FILE:modem_tx_wav> --chansim $<TARGET_FILE:hfchansim> --jobs 3)
+  set(_m75_cases
+    # AWGN through ModemRX: exact at -8 dB (the knee is -9 to -10 dB)
+    "m75_awgn|--wav-rx $<TARGET_FILE:m75_wav_rx> --modes 75S,75L --snr=-8 --seeds 1,2,3,4 --require 75S:-8:4 --require 75L:-8:4"
+    # CCIR poor (Watterson 2 Hz, 2 ms) through ModemRX
+    "m75_watterson_poor|--wav-rx $<TARGET_FILE:m75_wav_rx> --channel poor --modes 75S,75L --snr=M75_POOR_SNR --seeds 1,2,3 --require 75S:M75_POOR_SNR:3 --require 75L:M75_POOR_SNR:3"
+    # the I/Q route, m110a_rx's preamble scan in front (it finds no preamble below about -7 dB)
+    "m75_iq|--rx $<TARGET_FILE:m110a_rx> --modes 75S,75L --snr=0 --seeds 1,2 --require 75S:0:2 --require 75L:0:2"
+  )
+  foreach(c ${_m75_cases})
+    string(REPLACE "|" ";" _p "${c}")
+    list(GET _p 0 _name)
+    list(GET _p 1 _args)
+    separate_arguments(_args UNIX_COMMAND "${_args}")
+    add_test(NAME ${_name} COMMAND ${_m75} ${_args} --work ${CMAKE_BINARY_DIR}/rx_work/${_name})
+    set_tests_properties(${_name} PROPERTIES LABELS "m75;tx;rx" TIMEOUT 3600)
+  endforeach()
 else()
   message(STATUS "python3 with numpy+scipy not found: I/Q receive tests skipped")
 endif()

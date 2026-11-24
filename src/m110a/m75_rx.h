@@ -24,7 +24,9 @@
 //    deinterleave and K=7 Viterbi (m75::decode_soft). The message ends at the EOM, or
 //    without it at the last interleaver block the signal covers.
 //  - success: the decoded bits, coded again, agree with the hard channel decisions on
-//    all but a fraction p of the message's coded bits. quality_db = 10 log10((1-p)/p).
+//    all but a fraction p of the message's coded bits, quality_db = 10 log10((1-p)/p) at
+//    least 11.25 dB, and on the worst interleaver block at least 6.5 dB (a fade longer than
+//    the 0.6 s interleaver decodes wrong while the message as a whole still agrees well).
 
 #ifndef M110A_M75_RX_H
 #define M110A_M75_RX_H
@@ -52,13 +54,14 @@ namespace m75 {
 /// Receiver constants. Chosen and checked on the AWGN and Watterson sweeps of
 /// test/m75/m75_sweep.py (docs/m110a-75bps.md).
 struct RxTuning {
-    double window_ms = 6.0;         // delay window either side of the preamble timing
+    double window_ms = 12.0;        // delay window either side of the preamble timing (FFI: spreads to 12 ms)
     double profile_alpha = 0.03;    // per-set update of the tap energy profile (the mean
                                     // power-delay profile weighs square-law combining)
     double weight_floor = 2.0;      // tap weight = profile - weight_floor x noise floor, >= 0
     double noise_beta = 0.02;       // per-set update of the noise floor
     double soft_scale = 16.0;       // soft bit = scale * (sqrt M0 - sqrt M1) / sqrt(noise)
     double min_quality_db = 11.25;  // success: quality_db = 10 log10((1 - p) / p) at least this
+    double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
 };
 
@@ -128,7 +131,8 @@ public:
         double noise_m;   // noise expectation of a metric (noise floor x sum of weights)
         int win;
         double ratio;     // (M_win - mean M_lose) / noise_m
-        double excess;    // winner's tap energy over the losers' mean, summed over the window
+        double lose_m;    // mean of the three losing metrics
+        double kappa;     // sum w^2 / (sum w * max w): the weighted taps' share of a peak tap
     };
 
     /// Demodulate set k (the sets must come in order: the profile follows them)
@@ -170,16 +174,18 @@ public:
         double lose = 0.0;
         for (int v = 0; v < 4; v++) if (v != o.win) lose += o.m[v];
         lose /= 3.0;
+        o.lose_m = lose;
+        double w2 = 0.0, wmax = 0.0;
+        for (int j = 0; j < ntaps_; j++) { w2 += wgt[j] * wgt[j]; wmax = std::max(wmax, wgt[j]); }
+        o.kappa = wmax > 0.0 ? w2 / (wsum * wmax) : 0.0;
         o.ratio = o.noise_m > 0.0 ? (o.m[o.win] - lose) / o.noise_m : 0.0;
 
         // follow the channel: winner's tap energies into the profile, losers' into the floor
-        double fl = 0.0, ew = 0.0;
+        double fl = 0.0;
         for (int j = 0; j < ntaps_; j++) {
             prof_[j] += t_.profile_alpha * (e[o.win * ntaps_ + j] - prof_[j]);
-            ew += e[o.win * ntaps_ + j];
             for (int v = 0; v < 4; v++) if (v != o.win) fl += e[v * ntaps_ + j];
         }
-        o.excess = ew - fl / 3.0;
         noise_ += t_.noise_beta * (fl / (3.0 * ntaps_) - noise_);
         for (int j = 0; j < ntaps_; j++) slow_[j] += 0.02 * (std::max(0.0, prof_[j] - noise_) - slow_[j]);
         recentre();
@@ -187,9 +193,6 @@ public:
     }
 
     double noise() const { return noise_; }
-    /// Sum over the window's taps of p(tap)^2, p the raised-cosine pulse at unit peak: a
-    /// symbol's energy as the taps see it, about (sps / step)(1 - alpha / 4)
-    double taps_per_symbol() const { return static_cast<double>(sps_) / step_ * (1.0 - 0.35 / 4.0); }
     long shift() const { return shift_; }
 
 private:
@@ -265,6 +268,7 @@ struct RxOut {
     long eom_bit = -1;
     long sets = 0, signal_sets = 0, blocks = 0;
     double p = 0.5;           // channel bit disagreement over the message
+    double p_block = 0.5;     // the same over the worst interleaver block of it
     double snr_db = 0.0;      // estimated, 3 kHz noise bandwidth
     std::string error;
 };
@@ -346,7 +350,7 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     rake.init_from_preamble(last);
 
     std::vector<soft_bit_t> soft;
-    std::vector<double> ratio, excess;
+    std::vector<double> ratio, win_ex, lose, kappa;
     for (long k = 0; rake.available(k); k++) {
         const auto o = rake.demod(k);
         soft_bit_t a, b;
@@ -354,7 +358,9 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
         soft.push_back(a);
         soft.push_back(b);
         ratio.push_back(o.ratio);
-        excess.push_back(o.excess);
+        win_ex.push_back(o.m[o.win] - o.lose_m);
+        lose.push_back(o.lose_m);
+        kappa.push_back(o.kappa);
     }
     r.sets = static_cast<long>(ratio.size());
 
@@ -400,22 +406,40 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
         dis += code[i] == 0 ? 0.5 : (hard != re[i] ? 1.0 : 0.0);
     }
     r.p = n ? dis / n : 0.5;
+    // ... and block by block (code order is block by block after deinterleaving): a fade
+    // longer than the interleaver leaves one block's errors to the code, which may decode
+    // them wrong while the whole message still agrees well
+    const size_t B = static_cast<size_t>(2 * S);
+    r.p_block = 0.0;
+    for (size_t b0 = 0; b0 < n; b0 += B) {
+        const size_t b1 = std::min(n, b0 + B);
+        if (b1 - b0 < B / 4) continue;
+        double d = 0.0;
+        for (size_t i = b0; i < b1; i++) {
+            const int hard = code[i] < 0 ? 1 : 0;
+            d += code[i] == 0 ? 0.5 : (hard != re[i] ? 1.0 : 0.0);
+        }
+        r.p_block = std::max(r.p_block, d / (b1 - b0));
+    }
+    if (n == 0) r.p_block = 0.5;
 
-    // SNR: a set's winning word exceeds the losers' mean by 32^2 S sum_j p(tap_j)^2 over the
-    // window, S the symbol energy at the matched filter's peak; the noise floor per tap is
-    // 32 sigma^2. S / sigma^2 is Es/N0 (matched filter); the standard counts noise in 3 kHz.
-    if (r.signal_sets > 0 && rake.noise() > 0.0) {
-        double ex = 0.0;
-        for (long k = 0; k < r.signal_sets; k++) ex += excess[k];
-        ex /= r.signal_sets;
-        const double es_n0 = ex / (static_cast<double>(SET_SYMBOLS) * rake.taps_per_symbol() * rake.noise());
-        r.snr_db = es_n0 > 0 ? 10.0 * std::log10(es_n0 * 2400.0 / 3000.0) : -99.0;
+    // SNR: the weights sit on the channel's taps, where the losing words see noise (and
+    // multipath leakage) only: with w_j proportional to a tap's signal energy, M_win - M_lose
+    // = 32^2 S sum w_j g_j and M_lose = 32 sigma^2 sum w_j (g_j the tap's share of the peak
+    // energy), so S / sigma^2 = (M_win - M_lose) / M_lose / (32 kappa), kappa = sum w g / sum w.
+    // S / sigma^2 is Es/N0 at the matched filter; the standard counts noise in 3 kHz.
+    if (r.signal_sets > 0) {
+        double a = 0.0, b = 0.0, kp = 0.0;
+        for (long k = 0; k < r.signal_sets; k++) { a += win_ex[k]; b += lose[k]; kp += kappa[k]; }
+        kp /= r.signal_sets;
+        const double es_n0 = b > 0.0 && kp > 0.0 ? a / b / (SET_SYMBOLS * kp) : 1e4;
+        r.snr_db = es_n0 > 0 ? std::min(40.0, 10.0 * std::log10(es_n0 * 2400.0 / 3000.0)) : -99.0;
     }
     char buf[320];
     snprintf(buf, sizeof buf,
              "[RX M75] acq z=%.1f frames=%d foff=%+.1f Hz D1,D2=%d,%d (pair ratio %.2f) data_start=%ld "
-             "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f snr=%.1f dB shift=%ld",
-             r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.snr_db,
+             "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f snr=%.1f dB shift=%ld",
+             r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.snr_db,
              rake.shift());
     std::cout << buf << std::endl;
     return r;
@@ -477,12 +501,19 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     res.snr_db = static_cast<float>(r.snr_db);
     res.ber_estimate = static_cast<float>(r.p);
     res.quality_db = static_cast<float>(10.0 * std::log10((1.0 - r.p) / std::max(r.p, 1e-4)));
+    const double q_block = 10.0 * std::log10((1.0 - r.p_block) / std::max(r.p_block, 1e-4));
     res.quality_threshold_db = quality_threshold_db(t);
-    res.success = res.quality_db >= res.quality_threshold_db && (r.eom_bit >= 0 || r.blocks > 0);
+    res.success = res.quality_db >= res.quality_threshold_db && q_block >= t.min_block_quality_db &&
+                  (r.eom_bit >= 0 || r.blocks > 0);
     if (!res.success) {
         char buf[200];
         if (r.eom_bit < 0 && r.blocks == 0)
             snprintf(buf, sizeof buf, "Signal covers 0 whole 75 bps interleaver blocks; no bytes reported");
+        else if (res.quality_db >= res.quality_threshold_db)
+            snprintf(buf, sizeof buf,
+                     "Worst interleaver block quality %.1f dB below %.1f dB (channel bits %.1f%% off the decoded "
+                     "path there); bytes not trusted",
+                     q_block, t.min_block_quality_db, 100.0 * r.p_block);
         else
             snprintf(buf, sizeof buf,
                      "Decode quality %.1f dB below %.1f dB (channel bits %.1f%% off the decoded path); bytes not trusted",

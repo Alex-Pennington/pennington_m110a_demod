@@ -17,12 +17,14 @@
 //    only on its channel symbol: the matched-filter output is correlated with the 8
 //    possible segments once, at every half-symbol start.
 //  - The 13 segments of a frame other than D1 and D2 are known once the frame's place in
-//    the countdown is assumed. Their correlation energies are summed, non-coherently (no
-//    carrier phase needed, fading allowed), over the last 3 frames (short) or the last 24
-//    (long) before an assumed end of preamble, and set against the same sum for the 7
-//    wrong segments: the significance z of that excess picks the end of preamble, the
-//    frame count and the carrier offset (7.5 Hz grid, then 0.5 Hz).
-//  - D1 and D2 are then read as a pair by the same energies summed over those frames:
+//    the countdown is assumed. Each segment scores the share of its 8 correlation energies
+//    that falls on the expected word (non-coherent: no carrier phase needed, fading
+//    allowed; scale-free: a segment in a quiet stretch weighs as much as one in a loud one).
+//    The shares are summed over the last 3 frames (short) or the last 24 (long) before an
+//    assumed end of preamble; their excess over 1/8 each, in standard deviations of
+//    noise, is the significance z that picks the end of preamble, the frame count and the
+//    carrier offset (7.5 Hz grid, then 0.5 Hz).
+//  - D1 and D2 are then read as a pair by the same shares summed over those frames:
 //    every code Table XI defines (and the Harris 5,6 / 5,7) is scored, e1[D1] + e2[D2],
 //    and the best taken. The mode is the one that code names; it is never taken from the
 //    metric.
@@ -58,7 +60,7 @@ struct Acquisition {
 };
 
 struct AcqTuning {
-    double min_z = 12.0;          // significance needed (noise alone: see docs/m110a-75bps.md)
+    double min_z = 9.0;           // significance needed (noise alone: z up to 6.6 in 24 buffers of 20 s)
     double max_start_s = 15.0;    // latest start of the first preamble frame searched
     double coarse_step_hz = 7.5;
     double fine_step_hz = 0.5;
@@ -159,14 +161,18 @@ inline Acquisition acquire(const std::vector<float>& rf, float fs, float carrier
             std::complex<float> u[8] = {};
             for (int i = 0; i < SEG; i++) u[i & 7] += z[m + static_cast<long>(i) * sd] * descr[i];
             double all = 0.0;
+            float e[8];
             for (int ch = 0; ch < 8; ch++) {
                 std::complex<float> c(0, 0);
                 for (int k = 0; k < 8; k++) c += sign[ch][k] > 0 ? u[k] : -u[k];
-                const float e = std::norm(c);
-                E[ch * ne + m] = e;
-                all += e;
+                e[ch] = std::norm(c);
+                all += e[ch];
             }
-            A[m] = static_cast<float>(all);
+            // each word's share of the segment's energy: scale-free, so a segment in a quiet
+            // stretch counts as much as one in a loud one, and no single segment can count for
+            // more than its 1 - 1/8
+            for (int ch = 0; ch < 8; ch++) E[ch * ne + m] = all > 0.0 ? static_cast<float>(e[ch] / all) : 0.125f;
+            A[m] = 1.0f;
         }
     };
     // Per frame start m: energy of the 10 segments every frame shares (common + last zero)
@@ -206,9 +212,10 @@ inline Acquisition acquire(const std::vector<float>& rf, float fs, float carrier
                 wrong += A[q] - e;
             }
         }
-        wrong /= 7.0;
+        (void)wrong;
+        // shares of 8 noise-only energies: mean 1/8, variance 7 / (64 x 9)
         const int n = inside * 13;
-        return wrong > 0.0 ? (s - wrong) / (wrong / std::sqrt(static_cast<double>(n))) : 0.0;
+        return n ? (s - n / 8.0) / std::sqrt(n * 7.0 / 576.0) : 0.0;
     };
 
     const long tmax_start = static_cast<long>(t.max_start_s * fsd);
