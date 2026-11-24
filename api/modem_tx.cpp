@@ -12,6 +12,7 @@
 #include "modem/m110a_codec.h"
 #include "m110a/mode_config.h"
 #include "m110a/brain_preamble.h"
+#include "m110a/m75_codec.h"
 #include "dsp/nco.h"
 #include "dsp/fir_filter.h"
 #include <mutex>
@@ -68,11 +69,6 @@ public:
         }
         
         ModeId mode_id = api_to_internal_mode(config_.mode);
-        
-        // M75 modes not yet supported
-        if (mode_id == ModeId::M75NS || mode_id == ModeId::M75NL) {
-            return Error(ErrorCode::NOT_IMPLEMENTED, "M75 modes not yet supported");
-        }
 
         // Harris modes (600H, 1200H, 2400V): whole 110C message from bits (EOM, flush,
         // D1/D2 probes)
@@ -117,7 +113,10 @@ public:
         bits.reserve(data.size() * 8);
         for (uint8_t b : data)
             for (int i = 0; i < 8; i++) bits.push_back((b >> i) & 1);  // LSB first
-        auto symbols_with_probes = codec_.encode_bits_with_probes(std::move(bits), config_.include_eom);
+        // 75 bps: Walsh sets, no probes (src/m110a/m75_codec.h)
+        auto symbols_with_probes = m75::is_m75(mode_id)
+            ? m75::encode_symbols(bits, mode_id, config_.include_eom)
+            : codec_.encode_bits_with_probes(std::move(bits), config_.include_eom);
         stream.insert(stream.end(), symbols_with_probes.begin(), symbols_with_probes.end());
 
         auto audio = config_.use_pulse_shaping ? modulate_with_rrc(stream) : modulate_simple(stream);
@@ -140,8 +139,9 @@ public:
         auto valid = config_.validate();
         if (!valid.ok()) return valid.error();
         if (bits.empty()) return Error(ErrorCode::TX_DATA_EMPTY);
-        if (!is_bits_mode(api_to_internal_mode(config_.mode))) {
-            return Error(ErrorCode::NOT_IMPLEMENTED, "encode_bits: 600H, 1200H and 2400V only");
+        const ModeId m = api_to_internal_mode(config_.mode);
+        if (!is_bits_mode(m) && !m75::is_m75(m)) {
+            return Error(ErrorCode::NOT_IMPLEMENTED, "encode_bits: 600H, 1200H, 2400V, 75S and 75L only");
         }
         return encode_bits_locked(bits, symbols);
     }
@@ -236,7 +236,9 @@ private:
     Result<Samples> encode_bits_locked(const std::vector<uint8_t>& bits, std::vector<int>* symbols) {
         ModeId mode_id = api_to_internal_mode(config_.mode);
         std::vector<int> data_idx;
-        auto data_syms = codec_.encode_message_bits(bits, &data_idx);
+        auto data_syms = m75::is_m75(mode_id)
+            ? m75::encode_symbols(std::vector<int>(bits.begin(), bits.end()), mode_id, true, &data_idx)
+            : codec_.encode_message_bits(bits, &data_idx);
         if (data_syms.empty()) {
             return Error(ErrorCode::NOT_IMPLEMENTED, "mode has no 110C message encoder");
         }

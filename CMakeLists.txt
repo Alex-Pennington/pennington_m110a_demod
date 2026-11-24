@@ -41,7 +41,8 @@ add_executable(hfchansim hfchansim/main.cpp)
 add_executable(m110a_rx m110a_rx/main.cpp)
 target_link_libraries(m110a_rx PRIVATE m110a_modem)
 
-# Harris-mode transmitter: payload bits -> WAV (600H, 1200H, 2400V; docs/harris-tx.md)
+# Transmitter for the Harris modes and 75 bps: payload bits -> WAV (600H, 1200H, 2400V,
+# docs/harris-tx.md; 75S, 75L, docs/m110a-75bps.md)
 add_executable(m110a_tx m110a_tx/main.cpp)
 target_link_libraries(m110a_tx PRIVATE m110a_modem)
 
@@ -151,6 +152,19 @@ target_link_libraries(test_table_xi_modes PRIVATE m110a_modem)
 add_test(NAME test_table_xi_modes COMMAND test_table_xi_modes)
 set_tests_properties(test_table_xi_modes PROPERTIES LABELS "rx")
 
+# 75 bps (75S, 75L): Tables IX/X, the 75N interleaver and the symbol stream against the
+# text of MIL-STD-188-110D 5.3.2; ModemTX -> ModemRX loopback, noise and forced-mode
+# gates (docs/m110a-75bps.md)
+add_executable(test_m75 test/test_m75.cpp)
+target_link_libraries(test_m75 PRIVATE m110a_modem)
+add_test(NAME test_m75 COMMAND test_m75)
+set_tests_properties(test_m75 PROPERTIES LABELS "rx;tx;m75" TIMEOUT 1800)
+# WAV -> ModemRX, printing m110a_rx's message lines: test/m75/m75_sweep.py --wav-rx measures
+# the modem without m110a_rx's I/Q front end and preamble scanner
+add_executable(m75_wav_rx test/m75/wav_rx.cpp)
+target_link_libraries(m75_wav_rx PRIVATE m110a_modem)
+set_target_properties(m75_wav_rx PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
 # ---- I/Q receive path through m110a_rx ----
 # Synthetic RSP2 I/Q (test/rx/synth_iq.py: 2 MS/s cs16, dial at +100 kHz)
 # carrying the MS-DMT reference transmissions, generated at test time in the
@@ -241,6 +255,14 @@ if(M110A_HAVE_SCIPY)
                    --work ${CMAKE_BINARY_DIR}/rx_work/rx_end_fade)
   set_tests_properties(rx_end_fade PROPERTIES LABELS "iq;tx" TIMEOUT 1800)
 
+  # the re-encode check: wrong bytes with a fade inside their block are not real, right bytes
+  # are, and its block lines keep the form gale-rx parses (test/rx/reencode_window.py)
+  add_test(NAME rx_reencode_window
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/rx/reencode_window.py
+                   --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>
+                   --work ${CMAKE_BINARY_DIR}/rx_work/rx_reencode_window)
+  set_tests_properties(rx_reencode_window PROPERTIES LABELS "iq;tx" TIMEOUT 3600)
+
   # the decode-quality gate says success=0 for noise after a genuine preamble
   add_test(NAME tx_noise_gate
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/tx/noise_gate.py
@@ -281,6 +303,28 @@ if(M110A_HAVE_SCIPY)
     add_test(NAME ${_name} COMMAND ${_sweep} ${_args} --jobs 3
                                    --work ${CMAKE_BINARY_DIR}/rx_work/${_name})
     set_tests_properties(${_name} PROPERTIES LABELS "slow" TIMEOUT 7200)
+  endforeach()
+
+  # 75 bps robustness gates (test/m75/m75_sweep.py, docs/m110a-75bps.md): 64-byte messages
+  # starting "DE AAM402", noise in 3 kHz; each listed seed must decode exact (success=1,
+  # eom=1, mode named, bytes equal) and no decode may succeed with wrong bytes.
+  set(_m75 ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/m75/m75_sweep.py
+           --tool $<TARGET_FILE:modem_tx_wav> --chansim $<TARGET_FILE:hfchansim> --jobs 3)
+  set(_m75_cases
+    # AWGN through ModemRX: exact at -8 dB (the knee is -9 to -10 dB)
+    "m75_awgn|--wav-rx $<TARGET_FILE:m75_wav_rx> --modes 75S,75L --snr=-8 --seeds 1,2,3,4 --require 75S:-8:4 --require 75L:-8:4"
+    # CCIR poor (Watterson 2 Hz, 2 ms) through ModemRX
+    "m75_watterson_poor|--wav-rx $<TARGET_FILE:m75_wav_rx> --channel poor --modes 75S,75L --snr=0 --seeds 1,2,3 --require 75S:0:3 --require 75L:0:3"
+    # the I/Q route, m110a_rx's preamble scan in front (it finds no preamble below about -7 dB)
+    "m75_iq|--rx $<TARGET_FILE:m110a_rx> --modes 75S,75L --snr=0 --seeds 1,2 --require 75S:0:2 --require 75L:0:2"
+  )
+  foreach(c ${_m75_cases})
+    string(REPLACE "|" ";" _p "${c}")
+    list(GET _p 0 _name)
+    list(GET _p 1 _args)
+    separate_arguments(_args UNIX_COMMAND "${_args}")
+    add_test(NAME ${_name} COMMAND ${_m75} ${_args} --work ${CMAKE_BINARY_DIR}/rx_work/${_name})
+    set_tests_properties(${_name} PROPERTIES LABELS "m75;tx;rx" TIMEOUT 3600)
   endforeach()
 else()
   message(STATUS "python3 with numpy+scipy not found: I/Q receive tests skipped")
@@ -323,6 +367,19 @@ if(Python3_Interpreter_FOUND)
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_dte.py
                    --server $<TARGET_FILE:m110_lan> --work ${CMAKE_BINARY_DIR}/lan_work)
   set_tests_properties(appa_lan_dte PROPERTIES LABELS "lan" TIMEOUT 600 RUN_SERIAL TRUE)
+  # The receiver against real-time stdin audio: nothing dropped during a long decode, carrier at
+  # preamble sync, bursts found by preamble in noise, --rx-low-quality (needs numpy; 77 = skip)
+  add_test(NAME appa_rx_stream
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_rx_stream.py
+                   --server $<TARGET_FILE:m110_lan> --work ${CMAKE_BINARY_DIR}/lan_rx_work)
+  set_tests_properties(appa_rx_stream PROPERTIES LABELS "lan" TIMEOUT 900 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
+  # 75S and 75L both ways over the TCP data socket (transmit WAV through ModemRX and m110a_rx;
+  # that WAV back in real time, clean and at -6 dB); the chunk framing of every mode
+  add_test(NAME appa_lan_75
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/lan/appa_m75.py
+                   --server $<TARGET_FILE:m110_lan> --rx $<TARGET_FILE:m110a_rx>
+                   --wav-rx $<TARGET_FILE:m75_wav_rx> --work ${CMAKE_BINARY_DIR}/lan_75_work)
+  set_tests_properties(appa_lan_75 PROPERTIES LABELS "lan" TIMEOUT 1200 RUN_SERIAL TRUE SKIP_RETURN_CODE 77)
 else()
   message(STATUS "python3 not found: appa_lan_dte test skipped")
 endif()
