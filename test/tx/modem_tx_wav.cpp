@@ -5,7 +5,7 @@
  * it writes a file and keys nothing.
  *
  * Usage: modem_tx_wav --mode M [--rect] [--leading] [--lead S] [--tail S] IN.bin OUT.wav
- *   --mode M     150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S
+ *   --mode M     75S 75L 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S
  *   --rect       TxConfig::use_pulse_shaping = false (default: true, RRC)
  *   --leading    TxConfig::include_leading_symbols = true (default: false, as
  *                m110a_server sends)
@@ -56,7 +56,7 @@ bool write_wav16(const std::string& path, const std::vector<float>& x, int rate)
 
 int main(int argc, char** argv) {
     const std::map<std::string, Mode> modes = {
-        {"150S", Mode::M150_SHORT}, {"150L", Mode::M150_LONG}, {"300S", Mode::M300_SHORT},
+        {"75S", Mode::M75_SHORT}, {"75L", Mode::M75_LONG}, {"150S", Mode::M150_SHORT}, {"150L", Mode::M150_LONG}, {"300S", Mode::M300_SHORT},
         {"300L", Mode::M300_LONG}, {"600S", Mode::M600_SHORT}, {"600L", Mode::M600_LONG},
         {"1200S", Mode::M1200_SHORT}, {"1200L", Mode::M1200_LONG}, {"2400S", Mode::M2400_SHORT},
         {"2400L", Mode::M2400_LONG}, {"4800S", Mode::M4800_SHORT}};

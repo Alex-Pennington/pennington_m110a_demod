@@ -1,5 +1,5 @@
 /**
- * m110a_tx - MIL-STD-188-110A Harris-mode transmitter: payload bits to a WAV.
+ * m110a_tx - MIL-STD-188-110A transmitter for the Harris modes and 75 bps: payload bits to a WAV.
  *
  * Transmit code only: it writes a file and keys nothing.
  *
@@ -7,9 +7,11 @@
  *        message end: EOM 4B65A5B2, 144-bit flush to the interleaver block, D1/D2
  *        in the last two known segments of every block) -> 3-frame short preamble
  *        + data, root-raised-cosine shaped, carrier 1800 Hz -> 48 kHz 16-bit mono.
+ *        75S / 75L: the 75 bps Walsh-set waveform, EOM and flush, no probes, after a 3- or
+ *        24-frame preamble (src/m110a/m75_codec.h, docs/m110a-75bps.md).
  *
  * Usage: m110a_tx [options] OUT.wav
- *   --mode M        600H (default), 1200H or 2400V
+ *   --mode M        600H (default), 1200H, 2400V, 75S or 75L
  *   --bits FILE     payload as ASCII 0/1 in transmit order (other characters ignored)
  *   --bytes FILE    payload as bytes, bit k = bit k%8 of byte k/8 (LSB first, as
  *                   m110a_rx prints hex=)
@@ -18,7 +20,7 @@
  *                   header, the units, then for 600H and 1200H the 108-bit trailer
  *                   W, W' and zeros to a multiple of 16 bits, for 2400V 108 ones and
  *                   zeros to a multiple of 8 bits, as in the melp2400 recording
- *                   (docs/harris-600-format.md, docs/harris-tx.md)
+ *                   (docs/harris-600-format.md, docs/harris-tx.md); not for 75S / 75L
  *   --lead S        seconds of silence before the signal (default 2)
  *   --tail S        seconds of silence after it (default 1)
  *   --rms R         RMS of the signal part, full scale 1.0 (default 0.2136, the
@@ -55,7 +57,7 @@ const char* TRAILER_W2 = "101001010010100010100000000100010101000101110011111100
 [[noreturn]] void usage(const char* msg) {
     if (msg) fprintf(stderr, "m110a_tx: %s\n", msg);
     fprintf(stderr,
-        "usage: m110a_tx [--mode 600H|1200H|2400V] (--bits FILE | --bytes FILE) [--frame]\n"
+        "usage: m110a_tx [--mode 600H|1200H|2400V|75S|75L] (--bits FILE | --bytes FILE) [--frame]\n"
         "                [--lead S] [--tail S] [--rms R | --match WAV] [--carrier HZ]\n"
         "                [--rect] [--leading] [--symbols OUT] [--payload-out OUT] OUT.wav\n");
     exit(2);
@@ -172,7 +174,10 @@ int main(int argc, char** argv) {
     if (mode_s == "600H") { mode = Mode::M600_HARRIS; unit = 60; }
     else if (mode_s == "1200H") { mode = Mode::M1200_HARRIS; unit = 81; }
     else if (mode_s == "2400V") { mode = Mode::M2400_VOICE; unit = 54; }
-    else usage("--mode must be 600H, 1200H or 2400V");
+    else if (mode_s == "75S") { mode = Mode::M75_SHORT; unit = 0; }
+    else if (mode_s == "75L") { mode = Mode::M75_LONG; unit = 0; }
+    else usage("--mode must be 600H, 1200H, 2400V, 75S or 75L");
+    if (frame && unit == 0) usage("--frame is the Harris vocoder framing: not for 75S / 75L");
 
     std::string raw;
     if (!read_file(bits_path.empty() ? bytes_path : bits_path, raw)) usage("cannot read payload");
