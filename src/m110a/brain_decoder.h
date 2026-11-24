@@ -96,6 +96,10 @@ struct BrainDecodeResult {
     // Extracted symbols
     std::vector<complex_t> preamble_symbols;
     std::vector<complex_t> data_symbols;
+    // The zero segment of the last preamble frame: the P_ZERO_LENGTH symbols just
+    // before data_symbols[0], on the same grid. Each is PSK8[pscramble[i]], whatever
+    // the mode, so an equalizer can enter the data with its delay lines full.
+    std::vector<complex_t> pre_data_symbols;
     
     // Decoded data
     std::vector<uint8_t> data;
@@ -831,6 +835,20 @@ private:
         const long pattern_len = config_.unknown_data_len + config_.known_data_len;
         size_t next_step = 0;
         long shift = 0;
+        // The last preamble frame's zero segment, which ends where the data begins,
+        // on the grid of data symbol 0
+        long shift0 = 0;
+        for (const auto& st : steps) if (st.first * pattern_len <= 0) shift0 = st.second;
+        result.pre_data_symbols.clear();
+        for (int i = brain::P_ZERO_LENGTH; i > 0; i--) {
+            const long idx = data_start - static_cast<long>(i) * sps_ + shift0;
+            if (idx < 0 || idx >= static_cast<long>(filtered.size())) continue;
+            result.pre_data_symbols.push_back(
+                filtered[idx] * derotation(result, (idx - result.start_sample) / sps_));
+        }
+        if (result.pre_data_symbols.size() != static_cast<size_t>(brain::P_ZERO_LENGTH))
+            result.pre_data_symbols.clear();
+
         for (long n = 0;; n++) {
             while (next_step < steps.size() && steps[next_step].first * pattern_len <= n)
                 shift = steps[next_step++].second;

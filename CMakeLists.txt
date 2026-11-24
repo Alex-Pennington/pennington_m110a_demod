@@ -123,6 +123,14 @@ target_link_libraries(test_grid_step PRIVATE m110a_modem)
 add_test(NAME test_grid_step COMMAND test_grid_step)
 set_tests_properties(test_grid_step PROPERTIES LABELS "rx" TIMEOUT 3600)
 
+# The 110A DFE enters the data, and leaves each block-boundary probe, with its delay lines
+# holding the symbols before the next output; unity center tap on the symbol decided
+# (fix/m110a-dfe-context)
+add_executable(test_dfe_context test/test_dfe_context.cpp)
+target_link_libraries(test_dfe_context PRIVATE m110a_modem)
+add_test(NAME test_dfe_context COMMAND test_dfe_context)
+set_tests_properties(test_dfe_context PROPERTIES LABELS "fast;rx")
+
 # ModemTX output level and configuration checks (docs/TX_CHAIN.md)
 add_executable(test_modem_tx test/test_modem_tx.cpp)
 target_link_libraries(test_modem_tx PRIVATE m110a_modem)
