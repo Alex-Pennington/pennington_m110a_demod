@@ -37,6 +37,7 @@
 #include "m110a/mode_config.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -287,21 +288,29 @@ inline void soft_bits(const WalshRake::SetOut& o, double scale, soft_bit_t& firs
 }
 
 /// Acquisition of the last buffer acquire_cached() was asked about: ModemRX's AUTO pass
-/// asks whether a 75 bps preamble is there (find_low_snr) and then decodes the same buffer.
+/// asks whether a 75 bps preamble is there (find_low_snr) and then decodes the same audio.
+/// Keyed on the audio itself (length, settings and 9 samples spread over it).
 inline Acquisition acquire_cached(const std::vector<float>& rf, float fs, float carrier, float frange) {
-    struct Key { const float* p = nullptr; size_t n = 0; float fs = 0, fc = 0, fr = 0, a = 0, b = 0; };
-    thread_local Key key;
+    using Key = std::array<double, 13>;
+    thread_local Key key{};
     thread_local Acquisition last;
-    Key k;
-    k.p = rf.data(); k.n = rf.size(); k.fs = fs; k.fc = carrier; k.fr = frange;
-    k.a = rf.empty() ? 0.0f : rf[rf.size() / 3];
-    k.b = rf.empty() ? 0.0f : rf[rf.size() - 1];
-    if (k.p == key.p && k.n == key.n && k.fs == key.fs && k.fc == key.fc && k.fr == key.fr && k.a == key.a &&
-        k.b == key.b)
-        return last;
+    Key k{};
+    k[0] = static_cast<double>(rf.size()); k[1] = fs; k[2] = carrier; k[3] = frange;
+    for (int i = 0; i < 9; i++) k[4 + i] = rf.empty() ? 0.0 : rf[(rf.size() - 1) * i / 8];
+    if (k == key) return last;
     last = acquire(rf, fs, carrier, frange);
     key = k;
     return last;
+}
+
+/// The audio ModemRX hands the 75 bps path: `cut` (its buffer from its first preamble cut
+/// on) with up to 5 s of `buffer` before it put back. At low SNR first_preamble_cut fires
+/// on whichever preamble frame first crosses its threshold, which can be inside a 75 bps
+/// preamble (24 frames, 4.8 s for 75L); acquisition wants all of it.
+inline std::vector<float> lead_in(const std::vector<float>& buffer, const std::vector<float>& cut, float fs) {
+    const size_t at = buffer.size() >= cut.size() ? buffer.size() - cut.size() : 0;
+    const size_t back = std::min(at, static_cast<size_t>(5.0 * fs));
+    return std::vector<float>(buffer.begin() + static_cast<long>(at - back), buffer.end());
 }
 
 /// D1/D2 read clearly: the best defined code's energy at least `ratio` times the
