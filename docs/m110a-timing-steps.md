@@ -236,6 +236,13 @@ BPSK (chance 0.500).
 300L, 600L and 1200L. This receiver decodes 8/8 exact with EOM. The base receiver decodes 0/8:
 six give no bytes, and 300L at −36 ppm reports `success=1` with 156 of 400 bytes wrong.
 
+**Watterson matrix, base receiver against this one:** our TX through `hfchansim --preset
+moderate` and `poor`, 5 and 10 dB, 150S to 2400L (10 modes), 5 seeds, 200 bytes, `m110a_rx`
+AUTO, payload exact. Base 77/200, this receiver 78/200. One cell differs: 300S moderate 5 dB
+seed 5, exact only on this receiver. `success=1` with wrong bytes: base 30, this receiver 29.
+This harness differs from the one in *Proof* above (payload and length), so its totals are not
+comparable with 117/200.
+
 **The 12:37Z burst is not explained.** Its drift
 is +25 ppm, and removing it changes nothing. Its timing also moves ±0.5 symbol every 1–2 s,
 with probe coherence dipping at each move. Taking its 15 ms step as 51 ms of lost audio
