@@ -250,6 +250,7 @@ int main(int argc, char** argv) {
             else if (k == "max_drift_ppm") t.max_drift_ppm = x;
             else if (k == "alt_centre_alpha") t.alt_centre_alpha = x;
             else if (k == "alt_window_ms") t.alt_window_ms = x;
+            else if (k == "alt_per_tap_noise") t.alt_per_tap_noise = x != 0;
             else usage("--tune: unknown field");
         }
         else if (a == "--save") {

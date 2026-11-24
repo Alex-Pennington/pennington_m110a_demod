@@ -73,6 +73,8 @@ struct RxTuning {
     double centre_alpha = 0.02;     // per-set update of the profile the window centres on
     double alt_centre_alpha = 0.002;  // ... in the second decode (about 13 s: the mean profile)
     double alt_window_ms = 16.0;    // the second decode's delay window, either side
+    bool per_tap_noise = false;     // tap weights over the losing words' energy at the tap
+    bool alt_per_tap_noise = true;  // ... in the second decode
 };
 
 /// The tuning ModemRX's 75 bps path uses. A test tool may change it (m75_ber --no-excise);
@@ -133,6 +135,7 @@ public:
             prof_[j] = n ? e / n : 0.0;
         }
         noise_ = nn ? noise / nn : 1e-12;
+        lose_.assign(ntaps_, noise_);
         for (int j = 0; j < ntaps_; j++) slow_[j] = std::max(0.0, prof_[j] - noise_);
         centre0_ = centroid();
     }
@@ -157,7 +160,14 @@ public:
         const bool ex = exceptional_set(k, per_block_);
         std::vector<double> wgt(ntaps_);
         double wsum = 0.0;
-        for (int j = 0; j < ntaps_; j++) { wgt[j] = std::max(0.0, prof_[j] - t_.weight_floor * noise_); wsum += wgt[j]; }
+        // the floor under a tap: the noise floor, or (per_tap_noise) the losing words' energy
+        // at that tap, which also holds any other Walsh-word signal there (a co-channel 75 bps
+        // signal whose scrambler lines up with ours at that delay)
+        for (int j = 0; j < ntaps_; j++) {
+            const double f = t_.per_tap_noise ? std::max(noise_, lose_[j]) : noise_;
+            wgt[j] = std::max(0.0, prof_[j] - t_.weight_floor * f);
+            wsum += wgt[j];
+        }
         if (wsum <= 0.0) {  // no profile above the floor: weigh every tap alike
             for (int j = 0; j < ntaps_; j++) wgt[j] = 1.0;
             wsum = ntaps_;
@@ -204,6 +214,12 @@ public:
             for (int v = 0; v < 4; v++) if (v != o.win) fl += e[v * ntaps_ + j];
         }
         noise_ += t_.noise_beta * (fl / (3.0 * ntaps_) - noise_);
+        if (t_.per_tap_noise)
+            for (int j = 0; j < ntaps_; j++) {
+                double l = 0.0;
+                for (int v = 0; v < 4; v++) if (v != o.win) l += e[v * ntaps_ + j];
+                lose_[j] += t_.noise_beta * (l / 3.0 - lose_[j]);
+            }
         for (int j = 0; j < ntaps_; j++) slow_[j] += t_.centre_alpha * (std::max(0.0, prof_[j] - noise_) - slow_[j]);
         recentre();
         return o;
@@ -221,6 +237,7 @@ private:
     int step_ = 1, half_ = 0, ntaps_ = 1;
     std::vector<double> prof_, slow_;
     double noise_ = 1e-12;
+    std::vector<double> lose_;  // per tap: the losing words' mean energy
     double centre0_ = 0.0;
     long shift_ = 0;
     long sets_ = 0, last_move_ = 0;
@@ -256,7 +273,9 @@ private:
         };
         mv(prof_);
         mv(slow_);
+        mv(lose_);
         prof_[d > 0 ? ntaps_ - 1 : 0] = noise_;
+        lose_[d > 0 ? ntaps_ - 1 : 0] = noise_;
     }
 };
 
@@ -503,7 +522,9 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     // re-centring limited to t.alt_max_drift_ppm and centred on a profile averaged over about
     // 13 s, in a window of +/- t.alt_window_ms (the profile's centroid swings between the
     // paths as they fade, which the first decode follows as drift: a path 10 ms off can
-    // leave its +/- 12 ms window). The decode whose channel
+    // leave its +/- 12 ms window), and each tap weighed over its own losing words' energy
+    // (a co-channel 75 bps signal lined up with our scrambler at some delay fills the losing
+    // words there, where a path of ours leaves them at the noise). The decode whose channel
     // bits agree better with it (lower p) is kept; a tie keeps the first.
     long shift = demod_decode(y, sps, data_start, mode, last, t, r);
     bool alt = false;
@@ -513,6 +534,7 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
         t2.max_drift_ppm = t.alt_max_drift_ppm;
         t2.centre_alpha = t.alt_centre_alpha;
         t2.window_ms = t.alt_window_ms;
+        t2.per_tap_noise = t.alt_per_tap_noise;
         RxOut r2 = r;
         const long shift2 = demod_decode(y, sps, data_start, mode, last, t2, r2);
         if (r2.p < r.p) { r = r2; shift = shift2; alt = true; }
