@@ -328,8 +328,9 @@ def sweep_one(a, mode, snr, i):
     res['sent_false'] = sum(x == 'NOT REAL' for x in v.values())
     at = r.randrange(16, n) if n > 16 else n - 1
     bad = bytearray(data)
-    bad[at] ^= 1 << r.randrange(8)
-    blk = 8 * at // bits + 1
+    bit = r.randrange(8)
+    bad[at] ^= 1 << bit
+    blk = (8 * at + bit) // bits + 1  # ModemTX sends each byte LSB first (api/modem_tx.cpp)
     v = verdicts(run_check(w, wav, bytes(bad)))
     res['flip_rej'] = (v.get(blk) == 'NOT REAL') if v else None
     os.remove(wav)
