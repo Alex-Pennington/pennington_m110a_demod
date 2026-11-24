@@ -123,7 +123,7 @@ Notes:
 - **4800S** is uncoded and keeps its `quality_db` threshold; no block threshold makes its
   success mean bit-exact (see `quality_threshold_db`).
 - The sample is small at the knee: 1-13 wrong successes per mode. The thresholds are
-  set on these sets and checked on held-out seeds (below).
+  set on these sets and checked on held-out seeds 6-8 (below).
 
 ## Measured
 
@@ -159,7 +159,22 @@ low-SNR 300L/150L transmissions had printed a second chain.
 
 **Held-out CCIR** (seeds 6-8, the same channels and modes, not used to set anything):
 
-<!-- HELDOUT -->
+| Mode | Cases | Messages | Exact successes | Wrong-byte successes | Rejected-but-exact | Transmissions exact with EOM | Transmissions with a wrong-byte success |
+|---|---|---|---|---|---|---|---|
+| 2400S | 12 | 24 → 12 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 |
+| 1200S | 12 | 24 → 12 | 5 → 4 | 9 → 1 | 0 → 1 | 5 → 4 | 5 → 1 |
+| 600S | 12 | 24 → 12 | 15 → 11 | 8 → 1 | 0 → 0 | 11 → 11 | 7 → 1 |
+| 300S | 12 | 24 → 12 | 22 → 12 | 2 → 0 | 0 → 0 | 12 → 12 | 2 → 0 |
+| 2400L | 12 | 136 → 12 | 0 → 0 | 4 → 0 | 0 → 0 | 0 → 0 | 2 → 0 |
+| 1200L | 12 | 136 → 12 | 46 → 8 | 15 → 3 | 23 → 0 | 9 → 8 | 7 → 3 |
+| 600L | 12 | 136 → 12 | 96 → 12 | 3 → 0 | 20 → 0 | 12 → 12 | 3 → 0 |
+| 300L | 12 | 136 → 14 | 107 → 12 | 10 → 0 | 10 → 0 | 12 → 12 | 6 → 0 |
+| 150L | 12 | 138 → 12 | 110 → 12 | 10 → 0 | 9 → 0 | 12 → 12 | 6 → 0 |
+| Total | 108 | 778 → 110 | 401 → 71 | 61 → 5 | 62 → 1 | 73 → 71 | 38 → 5 |
+
+Of the two transmissions lost, one 1200S exact decode is rejected by the block gate (worst
+block 4.7 dB, threshold 4.75) and one 1200L transmission is reported from a chain 2 bytes
+wrong. The 5 wrong-byte successes left are 1-7 bytes wrong, each with EOM.
 
 **Net 300L bursts 1-4**: the same bytes (sha256) and one message each, before and after.
 `reencode_check.py` finds blocks 2 and 9 of burst 1 do not fit the signal and every
