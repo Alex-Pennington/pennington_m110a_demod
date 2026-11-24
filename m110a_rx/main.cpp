@@ -423,15 +423,41 @@ private:
                 const int p = std::min(pm, preamble_frames_of(c.out));
                 if (i == 0 || c.first_hit <= m.first_hit + (p - 1) * FRAME_SCAN + GRID_TOL) group.push_back(i);
             }
-            size_t best = group[0];
-            for (size_t i : group)
-                if (better(pending_[i].out, pending_[best].out)) best = i;
+            // Which bytes: the ones most chains with an EOM decoded. A chain decodes the whole
+            // transmission from its own entry point; right bytes come out the same from
+            // several, wrong ones differ from chain to chain. Ties go to bytes a chain with
+            // success carries, then to the better decode. Without an EOM on any chain, the
+            // better decode. Reported from the best decode carrying those bytes, so success
+            // means a chain with them cleared the gate.
+            std::vector<int> votes(group.size(), 0);
+            for (size_t a = 0; a < group.size(); a++) {
+                const Decoded& oa = pending_[group[a]].out;
+                if (!oa.ran || !oa.eom) continue;
+                for (size_t b = 0; b < group.size(); b++) {
+                    const Decoded& ob = pending_[group[b]].out;
+                    if (ob.ran && ob.eom && ob.d == oa.d) votes[a]++;
+                }
+            }
+            auto has_success = [&](size_t a) {
+                for (size_t b = 0; b < group.size(); b++)
+                    if (votes[b] > 0 && pending_[group[b]].out.d == pending_[group[a]].out.d &&
+                        pending_[group[b]].out.r.success) return true;
+                return false;
+            };
+            size_t bi = 0;
+            for (size_t a = 1; a < group.size(); a++) {
+                const bool sa = has_success(a), sb = has_success(bi);
+                if (votes[a] != votes[bi] ? votes[a] > votes[bi]
+                    : sa != sb ? sa : better(pending_[group[a]].out, pending_[group[bi]].out))
+                    bi = a;
+            }
+            size_t best = group[bi];
             if (opt_.verbose && group.size() > 1)
                 fprintf(stderr, "m110a_rx: preamble at %.3f s: %zu chains, reporting the one at %.3f s\n",
                         m.first_frame * DECIM / FS, group.size(), pending_[best].first_frame * DECIM / FS);
             int hits = 0;
             for (size_t i : group) hits += pending_[i].hits;
-            report(m, pending_[best].out, hits, static_cast<int>(group.size()));
+            report(m, pending_[best].out, hits, static_cast<int>(group.size()), std::max(1, votes[bi]));
             for (auto it = group.rbegin(); it != group.rend(); ++it)
                 pending_.erase(pending_.begin() + static_cast<long>(*it));
         }
@@ -480,7 +506,8 @@ private:
 
     // first: the message's first preamble chain (its start); o: the decode reported.
     // hits: preamble frames seen over all its chains.
-    void report(const Message& first, const Decoded& o, int hits, int chains) {
+    // agreeing: chains of it that decoded these same bytes, with an EOM (1 when none had one).
+    void report(const Message& first, const Decoded& o, int hits, int chains, int agreeing) {
         const DecodeResult& r = o.r;
         const std::vector<uint8_t>& d = o.d;
         if (!o.ran) return;  // no chain of it had a window of 0.5 s
@@ -505,12 +532,13 @@ private:
         printf("msg=%d start_s=%.3f end_s=%.3f mode=%s preamble_hits=%d acq_metric=%.2f "
                "acq_foff_hz=%+.2f success=%d quality_db=%.1f quality_threshold_db=%.1f eom=%d "
                "bytes=%zu snr_db=%.1f d1=%d d2=%d countdown=%d blocks=%zu block_quality_db=%s "
-               "block_quality_min_db=%.1f block_quality_threshold_db=%.2f preamble_chains=%d err=\"%s\"\n",
+               "block_quality_min_db=%.1f block_quality_threshold_db=%.2f preamble_chains=%d chains_agreeing=%d "
+               "err=\"%s\"\n",
                ++reported_, a_first / FS, a1 / FS, mode_name(r.mode).c_str(), hits, first.metric,
                first.freq, r.success ? 1 : 0, r.quality_db, r.quality_threshold_db,
                eom ? 1 : 0, d.size(), r.snr_db, r.d1, r.d2, r.countdown,
                r.block_quality_db.size(), bq.empty() ? "-" : bq.c_str(),
-               r.block_quality_min_db, r.block_quality_threshold_db, chains,
+               r.block_quality_min_db, r.block_quality_threshold_db, chains, agreeing,
                r.error ? r.error->message.c_str() : "");
         printf("  text=\"%s\"\n  hex=%s\n", text.c_str(), hex.c_str());
         fflush(stdout);
