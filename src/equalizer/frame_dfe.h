@@ -157,13 +157,14 @@ inline FrameDfeOutput frame_dfe_equalize(
             }
         }
         
-        // Train DFE on preamble in chunks
-        // Use multiple passes for better convergence
-        // A 20x LMS step here, so the taps converge on the preamble; the data keeps
-        // the tracking step.
+        // LMS: the least-squares taps over the common preamble, which the LMS would
+        // need a 20x step to reach and would then carry that step's noise into the
+        // data (on a flat channel at low SNR, 0.3-0.6 dB of decode quality).
+        // NLMS: train on the preamble in chunks, two passes.
+        const bool fitted = !use_nlms &&
+            dfe.fit_least_squares(preamble_symbols, preamble_ref, static_cast<int>(AHEAD), pretrain_len);
         int chunk_size = 32;
-        if (!use_nlms) dfe.set_step(0.1f, 0.05f);
-        for (int pass = 0; pass < 2; pass++) {
+        for (int pass = 0; pass < (fitted ? 0 : 2); pass++) {
             const int first = static_cast<int>(prime_known(preamble_symbols, preamble_ref));
             for (int i = first; i < pretrain_len; i += chunk_size) {
                 const int n = std::min(chunk_size, pretrain_len - i);
@@ -175,7 +176,6 @@ inline FrameDfeOutput frame_dfe_equalize(
                 dfe.train(rx_chunk, ref_chunk);
             }
         }
-        if (!use_nlms) dfe.set_step(dfe_cfg.mu_ff, dfe_cfg.mu_fb);
     }
 
     // Enter the data with the delay lines holding what precedes it: the last

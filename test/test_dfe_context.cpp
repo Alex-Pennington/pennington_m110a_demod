@@ -19,9 +19,13 @@
  *   3. The same with NLMS (no 20x pretraining step there).
  *   4. Without a preamble (probe training only), frame 0's data decides at most 0.5% SER
  *      at 18 dB.
- *   5. After the 20x-step preamble training on a flat channel, DFE::is_converged() is true.
+ *   5. After preamble training on a flat channel (20x LMS step, or the least-squares fit
+ *      frame_dfe_equalize uses), DFE::is_converged() is true.
  *   6. BrainDecoder on this modem's own 2400S TX: pre_data_symbols holds the last
  *      preamble frame's zero segment, each symbol nearest PSK8[pscramble[i]].
+ *   7. Decode quality (the probe figure the success gate reads): within 0.3 dB of the
+ *      a-priori MMSE figure 10 log10(1 + Es/N0) on a flat channel at 3 and 7 dB, and
+ *      above 15 dB on a precursor-ISI channel at 18 dB.
  *
  * Run: test_dfe_context            (exit 0 when every check passes)
  */
@@ -72,7 +76,7 @@ static const int U = 32, K = 16, PL = U + K, BF = 30;
 
 /// One 2400S burst of `frames` frames through a flat AWGN channel at es_n0_db.
 /// walsh: the two probes before each new block carry D patterns instead of zeros.
-static Burst make_burst(uint32_t seed, int frames, float es_n0_db, bool walsh) {
+static Burst make_burst(uint32_t seed, int frames, float es_n0_db, bool walsh, bool isi = false) {
     static const int W[2][8] = {{0, 0, 4, 4, 4, 4, 0, 0}, {0, 0, 0, 0, 4, 4, 4, 4}};
     Rng g(seed);
     BrainPreambleEncoder enc;
@@ -97,8 +101,15 @@ static Burst make_burst(uint32_t seed, int frames, float es_n0_db, bool walsh) {
     }
     const float sigma = std::sqrt(0.5f * std::pow(10.0f, -es_n0_db / 10.0f));
     std::vector<complex_t> rx(tx.size());
-    for (size_t i = 0; i < tx.size(); i++)
-        rx[i] = 0.55f * (tx[i] + complex_t(g.gauss(), g.gauss()) * sigma);
+    for (size_t i = 0; i < tx.size(); i++) {
+        complex_t a = tx[i];
+        if (isi) {  // precursor 0.38, postcursors 0.20 and 0.22
+            if (i + 1 < tx.size()) a += 0.38f * tx[i + 1];
+            if (i >= 1) a += 0.20f * tx[i - 1];
+            if (i >= 2) a += 0.22f * tx[i - 2];
+        }
+        rx[i] = 0.55f * (a + complex_t(g.gauss(), g.gauss()) * sigma);
+    }
     b.preamble.assign(rx.begin(), rx.begin() + 480);
     b.pre_data.assign(rx.begin() + P - 32, rx.begin() + P);
     b.data.assign(rx.begin() + P, rx.end());
@@ -131,6 +142,20 @@ static Ser run_ser(int seeds, float es_n0_db, bool nlms, bool walsh, bool with_p
         }
     }
     return {e04 / (5.0 * seeds), e531 / (27.0 * seeds), eb / (10.0 * seeds)};
+}
+
+/// Mean decode quality (dB) as ModemRX scores the DFE: the probe error of the DFE's
+/// output before it adapts to each probe, over the frames in the first 1440 symbols.
+static double mean_quality(int seeds, float es_n0_db, bool isi) {
+    double sum = 0.0;
+    for (int s = 1; s <= seeds; s++) {
+        Burst b = make_burst(static_cast<uint32_t>(1000 + s), BF + 1, es_n0_db, false, isi);
+        FrameDfeOutput r = frame_dfe_equalize(b.data, U, K, BF, b.preamble, false, b.pre_data, 1440);
+        double err = 0.0, ref = 0.0;
+        for (const auto& f : r.probe_frames) { err += f[1]; ref += f[2]; }
+        sum += 10.0 * std::log10(ref / err);
+    }
+    return sum / seeds;
 }
 
 int main() {
@@ -181,9 +206,10 @@ int main() {
         check(s.f0_04 <= 0.005 && s.f0_531 <= 0.005, what);
     }
 
-    // 5. is_converged() after the 20x-step preamble training on a flat channel. With the
-    //    unity tap on x[n+5] the training moved the cursor to an edge tap, the center tap
-    //    went to about 0, and is_converged() was false on every channel.
+    // 5. is_converged() after preamble training on a flat channel, by the 20x LMS step and
+    //    by the least-squares fit. With the unity tap on x[n+5] the training moved the
+    //    cursor to an edge tap, the center tap went to about 0, and is_converged() was
+    //    false on every channel.
     {
         Burst b = make_burst(7, 2, 18.0f, false);
         DFE::Config c;
@@ -198,9 +224,14 @@ int main() {
             for (int n = 0; n < 288; n++) d.process(b.preamble[n + c.lookahead], ref[n], true);
         }
         const int center = c.ff_taps / 2;
-        std::snprintf(what, sizeof what, "DFE::is_converged() after flat-channel training (|center tap| %.2f)",
+        std::snprintf(what, sizeof what, "DFE::is_converged() after 20x-step LMS on a flat channel (|center tap| %.2f)",
                       std::abs(d.ff_taps()[center]));
         check(d.is_converged(), what);
+        DFE ls(c);
+        const bool fit = ls.fit_least_squares(b.preamble, ref, c.lookahead, 288);
+        std::snprintf(what, sizeof what, "DFE::is_converged() after the least-squares fit on a flat channel (|center tap| %.2f)",
+                      std::abs(ls.ff_taps()[center]));
+        check(fit && ls.is_converged(), what);
     }
 
     // 6. BrainDecoder: the zero segment before the data
@@ -229,6 +260,25 @@ int main() {
         std::snprintf(what, sizeof what, "BrainDecoder pre_data_symbols: %zu symbols, %d of 32 on the zero segment",
                       res.pre_data_symbols.size(), agree);
         check(res.pre_data_symbols.size() == 32 && agree == 32, what);
+    }
+
+    // 7. Decode quality, the figure the success gate reads. On a flat channel it must
+    //    stay within 0.3 dB of the a-priori MMSE figure 10 log10(1 + Es/N0): the gate's
+    //    thresholds were calibrated on flat-channel decodes, and a 20x LMS step on the
+    //    preamble left tap noise in the quality span that cost 0.3-0.6 dB and put exact
+    //    decodes under the gate. On the precursor-ISI channel at 18 dB the two-sided
+    //    taps must keep it above 15 dB (causal taps: about 8 dB).
+    for (float snr : {3.0f, 7.0f}) {
+        const double q = mean_quality(200, snr, false);
+        const double mmse = 10.0 * std::log10(1.0 + std::pow(10.0, snr / 10.0));
+        std::snprintf(what, sizeof what, "quality, flat %.0f dB: mean %.2f dB, MMSE %.2f dB (>= MMSE - 0.3)",
+                      snr, q, mmse);
+        check(q >= mmse - 0.3, what);
+    }
+    {
+        const double q = mean_quality(100, 18.0f, true);
+        std::snprintf(what, sizeof what, "quality, precursor ISI 18 dB: mean %.2f dB (>= 15)", q);
+        check(q >= 15.0, what);
     }
 
     std::printf("%d passed, %d failed\n", passed, failed);

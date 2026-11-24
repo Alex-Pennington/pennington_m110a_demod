@@ -9,6 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <complex>
 
 namespace m110a {
 
@@ -199,6 +200,62 @@ public:
         return inputs.size();
     }
     
+    /**
+     * Set the taps to the least-squares fit over a known stretch: minimise
+     * sum |ref[n] - y[n]|^2 for n in [first, end), where y[n] reads x[n - center]
+     * to x[n + center] through the feed-forward taps (x indexed like ref, not fed
+     * ahead) and ref[n-1] to ref[n-fb_taps] through the feedback taps. Inputs
+     * outside x and references before ref[0] count as 0. delta adds
+     * delta * trace / taps to the diagonal (ridge), so a short or flat stretch
+     * still gives a well-posed fit. The delay lines are left as they are.
+     *
+     * The LMS gets to the same taps only with a large step, and leaves them
+     * carrying that step's noise into the data: excess error that a flat
+     * low-SNR channel shows as lower decode quality.
+     * @return false when the fit is singular (taps unchanged)
+     */
+    bool fit_least_squares(const std::vector<complex_t>& x, const std::vector<complex_t>& ref,
+                           int first, int end, float delta = 1e-3f) {
+        const int nf = config_.ff_taps, nb = config_.fb_taps, m = nf + nb;
+        end = std::min(end, static_cast<int>(ref.size()));
+        if (first < 0 || end - first < m) return false;
+        std::vector<std::complex<double>> R(m * m), b(m), u(m);
+        for (int n = first; n < end; n++) {
+            for (int i = 0; i < nf; i++) {
+                const long k = static_cast<long>(n) + config_.lookahead - tap_delay(i);
+                u[i] = (k >= 0 && k < static_cast<long>(x.size())) ? std::complex<double>(x[k]) : 0.0;
+            }
+            for (int i = 0; i < nb; i++) u[nf + i] = n - 1 - i >= 0 ? std::complex<double>(ref[n - 1 - i]) : 0.0;
+            for (int r = 0; r < m; r++) {
+                for (int c = 0; c < m; c++) R[r * m + c] += std::conj(u[r]) * u[c];
+                b[r] += std::conj(u[r]) * std::complex<double>(ref[n]);
+            }
+        }
+        double tr = 0.0;
+        for (int r = 0; r < m; r++) tr += R[r * m + r].real();
+        for (int r = 0; r < m; r++) R[r * m + r] += delta * tr / m;
+        // Gaussian elimination with partial pivoting
+        for (int c = 0; c < m; c++) {
+            int p = c;
+            for (int r = c + 1; r < m; r++) if (std::abs(R[r * m + c]) > std::abs(R[p * m + c])) p = r;
+            if (std::abs(R[p * m + c]) < 1e-12) return false;
+            if (p != c) { for (int k = 0; k < m; k++) std::swap(R[c * m + k], R[p * m + k]); std::swap(b[c], b[p]); }
+            for (int r = c + 1; r < m; r++) {
+                const std::complex<double> f = R[r * m + c] / R[c * m + c];
+                for (int k = c; k < m; k++) R[r * m + k] -= f * R[c * m + k];
+                b[r] -= f * b[c];
+            }
+        }
+        for (int c = m - 1; c >= 0; c--) {
+            std::complex<double> acc = b[c];
+            for (int k = c + 1; k < m; k++) acc -= R[c * m + k] * b[k];
+            b[c] = acc / R[c * m + c];
+        }
+        for (int i = 0; i < nf; i++) ff_taps_[i] = complex_t(b[i]);
+        for (int i = 0; i < nb; i++) fb_taps_[i] = complex_t(b[nf + i]);
+        return true;
+    }
+
     /**
      * Get current feedforward taps
      */
