@@ -65,7 +65,8 @@ or the end of the signal leaves no other grid at 0.25.
 [RX] grid step at data frame 75 (data +1.25 s): 37.2 symbols (15.5 ms), coherence 0.42 on the new grid, 0.096 on the old
 ```
 
-With no step, the symbol stream is the same as before, sample for sample.
+With no step and no drift, the grid stays where the preamble put it. The drift tracking
+(*Clock drift*, below) moves it a sample at a time and logs nothing.
 
 ## Proof
 
@@ -155,5 +156,95 @@ The payload is never printed, only its length and a sha256 prefix.
   more) on the same audio gives 623 frames, which is 2 blocks of 288. The weak tail (frames
   576–623, coherence about 0.05–0.29) sits on the rule's margin. This branch, on the uncut
   slice, reports 2 blocks (360 B). The rule is unchanged here.
-- **No fine timing tracking in the data:** a step under 8 symbols is left to the DFE, and on
-  this burst a 2.4-symbol shift ends the decode.
+- **Steps under 8 symbols:** the drift tracking below moves the grid one sample (0.05 symbol)
+  per 8 frames at most, so a sudden 2.4-symbol shift (1 ms) is still left to the DFE, and on
+  this burst it still ends the decode.
+
+## Clock drift: `grid_steps` also follows the sender's clock
+
+The sender's and the recorder's sample clocks differ, so the data's symbols drift against the
+grid the preamble sets. The 300L preambles in four bursts of one net, recorded on an
+FT-897D with 0 overruns, all show the same steady drift. The probes were fitted over 30-frame
+windows, timing ±50 symbols:
+
+| Burst | Data with probes | Drift | Residual about the line | Carrier |
+|---|---|---|---|---|
+| 1 | 4.8 s (1 block) | +38.1 ppm | 0.037 symbol rms | +2.5 Hz |
+| 2 | 52.8 s | +35.4 ppm | 0.020 symbol rms | |
+| 3 | 18.2 s | +35.7 ppm | 0.023 symbol rms | +2.4 Hz |
+| 4 | 21.8 s | +35.7 ppm | 0.009 symbol rms | |
+
++36 ppm is 0.086 symbol per second, so the probes move 1.5 symbols in 18 s. Probe coherence
+holds at 0.61–0.65 on the moving grid to the end of each burst, and falls on the fixed grid from
+0.64 to 0.43 by 4.5 s and to 0.04 by 16 s. The base receiver lost the probes and reported
+`Signal covers 0 of N interleaver blocks` on all four.
+
+**The 300L chain itself matches the standard.** With the drift resampled out of the audio,
+the base receiver decodes bursts 2, 3 and 4, and the re-encode check passes every block:
+data agreement 0.965–0.984 against probe agreement 0.957–0.972. MIL-STD-188-110D §5.3.2.3.3 b
+(repeat in pairs), §5.3.2.3.4 and §5.3.2.3.5 (load row +9, fetch row +1 and column −17,
+40 × 144 at 300 bps long) agree with `M110ACodec` and `mode_config.h`.
+
+**The drift breaks every long mode, not only 300L.** ModemTX → resampled by +36 ppm →
+`m110a_rx`, AUTO, at 12 dB: 150L, 600L, 1200L and 300L fail on the base receiver, and 2400S
+(one 0.6 s block) still decodes.
+
+So every 8 frames, from the 9th data frame on, `grid_steps` fits a parabola to the last 32
+frames' probe coherence on the grid and a quarter symbol either side. When the peak is a sample
+or more away, the grid moves one sample towards it. It moves only where the last 8 frames reach
+coherence 0.25, the same gate the steps use, so a fade or noise leaves the grid where it is. A
+grid that moves a sample at most per 8 frames follows drift up to about 150 ppm.
+
+## On air, the drift
+
+The four FT-897D bursts above, the RSP2 burst of the same evening (3-frame preamble with
+300L's D1/D2, +32.9 ppm, +11.6 Hz), and the 12:37Z burst. Re-encode check per block, data /
+probe agreement:
+
+| Burst | Base receiver | This receiver |
+|---|---|---|
+| FT-897D 1 (1 block) | no bytes (`0 of 1 blocks`) | no bytes: the end detector stops the message 2.8 s early in a fade (8 dB in 9 s). With that fade levelled by hand: 180 B, 0.968 / 0.971, fits |
+| FT-897D 2 (10 blocks) | no bytes (`0 of 12 blocks`) | 1912 B, 10 blocks, each 0.965–0.977 / 0.960–0.972, all fit |
+| FT-897D 3 (3 blocks) | no bytes (`0 of 4 blocks`) | 540 B, 0.963–0.965 / 0.957–0.962, all fit |
+| FT-897D 4 (3 blocks) | no bytes (`0 of 4 blocks`) | 540 B, 0.972–0.984 / 0.966–0.968, all fit |
+| RSP2, shifted −11.6 Hz | 180 B, block 1 0.973 / 0.975, fits | 360 B, 0.973 / 0.975 and 0.971 / 0.973, both fit |
+| 12:37Z | 360 B, 0.773 / 0.908, 0.714 / 0.898 | 360 B, 0.761 / 0.908, 0.698 / 0.898, do not fit |
+
+On bursts 2–4 the receiver's bytes are the same (sha256) as those from the base receiver on
+the audio with the drift resampled out.
+
+**The re-encode check now removes the carrier offset.** It phased each frame from its own
+probes and the next frame's and removed no frequency offset. At the RSP2 burst's +11.6 Hz the
+data, 20 symbols ahead of the probes, turned about 35° against them. So the check scored the
+receiver's bytes 0.712 / 0.953 and 0.716 / 0.948, "do not fit", and the same bytes (sha256)
+fitted on the audio shifted by −11.6 Hz. It now measures the offset from the probes' phase step
+from frame to frame (to ±30 Hz) and removes it first. Measured with the new check:
+
+| Input | Old check | New check |
+|---|---|---|
+| RSP2 burst, as recorded | 0.712 / 0.953, 0.716 / 0.948, do not fit | 0.973 / 0.973, 0.973 / 0.973, fit |
+| Our TX, 300L, +15 Hz and −15 Hz, 15 dB (exact decodes) | data 0.507–0.519, do not fit | data 1.000 / probe 0.997, fit |
+| Our TX, 1200S, ±15 Hz | data 0.225–0.294, do not fit | 1.000 / 0.978, fit |
+| Our TX, 2400S, ±15 Hz | probe 0.04–0.20 | 0.933–0.967 / 0.933–0.950, fit |
+| FT-897D 3 (+2.4 Hz) | 0.964–0.965 / 0.957–0.964, fit | 0.968–0.971 / 0.958–0.965, fit |
+| 12:37Z (−1.5 Hz) | 0.761 / 0.908, 0.698 / 0.898 | 0.764 / 0.910, 0.698 / 0.897, do not fit |
+
+The random-bytes control stays at chance: 0.236–0.260 for QPSK (chance 0.250), 0.503–0.507 for
+BPSK (chance 0.500).
+
+**`ctest tx_loopback_drift`:** our TX resampled by +36 and −36 ppm, 10 dB, 400 bytes, 150L,
+300L, 600L and 1200L. This receiver decodes 8/8 exact with EOM. The base receiver decodes 0/8:
+six give no bytes, and 300L at −36 ppm reports `success=1` with 156 of 400 bytes wrong.
+
+**Watterson matrix, base receiver against this one:** our TX through `hfchansim --preset
+moderate` and `poor`, 5 and 10 dB, 150S to 2400L (10 modes), 5 seeds, 200 bytes, `m110a_rx`
+AUTO, payload exact. Base 77/200, this receiver 78/200. One cell differs: 300S moderate 5 dB
+seed 5, exact only on this receiver. `success=1` with wrong bytes: base 30, this receiver 29.
+This harness differs from the one in *Proof* above (payload and length), so its totals are not
+comparable with 117/200.
+
+**The 12:37Z burst is not explained.** Its drift
+is +25 ppm, and removing it changes nothing. Its timing also moves ±0.5 symbol every 1–2 s,
+with probe coherence dipping at each move. Taking its 15 ms step as 51 ms of lost audio
+(160 − 36.8 symbols) does not help. Our TX through `hfchansim` (Watterson 1 Hz, 0.4 ms, 6 dB,
++25 ppm) decodes exactly with this receiver.

@@ -883,7 +883,7 @@ private:
      */
     std::vector<std::pair<long, long>> grid_steps(const std::vector<complex_t>& filtered,
                                                   const BrainDecodeResult& r, long data_start) const {
-        constexpr long W = 8, MIN_STEP = 8, MAX_STEP = 50;
+        constexpr long W = 8, MIN_STEP = 8, MAX_STEP = 50, TW = 32;
         constexpr double ON = 0.25, OFF = 0.1;
         std::vector<std::pair<long, long>> steps;
         const long p = config_.unknown_data_len + config_.known_data_len;
@@ -895,6 +895,16 @@ private:
         long shift = 0;
         for (long f = W; f + 2 * W <= nf; f++) {
             if (coh(f - W, f, shift) < ON) continue;
+            // Clock drift: the sender's and recorder's sample clocks differ (36 ppm on air
+            // moved a 300L burst's probes 1.5 symbols in 18 s). Every W frames, fit a parabola
+            // to the last TW frames' coherence on the grid and a quarter symbol either side;
+            // when its peak is a sample or more off, move the grid one sample towards it.
+            if (f % W == 0) {
+                const long d = sps_ / 4, f0 = std::max(0L, f - TW);
+                const double cm = coh(f0, f, shift - d), c0 = coh(f0, f, shift), cp = coh(f0, f, shift + d);
+                const double v = cm >= 0.0 && cp >= 0.0 && cm - 2 * c0 + cp < 0.0 ? 0.5 * d * (cm - cp) / (cm - 2 * c0 + cp) : 0.0;
+                if (std::fabs(v) >= 1.0) steps.emplace_back(f, shift += v > 0 ? 1 : -1);
+            }
             const double after = coh(f, f + W, shift);
             if (after < 0.0 || after >= OFF) continue;
             long best = shift;
