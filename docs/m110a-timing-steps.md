@@ -196,6 +196,10 @@ comparison) or `NOT REAL: data symbols far off where the probes are not (bit err
 gale-rx works out its own "content ok" from the block line's two numbers, so it does not see
 this verdict until it reads the `window check` line.
 
+> **Superseded 2026-11-24:** "(the old comparison)" above. The verdict's `data below the probes`
+> no longer repeats the block line's comparison. It reads the window frames and allows for
+> sampling spread; see "Tail and fit, corrected" below. The block line is unchanged.
+
 **The tail.** The block lines cover `len // block_bytes` whole blocks. A message with EOM ends
 with the data's last bytes, then EOM 4B65A5B2, 144 flush bits and zeros to the end of the
 interleaver block (`api/modem_tx.cpp`, `M110ACodec::encode_bits_with_probes`). m110a_rx cuts the
@@ -216,6 +220,11 @@ in a tail (0.93 above) because the padding is the same for any bytes. Limits:
   partial block stays unchecked.
 - It needs the signal to last to the end of the last block, and says `tail not checked`
   otherwise.
+
+> **Superseded 2026-11-24:** "counted in bits" above held for the last block, not for the first
+> tail block. That one came from the block lines' whole-byte count, so a 150S or 300S message of
+> 968 B or more could print no tail and no `tail not checked`. See "Tail and fit,
+> corrected" below.
 
 `--bytes FILE` checks the given bytes in place of the receiver's. `--frames-json FILE` writes
 the per-frame counts used for calibration. `ctest rx_reencode_window` covers the window check.
@@ -256,6 +265,103 @@ No wrong block is called real, and no exact block is called anything else. Among
 blocks, the most far-off data symbols seen was 1. Every wrong block the old comparison passed
 had 3 or more, p 9e−10 or less. At `TAU` = 15 and with no far-off probes, a block needs 3
 far-off data symbols to be NOT REAL.
+
+### Tail and fit, corrected (2026-11-24)
+
+A review of the check above found two false rejects. Both are fixed in `test/rx/reencode_check.py`,
+and `ctest rx_reencode_window` carries both as cases (`tails`, `whole2400`).
+
+**A silent tail.** The tail began where `len // block_bytes` said the whole blocks end, with
+`block_bytes` floored: 22 B for 300S's 22.5 and 11 B for 150S's 11.25. From 968 B on, that count
+can reach the message's last block (for every length from 1408 B in 150S and 1892 B in 300S),
+and then the tail printed nothing at all, neither a tail block nor `tail not checked`. 300S,
+1277 B, eom=1: the block lines run to block 58, and the message has 58
+(ceil((8 × 1277 + 176) / 180)). The tail now starts after the blocks the block
+lines printed, and counts the message's blocks in bits. When the block lines already reach the
+last block, one line says so:
+
+```
+  block 58 window check: far off (over 15 noise powers) 0/680 probes, 0/680 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
+  tail check (eom=1, 58 blocks): the block lines cover the data end (block 57), EOM, flush and zero padding (block 58)
+```
+
+The second line is new; before, the output ended with the first. When the block lines run past
+the last block (150S from 1463 B, 300S from 1958 B), the line ends `; block lines N-M lie past
+the message end`. The block lines themselves are unchanged.
+
+**A false NOT REAL in a tail of EOM and padding.** The tail's probe and data agreement took every
+frame of the block. A block's last two frames carry D1/D2 probes, not the scrambler, so they read
+wrong against the reference. Each frame's data is phased from its own probes and the next
+frame's, so the data of a block's second-last frame is phased from D1/D2 probes only. In the
+message's last block the last frame's data is too, because no frame follows it. In a middle
+block the data loses one frame to this and the probes lose two, which lifts data above probes.
+The last block has no such lift, and its D1/D2 frames swing the probe figure from 0.925 to 0.967
+at 14 dB with right bytes. 2400S, 540 B (exactly 3 blocks), clean AWGN, right bytes:
+
+| SNR, noise seed | Before: tail block 4 probe / data, verdict | After: probe / data, verdict |
+|---|---|---|
+| 8 dB, "DE AAM402 repro " and random bytes, seed 1 | 0.852 / 0.808, NOT REAL: data below the probes | 0.908 / 0.862, real |
+| 14 dB, the `whole2400` case's payload, seed 10 | 0.965 / 0.929, NOT REAL: data below the probes | 0.998 / 0.996, real |
+| 14 dB, the same, seed 15 | 0.965 / 0.927, NOT REAL: data below the probes | 0.998 / 0.993, real |
+
+The tail line's figures and its fit, and every window check verdict, whole blocks included, now
+read the frames the window check reads: the block's last `TAIL` frames are left out. The block
+lines are unchanged.
+
+That left a second cause at low SNR. A 2400S block's window frames hold 448 probes and 896 data
+symbols. 2400S, 540 B, 8 dB, 20 noise seeds, every decode exact: over 140 block readings (60 from
+the block lines' analysis and 80 from the tail's, which reads blocks 1 to 3 again), the
+probe-minus-data gap over the window frames measured +0.011 on average with an sd of 0.023.
+Against `FIT` = 0.03 alone, 35 of the 140 failed. The all-frames comparison before this change
+failed 20, and 9 of the 20 messages had a whole block NOT REAL. So data below the probes counts as not fit only when the gap
+passes `FIT` or z × se, whichever is larger. Here se = sqrt(p (1 − p) (1/probes + 1/data)) and
+z = 4.75, the normal tail at `ALPHA` = 1e−6 (`fits()`). For 300L and the other long blocks, se is
+small and `FIT` decides as before. For a 2400S block at 8 dB the allowance is about 0.08. The
+largest right-bytes gap in those 140 readings was 0.059.
+
+**What it costs.** One block in this sweep that the old comparison called NOT REAL is now real.
+It was one flipped bit in a 2400S message under one block at 8 dB: the old check read 0.823 /
+0.786 over all frames, the new one reads 0.879 / 0.843 over the window frames, with one far-off
+data symbol (p 0.00027). That gap lies inside the spread right bytes show at that SNR, so the
+old NOT REAL there came from the same D1/D2 frames that rejected right bytes.
+
+Sweep (`reencode_window.py --cases sweep`, 4 random-length eom=1 messages per mode and SNR,
+half the 150S and 300S messages 900 to 1400 B, noise seeds 100 to 103). The before column is
+the check at 8a9b719 (`--check`), the after column this one, on the same audio:
+
+| Mode | SNR | Exact blocks NOT REAL, before / after | Sent bytes NOT REAL, before / after (blocks) | Silent tails, before / after | One flipped bit NOT REAL, before / after |
+|---|---|---|---|---|---|
+| 150S | 8 | 0 / 0 | 0 / 0 (230) | 1 / 0 | 4/4 / 4/4 |
+| 150L | 8 | 0 / 0 | 0 / 0 (8) | 0 / 0 | 4/4 / 4/4 |
+| 300S | 8 | 0 / 0 | 0 / 0 (117) | 1 / 0 | 4/4 / 4/4 |
+| 300L | 8 | 0 / 0 | 0 / 0 (6) | 0 / 0 | 4/4 / 4/4 |
+| 600S | 8 | 0 / 0 | 0 / 0 (10) | 0 / 0 | 4/4 / 4/4 |
+| 600L | 8 | 0 / 0 | 0 / 0 (4) | 0 / 0 | 4/4 / 4/4 |
+| 1200S | 8 | 0 / 0 | 0 / 0 (11) | 0 / 0 | 4/4 / 4/4 |
+| 1200L | 8 | 0 / 0 | 0 / 0 (9) | 0 / 0 | 4/4 / 4/4 |
+| 2400S | 8 | 1 / 0 | 1 / 0 (8) | 0 / 0 | 3/4 / 2/4 |
+| 2400L | 8 | 0 / 0 | 0 / 0 (5) | 0 / 0 | 3/4 / 3/4 |
+| 150S | 20 | 0 / 0 | 0 / 0 (205) | 0 / 0 | 4/4 / 4/4 |
+| 150L | 20 | 0 / 0 | 0 / 0 (8) | 0 / 0 | 4/4 / 4/4 |
+| 300S | 20 | 0 / 0 | 0 / 0 (116) | 1 / 0 | 4/4 / 4/4 |
+| 300L | 20 | 0 / 0 | 0 / 0 (6) | 0 / 0 | 4/4 / 4/4 |
+| 600S | 20 | 0 / 0 | 0 / 0 (10) | 0 / 0 | 4/4 / 4/4 |
+| 600L | 20 | 0 / 0 | 0 / 0 (6) | 0 / 0 | 4/4 / 4/4 |
+| 1200S | 20 | 0 / 0 | 0 / 0 (9) | 0 / 0 | 4/4 / 4/4 |
+| 1200L | 20 | 0 / 0 | 0 / 0 (5) | 0 / 0 | 4/4 / 4/4 |
+| 2400S | 20 | 0 / 0 | 0 / 0 (10) | 0 / 0 | 4/4 / 4/4 |
+| 2400L | 20 | 0 / 0 | 0 / 0 (7) | 0 / 0 | 4/4 / 4/4 |
+
+Every message decoded exact and reported eom=1, so the sweep has no wrong receiver blocks. The
+blocks the sweep did not catch with one flipped bit sit at 8 dB in 2400S and 2400L. Inferred,
+not measured: there an 8PSK neighbour lies about 5 noise powers from the sent point (squared
+distance 0.586 against a noise power near 0.13), under `TAU`, so a wrong symbol is a near miss
+and only the gap can show it. The 150S flips are counted by the flipped bit's own
+block. ModemTX sends each byte LSB first (`api/modem_tx.cpp`), and a 150S byte can straddle two
+blocks; the first sweep run labelled them by the byte's first bit, and both straddling flips
+were rerun alone, NOT REAL in their block under both checks. The old lines (head, block and
+`not checked` lines, the 609cc4b form) came out byte-identical between the check at 609cc4b
+and this one, in 20 runs (one message per mode at 8 and 20 dB, 33 old lines).
 
 ## Left open
 
