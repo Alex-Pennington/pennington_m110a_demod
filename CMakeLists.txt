@@ -216,6 +216,15 @@ if(M110A_HAVE_SCIPY)
     set_tests_properties(${_name} PROPERTIES LABELS "iq;tx" TIMEOUT 3600)
   endforeach()
 
+  # message end: a fade or dropout inside the message does not end it, the end does not
+  # move with the lead-in, a real end ends it within 1 s, a cut message gives a whole-block
+  # prefix and nothing after it, and two messages 1 s apart both decode (test/rx/end_fade.py)
+  add_test(NAME rx_end_fade
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/rx/end_fade.py
+                   --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>
+                   --work ${CMAKE_BINARY_DIR}/rx_work/rx_end_fade)
+  set_tests_properties(rx_end_fade PROPERTIES LABELS "iq;tx" TIMEOUT 1800)
+
   # the decode-quality gate says success=0 for noise after a genuine preamble
   add_test(NAME tx_noise_gate
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/tx/noise_gate.py
