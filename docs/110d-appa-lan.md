@@ -6,8 +6,9 @@ transmit audio goes to a WAV file or to stdout, and receive audio comes from a f
 
 Source: `m110_lan/main.cpp` (the server) and `m110_lan/appa_proto.h` (packets, CRC, FEC).
 Tests: `test/lan/test_appa_proto.cpp` (ctest `test_appa_proto`), `test/lan/appa_dte.py`
-(ctest `appa_lan_dte`) and `test/lan/appa_rx_stream.py` (ctest `appa_rx_stream`, the receiver
-against real-time audio; it needs numpy and is skipped without it).
+(ctest `appa_lan_dte`), `test/lan/appa_rx_stream.py` (ctest `appa_rx_stream`, the receiver
+against real-time audio) and `test/lan/appa_m75.py` (ctest `appa_lan_75`, 75S and 75L both ways
+and the TCP chunk framing of every mode). The last two need numpy and are skipped without it.
 
 The spec is `docs/standards/MIL-STD-188-110D.pdf`, Appendix A, PDF pages 46-83 (printed
 pages 41-78). Eighteen of those pages are scanned images, so `pdftotext` returns nothing for
@@ -28,7 +29,7 @@ build/bin/m110_lan --mode 600S --tx-out tx_%d.wav --rx-in -      # receive audio
 
 | Option | Meaning |
 |---|---|
-| `--mode M` | Transmit waveform: 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S. The default is 600S. |
+| `--mode M` | Transmit waveform: 75S 75L 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S. The default is 600S. The receiver takes every one of these whatever `--mode` says (it reads the mode from the preamble). |
 | `--tx-out FILE\|-` | Transmit audio. A file gets one WAV per transmission (`%d` in the name numbers them, and without it each transmission overwrites the last). `-` writes raw s16le 48 kHz mono to stdout. |
 | `--tx-format wav\|raw` | The default is `wav` for a file and `raw` for stdout. |
 | `--rx-in FILE\|-` | Receive audio: a 16-bit mono 48 kHz WAV, or raw s16le 48 kHz. `-` reads stdin. A regular file is read once a DTE is connected; a pipe or other stream is read from the start, and a burst that ends with no DTE is dropped. |
@@ -64,6 +65,23 @@ outside the appendix. `m110_lan` uses newline-terminated text on `--rci-port`:
 | `RELEASE` | `OK RELEASE` | Control mode off. |
 
 Closing the control connection ends the UDP session.
+
+### Choosing the data rate: the modem is configured, the DTE is told
+
+**Appendix A gives the DTE no way to choose the data rate or the interleaver.** The rate and
+blocking factor are "obtained from the waveform configuration (user configured)" (A.5.1.2.1
+item 2), set by "a mechanism beyond the scope of this Appendix" (A.5.1.2.1 item 1), and go
+modem to DTE only: Transmit Setup (A.5.1.1.9, Figure A-7), Carrier Detect (A.5.1.1.8) and the
+UDP Status Reply (A.5.2.4.1). No payload command (Table A-II) or UDP packet type (Table A-X)
+carries a rate from the DTE, and A.5.1.2.4 allows the modem to drop the TCP connection when its
+configuration changes.
+
+So whatever drives `m110_lan` (an operator, or the MARS core's configuration) sets the
+transmit waveform with `--mode`. For 75 bps: `--mode 75S` or `--mode 75L`. The DTE then reads
+it from the Transmit Setup packet of the connection handshake: Tx rate 75, Tx blocking factor 45
+(75S) or 360 (75L) (measured, `appa_lan_75` phase `tx75`). A DTE that waits for a rate
+command of its own, or sends one, will not get one. Received bursts are reported at the rate
+their preamble names, whatever `--mode` is.
 
 ## Ownership: one DTE (A.4.1)
 
@@ -115,7 +133,7 @@ or `test_appa_proto`.
 | Tx_Status: 05, state, FIFO space, fill, critical ms, critical bytes | A.5.1.1.7, Figure A-5 | Yes | Measured |
 | States FLUSHED 1 to DRAINING FORCED 6 | Table A-V | 1-5 reached. 6 only after an undecodable UDP set; on TCP, 6 needs an underrun, which never happens | Measured (1-5) |
 | Carrier Detect: 08, state, Rx rate, Rx blocking factor | A.5.1.1.8, Figure A-6, Table A-VI | Yes | Measured |
-| Transmit Setup: 09, Tx rate, Tx blocking factor | A.5.1.1.9, Figure A-7 | Yes, from `--mode` | Measured (600S: 600, 360) |
+| Transmit Setup: 09, Tx rate, Tx blocking factor | A.5.1.1.9, Figure A-7 | Yes, from `--mode` | Measured (600S: 600, 360; 75S: 75, 45; 75L: 75, 360) |
 | Initial Setup: 0A, RTT, min/max latency, sync flag, async fields | A.5.1.1.10, Figure A-8, Tables A-VII to A-IX | RTT measured over the probe. Sync flag 0 (async), 8 data bits, 1 stop, no parity, DATA ONLY | Measured |
 | Initial connection: CONNECT both ways, ACK both ways, 3 s limits, version check | A.5.1.2.1 | Yes | Measured (3 s silent DTE; version 11) |
 | CONNECTION_PROBE with a 6 s limit, then Initial Setup, Transmit Setup, Tx Status FLUSHED, Carrier Detect | A.5.1.2.1 | Yes, in that order | Measured (6 s limit and order) |
@@ -127,7 +145,7 @@ or `test_appa_proto`.
 | Transmitter: ARM, pre-fill, START, DRAINING_OK on LAST, FLUSHED when done | A.5.1.2.5, Figure A-9 | Yes | Measured |
 | Status at least every 2 s in STARTED or DRAINING | A.5.1.2.5 step 8 | Every 1 s, and on every queue change | Inferred (not timed) |
 | No insert while free space is below the maximum packet data; the DTE's socket blocks | A.5.1.2.5 step 10 | The reader thread stops reading until space frees | Inferred (not tested) |
-| Receiver: CARRIER DETECTED, data in blocking-factor chunks, NO CARRIER | A.5.1.2.6, Figure A-10 | Yes | Measured |
+| Receiver: CARRIER DETECTED, data in blocking-factor chunks, NO CARRIER | A.5.1.2.6, Figure A-10 | Yes; a chunk that is not a whole number of bytes: see "Blocking factor" | Measured (`appa_lan_dte`; `appa_lan_75` at 75S, 75L, 150S, 300S and 600S to 4800S) |
 | ABORT_RECEPTION: a LAST packet, then NO CARRIER | A.5.1.2.6 step 6 | LAST with no data | Measured |
 | Half duplex, transmitter master | A.5.1.2.7.1 | `--duplex half-tx` | Measured |
 | Half duplex, receiver master | A.5.1.2.7.2 | `--duplex half-rx` | Measured |
@@ -193,13 +211,31 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
     against the eight Walsh patterns, after the correlator's carrier-offset estimate is taken
     out, summed over up to three frames until one pattern leads the next by 2:1. The pair gives
     the mode (MIL-STD-188-110 Table XI). CARRIER DETECTED then goes up with that mode's rate and
-    blocking factor (A.5.1.2.6 step 2). A peak whose mode cannot be read is ignored. The burst
+    blocking factor (A.5.1.2.6 step 2). A peak whose mode cannot be read is ignored, and so is
+    one that reads 75S or 75L: 75 bps has its own finder (below). The burst
     ends when the mean level over `--rx-gap` falls below its end level, at a later preamble, at
     `--rx-max`, or at the end of the input. The end level is the geometric mean of the burst's
     level over its first preamble frame and the quietest 0.1 s of the second before it, measured
     in the signal's band, and never above 1/30 of the burst's level.
+  - The scanner also finds **75 bps bursts** with the 75 bps acquisition (`m75::acquire`,
+    `src/m110a/m75_acq.h`, docs/m110a-75bps.md), which integrates the whole preamble (3 frames
+    for 75S, 24 for 75L) and so reaches far below the correlator above. It runs every 0.5 s over
+    the last 6 s of input, from the end of the last burst on. A preamble is taken when it is
+    found (significance at least 9), its D1/D2 read 7,5 or 5,5 clearly (best code 1.1 times the
+    next), its countdown is the one D1/D2 name (3 frames for 75S, 24 for 75L), and two runs
+    0.5 s apart agree on where it ends. The countdown and agreement rules are there because a
+    window that ends inside a 75L preamble reads a frame boundary inside it as the end
+    (measured at -6 dB: 4 frames in, as a 3-frame countdown with z 23.7). CARRIER DETECTED goes
+    up then, at 75 bps and blocking factor 45 or 360, so for 75 bps it follows the end of the
+    preamble, as A.5.1.2.6 step 2 says ("fully detected a preamble").
+    The burst is then followed set by set as the audio arrives, with the decoder's own matched
+    filter and Walsh RAKE. Each interleaver block is decoded as it completes, and the burst
+    ends at the EOM. Without an EOM it ends when no set has carried signal for one interleaver
+    block plus `--rx-gap`, at `--rx-max`, or at the end of the input. A level threshold does not
+    end it, because at negative SNR the level hardly changes.
   - The **decoder** decodes each whole burst, from 0.25 s before the preamble found, with the
-    110A receiver (`decode()`, AUTO, DFE), one burst at a time.
+    110A receiver (`decode()`, AUTO, DFE), one burst at a time. A 75 bps burst is decoded as
+    the mode its preamble read (forced, so ModemRX refuses it if the preamble contradicts it).
 - **Carrier.** CARRIER DETECTED stays up from preamble sync through the decode and the delivery
   (Table A-VI: "synchronized on a preamble or is processing data from the air"). The data goes
   one blocking factor at a time, at the over-the-air rate from the end of the decode
@@ -211,10 +247,22 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   burst. A 600S burst in noise band-limited to 300-3300 Hz is found at -2 dB SNR (carrier, then
   NO CARRIER: the 110A receiver's own mode detection fails there, so nothing is decoded), and
   found and decoded exact at 2 dB.
+- **Measured, 75 bps** (`appa_lan_75` phase `rx75`, input fed in real time 10 ms at a time,
+  4 s of input before the burst, `--rx-fast`): see the table below. Every case delivered the
+  60-byte "DE AAM402 ..." message exact, with no carrier on the 4 s of input before the burst
+  and no receive audio dropped. -6 dB is white noise in 300-3300 Hz with the SNR over that band.
+  The decoder's own reach is lower (ModemRX to -8 dB AWGN for every seed tried,
+  docs/m110a-75bps.md); this test does not sweep it.
+
+  RESULTS75
+
 - **Not done: data before the burst ends.** The decoder is the one-shot `decode()`. It returns
   bytes only once it has the whole burst, so the first data comes a decode time after the
   burst's end (11.5 s for a 32 s 600S burst, measured). `ModemRX::push_samples` buffers the
-  samples and runs the same one-shot decode, so it gives no earlier output.
+  samples and runs the same one-shot decode, so it gives no earlier output. At 75 bps the burst
+  is already decoded block by block to find its EOM (above). Delivering those blocks as they
+  decode would give data during the burst, but it is not done: the bytes still go once the
+  whole burst is decoded.
 - **Below the quality gate** (`--rx-low-quality`). The decoder refuses bytes whose decode
   quality is under the mode's threshold. With this option those bytes are delivered as any
   others: CARRIER DETECTED, data, NO CARRIER. **Appendix A has no field to mark received data
@@ -229,6 +277,43 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   data packet. Inferred: MIL-STD-188-110 gives the interleaver spans, and Appendix A says only
   that the value "is tied to the interleaver length".
 
+### A blocking factor that is not a whole number of bytes
+
+75S has a blocking factor of 45 bits, 150S 90 bits and 300S 180 bits. What the appendix says:
+
+- the blocking factor is the "chunk size in bits", and data "shall be transferred to the DTE in
+  data chunks equal to this value" (A.5.1.1.8; A.5.1.1.9 for transmit; A.5.2.4.1 and A.5.2.4.3
+  for UDP);
+- "Data is always exchanged in the data packets using 8-bit byte alignment" (A.5.1.2.8.2), and
+  the Data Transfer payload carries whole bytes (A.5.1.1.5, Figure A-3);
+- the UDP interleaver length rounds up: L = min(ceil(B / (K x 8)), 1200) x N (Figure A-22).
+
+**It does not say how a TCP chunk that ends inside a byte is framed** (Ambiguity 11). Here,
+packet i of a reception carries the bytes that end inside chunk i: bytes floor(bf x i / 8) up
+to floor(bf x (i + 1) / 8), the last packet taking what is left. So one packet goes per blocking
+factor, each carries whole bytes, and the bytes go at the air rate. For 75S the packets carry
+5, 6, 5, 6, 6, 5, 6, 6 bytes, 45 bytes per 8 chunks. A whole-byte blocking factor gives bf/8
+bytes per packet, as before. UDP follows Figure A-22 as written: 75S packs 3 bytes per packet,
+6 user bytes per interleaver set of (6,2).
+
+Before this rule, every packet carried ceil(bf/8) bytes, which ran 150S and 300S above their
+air rate (75 bps had no data path then):
+
+| Mode | Blocking factor (bits) | Before: bytes per packet | Before: delivery rate | Now: bytes per packet | Now: delivery rate |
+|---|---|---|---|---|---|
+| 75S | 45 | (refused) | - | 5 6 5 6 6 5 6 6, repeating | 75 bps |
+| 75L | 360 | (refused) | - | 45 | 75 bps |
+| 150S | 90 | 12 | 160 bps | 11 11 11 12, repeating | 150 bps |
+| 150L | 720 | 90 | 150 bps | 90 | 150 bps |
+| 300S | 180 | 23 | 306.7 bps | 22 23, repeating | 300 bps |
+| 300L, 600S, 600L, 1200S, 1200L, 2400S, 2400L, 4800S | 1440, 360, 2880, 720, 5760, 1440, 11520, 2880 | bf/8 | the air rate | bf/8, unchanged | the air rate |
+
+The rates are bytes x 8 per chunk time (bf / rate), without `--rx-fast`. Measured
+(`appa_lan_75` phase `framing`, packets timed at the DTE): 150S 148.8 bps, 300S 296.6 bps, both
+100 and 120 bytes exact after a round trip through the modem. 600S, 1200S, 2400S, 4800S and 600L
+delivered packet for packet as the earlier rule gave them. The measured rates sit about 1% under
+the air rate because each packet waits for a 20 ms timer tick.
+
 ## What is refused, and why
 
 The appendix gives the DTE **no field for choosing a waveform**. Rate and blocking factor go
@@ -239,7 +324,6 @@ run.
 
 | Waveform | Why refused |
 |---|---|
-| 75S, 75L | This repo has no 75 bps data path (`test/test_table_xi_modes.cpp`: "the 75 bps data path is not implemented"; `api/modem_rx.cpp` returns NOT_IMPLEMENTED). |
 | 4800L | Not a 110A mode; `ModemTX` maps it to 4800S. |
 | 110D (Appendix C/D) waveforms | No 110D transmitter in this repo. See below for receive. |
 
@@ -292,3 +376,10 @@ A-IV), ERROR and close (A.5.1.2.3), ignored UDP packets and commands (A.5.2.4.4,
    MISSING FIRST PACKET: a new transmission needs a FIRST.
 10. **Table A-XVI "ABORT RECEPTION ... switch to a FLUSHED state"** describes the receiver
     state (Table A-XIII). The receiver returns to FLUSHED and carrier detect 0.
+11. **A blocking factor that is not a whole number of bytes** (75S 45 bits, 150S 90, 300S 180).
+    A.5.1.1.8 sends data "in data chunks equal to this value" (bits), and A.5.1.2.8.2 keeps the
+    data packets byte-aligned. Nothing says how a chunk that ends inside a byte is framed on the
+    TCP data socket. Here each chunk's packet carries the bytes that end inside it (see "A
+    blocking factor that is not a whole number of bytes"). Another vendor might round each
+    chunk up, which runs above the air rate, or pack bits across bytes, which DATA ONLY MODE does
+    not describe.
