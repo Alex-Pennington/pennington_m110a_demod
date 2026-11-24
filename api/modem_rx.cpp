@@ -785,6 +785,11 @@ private:
         }
     }
 
+    /// fill_block_quality: the worst fraction of a block's frames set aside as erasures, and
+    /// the margin the rest must clear by to stand for the block (docs/m110a-quality-gate.md).
+    static constexpr double BLOCK_TRIM_FRACTION = 0.25;
+    static constexpr float BLOCK_TRIM_MARGIN_DB = 3.25f;
+
     /// Expected coded-bit error rate of a symbol at probe SNR snr (linear) in mode m, as the
     /// Viterbi decoder's input: 8PSK (Gray) 2/3 Q(sqrt(2 snr) sin(pi/8)), QPSK Q(sqrt(snr)),
     /// BPSK with r-fold repetition Q(sqrt(2 r snr)).
@@ -819,8 +824,14 @@ private:
      * symbols (coded_bit_error); the block's mean of it is what the deinterleaver hands the
      * Viterbi decoder, and flat_equivalent_db puts it back in dB. On a flat channel this is
      * about quality_db. A fade inside the block counts by the errors it causes, not by its
-     * share of the power: a block a third of which is lost scores near the decoder's limit
-     * however strong the rest.
+     * share of the power.
+     *
+     * Or, when higher, the same over the block's best (1 - BLOCK_TRIM_FRACTION) of frames,
+     * less BLOCK_TRIM_MARGIN_DB. A dropout (the signal gone for a second, the noise still
+     * there) reads about 0 dB on each of its frames, but its symbols reach the decoder near
+     * zero, as erasures, which cost it far less than errors: a 300L block 20 % of which was
+     * a dropout decoded exact at 1.8 dB by the mean alone. A block degraded throughout has no
+     * clean three quarters to fall back on (docs/m110a-quality-gate.md).
      */
     void fill_block_quality(DecodeResult& r, const std::vector<complex_t>& syms, const ModeConfig& m,
                             ModeId mode_id, size_t msg_frames, bool from_dfe) const {
@@ -845,11 +856,16 @@ private:
                 }
             }
             for (size_t b = 0; b < nb; b++) {
-                double pe = 0.0;
-                int n = 0;
+                std::vector<double> pe;
                 for (size_t fi = b * bf; fi < std::min(msg_frames, (b + 1) * bf); fi++)
-                    if (snr[fi] >= 0.0) { pe += coded_bit_error(m, snr[fi]); n++; }
-                if (n > 0) r.block_quality_db.push_back(flat_equivalent_db(m, pe / n));
+                    if (snr[fi] >= 0.0) pe.push_back(coded_bit_error(m, snr[fi]));
+                if (pe.empty()) continue;
+                std::sort(pe.begin(), pe.end());
+                const size_t keep = pe.size() - static_cast<size_t>(BLOCK_TRIM_FRACTION * pe.size());
+                const double all = std::accumulate(pe.begin(), pe.end(), 0.0) / pe.size();
+                const double best = std::accumulate(pe.begin(), pe.begin() + keep, 0.0) / keep;
+                r.block_quality_db.push_back(std::max(flat_equivalent_db(m, all),
+                                                      flat_equivalent_db(m, best) - BLOCK_TRIM_MARGIN_DB));
             }
         }
         r.block_quality_min_db = r.block_quality_db.empty()
