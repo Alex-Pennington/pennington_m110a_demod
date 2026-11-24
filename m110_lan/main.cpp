@@ -4,13 +4,16 @@
 // which needs a TCP control connection first (A.5.2.1). One DTE at a time (A.4.1).
 // Transmit: data from the DTE -> ModemTX (110A) -> audio to a WAV file or raw s16le on stdout.
 // Receive: audio from a WAV/raw file or stdin -> bursts found by preamble -> 110A receiver
-// (AUTO) -> data to the DTE. Audio is read on its own thread, so a decode never stalls it.
+// (AUTO) -> data to the DTE. 75 bps bursts are found by the 75 bps acquisition, which
+// integrates the whole preamble (src/m110a/m75_acq.h), and end at their EOM. Audio is read
+// on its own thread, so a decode never stalls it.
 // There is no radio. docs/110d-appa-lan.md lists what is implemented and what is not.
 
 #include "api/modem.h"
 #include "dsp/fir_filter.h"
 #include "m110_lan/appa_proto.h"
 #include "m110a/brain_preamble.h"
+#include "m110a/m75_rx.h"
 #include "sync/preamble_acq.h"
 
 #include <arpa/inet.h>
@@ -90,16 +93,17 @@ void logf(const char* fmt, ...) {
     va_end(ap);
 }
 
-// 110A modes with a data path in this repo. 75 bps has none (test/test_table_xi_modes.cpp: "the
-// 75 bps data path is not implemented"); 4800L is not a 110A mode (ModemTX maps it to 4800S).
+// 110A modes with a data path in this repo (75 bps: docs/m110a-75bps.md). 4800L is not a 110A
+// mode (ModemTX maps it to 4800S).
 const std::map<std::string, Mode> kModes = {
-    {"150S", Mode::M150_SHORT}, {"150L", Mode::M150_LONG}, {"300S", Mode::M300_SHORT},
+    {"75S", Mode::M75_SHORT}, {"75L", Mode::M75_LONG}, {"150S", Mode::M150_SHORT}, {"150L", Mode::M150_LONG}, {"300S", Mode::M300_SHORT},
     {"300L", Mode::M300_LONG}, {"600S", Mode::M600_SHORT}, {"600L", Mode::M600_LONG},
     {"1200S", Mode::M1200_SHORT}, {"1200L", Mode::M1200_LONG}, {"2400S", Mode::M2400_SHORT},
     {"2400L", Mode::M2400_LONG}, {"4800S", Mode::M4800_SHORT}};
 
 // Blocking factor (A.5.1.1.9 / A.5.1.1.8): user bits per 110A interleaver block, the data rate
-// times the interleaver span, 0.6 s short and 4.8 s long (MIL-STD-188-110 Table XII).
+// times the interleaver span, 0.6 s short and 4.8 s long (MIL-STD-188-110 Table XII). 75S: 45
+// bits, 75L: 360 bits.
 uint32_t blocking_factor(Mode m) {
     double span = mode_is_long(m) ? 4.8 : 0.6;
     return uint32_t(std::lround(mode_bitrate(m) * span));
@@ -491,10 +495,18 @@ public:
         double block_s = double(cur.bf) / double(cur.rate);
         bool done = false;
         if (tcp_established) {
-            size_t chunk = (cur.bf + 7) / 8;
+            // One packet per blocking factor (A.5.1.1.8: "data chunks equal to this value", in
+            // bits), and packets carry whole bytes (A.5.1.2.8.2: "8-bit byte alignment"). The
+            // appendix does not say how to frame a chunk that is not a whole number of bytes
+            // (75S: 45 bits, 150S: 90, 300S: 180). Chunk i carries the bytes that end inside it:
+            // bytes floor(bf*i/8) to floor(bf*(i+1)/8). So the delivery rate is the air rate,
+            // and a whole-byte blocking factor gives bf/8 bytes per packet, as before.
             size_t total = cur.data.size();
-            size_t npk = std::max<size_t>(1, (total + chunk - 1) / chunk);
-            size_t len = std::min(chunk, total - deliver_off);
+            auto upto = [&](size_t i) { return std::min(total, size_t(uint64_t(cur.bf) * i / 8)); };
+            size_t npk = std::max<size_t>(1, (total * 8 + cur.bf - 1) / cur.bf);
+            size_t end = size_t(deliver_idx) + 1 >= npk ? total : upto(size_t(deliver_idx) + 1);
+            deliver_off = upto(size_t(deliver_idx));
+            size_t len = end - deliver_off;
             uint8_t order = npk == 1 ? tcp::FIRST_AND_LAST
                           : deliver_idx == 0 ? tcp::FIRST_ONLY
                           : size_t(deliver_idx) == npk - 1 ? tcp::LAST : tcp::CONTINUATION;
@@ -1142,6 +1154,54 @@ constexpr int kSps = 4;                    // 9600 / 2400 baud
 constexpr long kBlock = 96;                // 10 ms of scan baseband: the burst-end level block
 constexpr long kHold = 40 * kSps;          // a correlation peak is the best within 40 symbols
 constexpr long kPreroll = kFs / 4;         // decode from 0.25 s before the hit (a whole frame)
+// 75 bps acquisition (m75::acquire) over the last kM75Window of input, every kM75Step: both
+// runs that agree on a 75L preamble's end (below) hold all of it (24 frames, 4.8 s), since the
+// second ends at most 2 steps after it. One run costs about 0.3 s of CPU (measured, one core).
+constexpr double kM75Window = 6.0;
+constexpr double kM75Step = 0.5;
+constexpr long kM75Agree = 2 * 2 * 20;     // two runs agree on the end of preamble within 2 symbols
+
+bool is_75(Mode m) { return m == Mode::M75_SHORT || m == Mode::M75_LONG; }
+
+// A 75 bps burst followed set by set from the end of its preamble: the same matched filter
+// and Walsh RAKE as the decoder (src/m110a/m75_rx.h), run as the audio arrives, so the burst
+// ends at its EOM (decoded block by block), or when no set has carried signal for a block
+// and --rx-gap. The level a burst ends at elsewhere hardly moves at negative SNR.
+struct Track75 {
+    m110a::ModeId mode;
+    long ds;              // end of preamble, input samples
+    long y_base;          // input sample of y[0]
+    double w;             // carrier, radians per sample
+    int S;                // sets per interleaver block
+    m110a::m75::RxTuning tune;
+    std::vector<float> taps;
+    long half;
+    std::vector<std::complex<float>> mixed;  // input times the carrier, from y_base - half
+    std::vector<std::complex<float>> y;      // matched filter output, from y_base
+    std::unique_ptr<m110a::m75::WalshRake> rake;
+    long k = 0;           // next set
+    long last_sig = -1;
+    std::vector<int8_t> soft;
+    std::vector<double> ratio;
+    long blocks = 0;
+
+    Track75(m110a::ModeId m, long data_start, double carrier_hz)
+        : mode(m), ds(data_start), S(m110a::m75::sets_per_block(m)) {
+        constexpr int sps = int(kFs / 2400);
+        y_base = ds - long(m110a::brain::P_FRAME_LENGTH + 64) * sps;
+        w = 2.0 * M_PI * carrier_hz / double(kFs);
+        taps = generate_srrc_taps(0.35f, 6, float(sps));
+        half = long(taps.size() / 2);
+        rake = std::make_unique<m110a::m75::WalshRake>(y, sps, ds - y_base, mode, tune);
+    }
+    // Sets with signal: the set and the mean of the last 9 at least the decoder's threshold
+    void note_signal() {
+        double s = 0;
+        int n = 0;
+        for (long q = std::max(0L, k - 8); q <= k; q++) { s += ratio[size_t(q)]; n++; }
+        if (ratio[size_t(k)] >= tune.signal_ratio && s / n >= tune.signal_ratio) last_sig = k;
+    }
+};
 
 struct AudioQueue {
     std::mutex mu;
@@ -1167,6 +1227,7 @@ AudioQueue g_audio;
 
 struct DecodeJob {
     uint64_t id = 0;
+    bool forced = false;     // decode as `mode` (a 75 bps burst: D1/D2 read over the whole preamble)
     Mode mode = Mode::AUTO;  // as read from the preamble
     double t0 = 0, t1 = 0;   // seconds of input
     std::vector<float> s;
@@ -1202,7 +1263,7 @@ void rx_decode() {
         }
         RxConfig rc;
         rc.sample_rate = 48000;
-        rc.mode = Mode::AUTO;
+        rc.mode = j.forced ? j.mode : Mode::AUTO;
         rc.equalizer = Equalizer::DFE;
         auto t = Clock::now();
         DecodeResult r = decode(j.s, rc);
@@ -1320,8 +1381,119 @@ private:
             }
             scan_t_++;
         }
+        if (st_ == St::BURST && t75_) track75();
+        if (st_ != St::BURST) m75_detect(eof);
         if (eof && st_ == St::BURST) close_burst(audio_end_, "end of input");
         trim();
+    }
+
+    // The 75 bps acquisition over the last kM75Window of input, from the end of the last
+    // burst on. It reads the end of the preamble at the best-scoring frame boundary; with
+    // the window ending inside a long preamble, that is a boundary before the true end. So a
+    // preamble is taken when two runs, kM75Step apart, agree on its end (or at end of input).
+    void m75_detect(bool eof) {
+        if (!eof && audio_end_ < m75_next_) return;
+        m75_next_ = audio_end_ + long(kM75Step * kFs);
+        const long w0 = std::max({audio_end_ - long(kM75Window * kFs), m75_floor_, audio_base_});
+        if (audio_end_ - w0 < 4 * kFs / 5) return;
+        std::vector<float> rf(audio_.begin() + (w0 - audio_base_), audio_.end());
+        const RxConfig rc;
+        const auto a = m110a::m75::acquire(rf, float(kFs), rc.carrier_freq, rc.coarse_search_range);
+        if (!a.found || !a.is_75 || !m110a::m75::clear_d(a, 1.1)) return;
+        const long ds = w0 + a.data_start;
+        const Mode mode = a.mode == m110a::ModeId::M75NS ? Mode::M75_SHORT : Mode::M75_LONG;
+        // D1/D2 and the countdown must agree: 75S sends 3 frames, 75L 24 (MIL-STD-188-110
+        // Table XI). The first frames of a 75L preamble score best as a 3-frame countdown
+        // (measured: 4 frames in, at -6 dB, z 23.7 against a 75L 5,5 reading); that end is
+        // not the preamble's.
+        if (a.frames != (mode == Mode::M75_SHORT ? 3 : 24)) { m75_cand_ = false; return; }
+        const bool agree = m75_cand_ && m75_cand_mode_ == mode && std::labs(ds - m75_cand_ds_) <= kM75Agree;
+        if (!agree && !eof) {
+            m75_cand_ = true;
+            m75_cand_ds_ = ds;
+            m75_cand_mode_ = mode;
+            return;
+        }
+        m75_cand_ = false;
+        start_burst75(mode, ds, a.frames, rc.carrier_freq + a.freq_offset_hz, a.z, a.pair_ratio);
+    }
+
+    void start_burst75(Mode mode, long ds, int frames, double carrier, double z, double pair_ratio) {
+        Reception r;
+        r.id = ++next_id_;
+        r.mode = mode;
+        r.rate = uint32_t(mode_bitrate(mode));
+        r.bf = blocking_factor(mode);
+        r.sync_at = Clock::now();
+        r.st = Reception::DECODING;
+        id_ = r.id;
+        mode_ = mode;
+        preamble_frames_ = frames;
+        hit_a_ = ds - long(frames) * kFs / 5;
+        hit_t_ = hit_a_ / kDecim;
+        hit_m_ = 0;
+        a0_ = std::max(audio_base_, hit_a_ - kPreroll);
+        t75_ = std::make_unique<Track75>(mode == Mode::M75_SHORT ? m110a::ModeId::M75NS : m110a::ModeId::M75NL, ds,
+                                         carrier);
+        m75_floor_ = ds;
+        {
+            std::lock_guard<std::mutex> lk(M.mu);
+            deliver_ = M.rx_sync(r);
+        }
+        logf("rx: preamble sync at %.2f s of input (75 bps acquisition, preamble end %.2f s, %.2f s of input "
+             "read): %s, significance %.1f, D1/D2 pair ratio %.2f, carrier %+.1f Hz; burst %llu%s",
+             sec(hit_a_), sec(ds), sec(audio_end_), mode_name(mode).c_str(), z, pair_ratio,
+             carrier - double(RxConfig().carrier_freq), (unsigned long long)id_, deliver_ ? "" : " (dropped)");
+        st_ = St::BURST;
+    }
+
+    // Follow the 75 bps burst set by set as the audio arrives; close it at its EOM or when
+    // the signal has gone.
+    void track75() {
+        Track75& t = *t75_;
+        constexpr int sps = int(kFs / 2400);
+        for (;;) {
+            const long need = t.y_base + long(t.y.size());  // next matched filter output
+            if (need + t.half >= audio_end_) break;
+            while (t.y_base - t.half + long(t.mixed.size()) <= need + t.half) {
+                const long n = t.y_base - t.half + long(t.mixed.size());
+                const double ph = std::fmod(t.w * double(n), 2.0 * M_PI);
+                t.mixed.push_back(std::complex<float>(float(at(n) * std::cos(ph)), float(-at(n) * std::sin(ph))));
+            }
+            std::complex<float> acc(0, 0);
+            const size_t o = size_t(need - t.y_base);
+            for (size_t j = 0; j < t.taps.size(); j++) acc += t.mixed[o + j] * t.taps[j];
+            t.y.push_back(acc);
+        }
+        while (t.rake->available(t.k)) {
+            if (t.k == 0) {
+                auto pre = m110a::BrainPreambleEncoder().encode(t.mode == m110a::ModeId::M75NS ? 0 : 1,
+                                                         t.mode == m110a::ModeId::M75NL);
+                t.rake->init_from_preamble(std::vector<std::complex<float>>(pre.end() - m110a::brain::P_FRAME_LENGTH, pre.end()));
+            }
+            const auto o = t.rake->demod(t.k);
+            int8_t b0, b1;
+            m110a::m75::soft_bits(o, t.tune.soft_scale, b0, b1);
+            t.soft.push_back(b0);
+            t.soft.push_back(b1);
+            t.ratio.push_back(o.ratio);
+            t.note_signal();
+            const long set_end = t.ds + (t.k + 1) * m110a::m75::SET_SYMBOLS * sps;
+            t.k++;
+            if (t.k % t.S == 0) {
+                t.blocks = t.k / t.S;
+                const auto info = m110a::m75::decode_soft(t.soft, t.mode);
+                if (m110a::m75::find_eom(info) >= 0 || m110a::m75::find_eom_tolerant(info) >= 0) {
+                    close_burst(set_end + kPreroll, "EOM");
+                    return;
+                }
+            }
+            const long hold = t.S + std::max(1L, std::lround(cfg.rx_gap * 2400.0 / m110a::m75::SET_SYMBOLS));
+            if (t.k - 1 - t.last_sig >= hold) {
+                close_burst(set_end + kPreroll, t.last_sig < 0 ? "no signal after the preamble" : "signal gone");
+                return;
+            }
+        }
     }
 
     void on_hit(long t, float metric) {
@@ -1392,6 +1564,17 @@ private:
         Mode mode;
         const bool known = mode_from_d1d2(d1, d2, mode);
         if (known && r1 >= 2.0f && r2 >= 2.0f) {
+            if (is_75(mode)) {
+                // 75 bps is taken by the 75 bps acquisition, which reads the whole preamble and
+                // where it ends (m75_detect); its burst ends at the EOM, not by level
+                if (sec(hit_a_) - last75_log_ > 5.0) {
+                    logf("rx: %s preamble frame at %.2f s of input: left to the 75 bps acquisition",
+                         mode_name(mode).c_str(), sec(hit_a_));
+                    last75_log_ = sec(hit_a_);
+                }
+                st_ = St::IDLE;
+                return;
+            }
             start_burst(mode);
             return;
         }
@@ -1441,7 +1624,7 @@ private:
     }
 
     void burst_block(long j0) {
-        if (j0 < level_from_) return;
+        if (t75_ || j0 < level_from_) return;
         double p = bb_power(j0, j0 + kBlock);
         gap_.push_back(p);
         gap_sum_ += p;
@@ -1458,6 +1641,7 @@ private:
             DecodeJob j;
             j.id = id_;
             j.mode = mode_;
+            j.forced = is_75(mode_);
             j.t0 = sec(a0_);
             j.t1 = sec(end_a);
             j.s.resize(size_t(end_a - a0_));
@@ -1469,6 +1653,12 @@ private:
             std::lock_guard<std::mutex> lk(M.mu);
             M.rx_result(id_, false, {});
         }
+        if (t75_)
+            logf("rx: 75 bps burst %llu: %ld sets followed, %ld blocks decoded, last set with signal %ld",
+                 (unsigned long long)id_, t75_->k, t75_->blocks, t75_->last_sig);
+        t75_.reset();
+        m75_floor_ = std::max(m75_floor_, end_a);
+        m75_cand_ = false;
         st_ = St::IDLE;
     }
 
@@ -1480,6 +1670,7 @@ private:
             bb_base_ = keep_bb;
         }
         long keep_a = std::min(bb_end() * kDecim - half_, scan_t_ * kDecim - kPreroll - kFs);
+        keep_a = std::min(keep_a, audio_end_ - long((kM75Window + 1.0) * kFs));  // the 75 bps window
         if (st_ != St::IDLE) keep_a = std::min(keep_a, std::min(a0_, hit_a_ - kPreroll));
         if (keep_a - audio_base_ > 10 * kFs) {
             audio_.erase(audio_.begin(), audio_.begin() + (keep_a - audio_base_));
@@ -1520,6 +1711,15 @@ private:
     long level_from_ = 0;
     std::deque<double> gap_;
     double gap_sum_ = 0;
+
+    // 75 bps
+    std::unique_ptr<Track75> t75_;
+    long m75_next_ = 0;    // input sample at which the 75 bps acquisition runs next
+    long m75_floor_ = 0;   // it searches from here on: the end of the last burst
+    bool m75_cand_ = false;
+    long m75_cand_ds_ = 0;
+    Mode m75_cand_mode_ = Mode::AUTO;
+    double last75_log_ = -1e9;
 };
 
 void rx_scan() {
@@ -1604,8 +1804,9 @@ void rx_reader() {
             "                [--duplex full|half-tx|half-rx] [--rx-fast] [--rx-gap S] [--rx-max S]\n"
             "                [--rx-threshold X] [--rx-low-quality]\n"
             "                [--tx-lead S] [--tx-tail S] [--tx-queue BYTES] [--min-latency MS] [--max-latency MS]\n"
-            "  --mode       transmit waveform: 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S\n"
-            "               (default 600S). 75S, 75L, 4800L and 110D waveforms are refused: no data path.\n"
+            "  --mode       transmit waveform: 75S 75L 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L\n"
+            "               4800S (default 600S). 4800L and 110D waveforms are refused: no data path.\n"
+            "               Appendix A gives the DTE no rate select: the mode is set here (A.5.1.2.1)\n"
             "  --tx-out     transmit audio: a WAV file per transmission (%%d in the name numbers them)\n"
             "               or - for raw s16le 48 kHz on stdout\n"
             "  --rx-in      receive audio: WAV (16-bit mono 48 kHz) or raw s16le 48 kHz; - is stdin\n"
@@ -1656,8 +1857,8 @@ int main(int argc, char** argv) {
     }
     auto m = kModes.find(cfg.mode_name);
     if (m == kModes.end()) {
-        logf("transmit waveform %s is not supported: this modem has a data path for 150S 150L 300S 300L "
-             "600S 600L 1200S 1200L 2400S 2400L 4800S only", cfg.mode_name.c_str());
+        logf("transmit waveform %s is not supported: this modem has a data path for 75S 75L 150S 150L 300S "
+             "300L 600S 600L 1200S 1200L 2400S 2400L 4800S only", cfg.mode_name.c_str());
         return 2;
     }
     cfg.mode = m->second;
