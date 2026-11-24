@@ -195,8 +195,9 @@ def messages(out):
         yield kv, bytes.fromhex(hx.group(1).replace(' ', '')) if hx else b''
 
 
-def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
-    """Per block: (probe agreement, data agreement with the re-encoded symbols)."""
+def frame_agreement(bb, d0, tb, t0, rate, nf, off):
+    """Per frame: (probe symbols decided right, data symbols equal to the re-encoded ones),
+    each out of the frame's probe and data symbol counts."""
     u, k = FRAME[rate]
     n = np.arange(nf * (u + k))
     f = n // (u + k)
@@ -217,15 +218,26 @@ def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
     dec = (np.round(((np.angle(r * np.conj(g[f])) / (np.pi / 4) - scr) % 8) / st).astype(int) * st + scr) % 8
     t = t * np.conj(np.sum(t[isp] * np.conj(ref[isp])))  # the re-encoded signal's own phase
     tsym = np.round(np.angle(t) / (np.pi / 4)).astype(int) % 8
+    pok = np.where(isp, dec == scr, False).reshape(nf, -1).sum(1)
+    dok = np.where(~isp, dec == tsym, False).reshape(nf, -1).sum(1)
+    return pok, dok
+
+
+def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
+    """Per block: (probe agreement, data agreement with the re-encoded symbols)."""
+    u, k = FRAME[rate]
+    pok, dok = frame_agreement(bb, d0, tb, t0, rate, nf, off)
     fpb = nf // blocks
-    return [(float(np.mean(dec[(f // fpb == b) & isp] == scr[(f // fpb == b) & isp])),
-             float(np.mean(dec[(f // fpb == b) & ~isp] == tsym[(f // fpb == b) & ~isp]))) for b in range(blocks)]
+    b = np.arange(nf) // fpb
+    return [(float(pok[b == i].sum() / (k * np.sum(b == i))), float(dok[b == i].sum() / (u * np.sum(b == i))))
+            for i in range(blocks)]
 
 
 def check(a, x, sr, work):
     out, rx = decode(a.rx, x, sr, a.offset_hz, work, dump=True)
     bb = baseband(rx)
     found = False
+    dumps = []
     for kv, payload in messages(out):
         found = True
         mode, rate = kv.get('mode', ''), kv.get('mode', '')[:-1]
@@ -269,6 +281,12 @@ def check(a, x, sr, work):
         _, d, nf, off, rows = best
         tb, t0 = tbs['control']
         ctl = agreement(bb, d, tb, t0, rate, min(nf, (len(tb) - t0) // (p * SPS) - 1), blocks, off)
+        if a.frames_json:
+            pok, dok = frame_agreement(bb, d, tbs['decoded'][0], tbs['decoded'][1], rate, nf, off)
+            dumps.append({'mode': mode, 'start_s': kv.get('start_s'), 'bytes': len(payload),
+                          'sha256': hashlib.sha256(payload).hexdigest()[:12], 'blocks': blocks,
+                          'frames_per_block': nframes // blocks, 'u': u, 'k': k,
+                          'probe_ok': pok.tolist(), 'data_ok': dok.tolist()})
         steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
         print(f'{label}: data start {d / FS:.4f} s (probe coherence {coh:.2f}), grid steps '
               + (', '.join(f'frame {s + 1} {(off[s + 1] - off[s]) / SPS:+.1f} sym' for s in steps) or 'none'))
@@ -279,6 +297,10 @@ def check(a, x, sr, work):
                   f'{ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
     if not found:
         print(f'{a.capture}: no message')
+    if a.frames_json:
+        import json
+        with open(a.frames_json, 'w') as fh:
+            json.dump(dumps, fh)
 
 
 def sweep(a, x, sr, work):
@@ -310,6 +332,7 @@ def main():
     ap.add_argument('--offset-hz', type=float, default=0.0)
     ap.add_argument('--sweep', type=float, nargs=4, metavar=('T0', 'T1', 'STEP', 'MS'))
     ap.add_argument('--work', default=None)
+    ap.add_argument('--frames-json', default=None, help='write per-frame probe/data counts here (calibration)')
     a = ap.parse_args()
     work = a.work or tempfile.mkdtemp(prefix='reencode.')
     sr, x = wavfile.read(a.capture)
