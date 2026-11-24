@@ -50,7 +50,8 @@ there. The verdict is NOT REAL when the block does not fit, or when its far-off 
 are less likely than ALPHA for right bytes (window_check), and real otherwise. For the verdict,
 "fit" is read over the frames window_check reads (the block's last TAIL frames, whose probes
 are D1/D2, left out), and data below the probes by more than FIT is "not fit" only when right
-bytes leave such a gap with odds under ALPHA (fits(): a short block's agreements are samples).
+bytes leave such a gap with odds under ALPHA or it passes FIT_CAP (fits(): a short block's
+agreements are samples).
 
 With eom=1, the blocks after the block lines (the data end, EOM, flush and zero padding) are
 compared too, as "tail block N" lines with their own window check; when the block lines already
@@ -81,6 +82,7 @@ FRAME = {'150': (20, 20), '300': (20, 20), '600': (20, 20), '1200': (20, 20), '2
 BPS = {'150': 150, '300': 300, '600': 600, '1200': 1200, '2400': 2400}
 CHANCE = {'150': 0.5, '300': 0.5, '600': 0.5, '1200': 0.25, '2400': 0.125}
 FIT = 0.03  # a right payload's data agreement is within this of the probes' or above
+FIT_CAP = 0.07  # fits() widens FIT for sampling spread to at most this
 STEP8 = {'150': 4, '300': 4, '600': 4, '1200': 2, '2400': 1}  # 8PSK index step of the data constellation
 PSK8 = np.exp(1j * np.pi / 4 * np.arange(8))
 DMIN2 = {r: abs(1 - PSK8[s]) ** 2 for r, s in STEP8.items()}  # squared distance to the nearest other point
@@ -421,12 +423,14 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, f
 
 def fits(pa, da, npr, nd):
     """Data agreement within FIT of the probe agreement or above, or below it by no more than right
-    bytes leave with odds of ALPHA: the probe and data agreements of a short block are samples, and
-    a 2400S block at 8 dB (448 probes, 896 data symbols over its window frames) spreads their
-    difference by about 0.02 with right bytes."""
+    bytes leave with odds of ALPHA, and never more than FIT_CAP: the probe and data agreements of a
+    short block are samples, and a 2400S block at 8 dB (448 probes, 896 data symbols over its window
+    frames) spreads their difference by about 0.02 with right bytes (largest gap seen 0.059). The cap
+    keeps a garbage decode at low agreement NOT REAL: 6a capture 11, 2400S, success=0, 143 wrong
+    bytes, gap 0.084 at agreement 0.55, where ALPHA alone would allow 0.136."""
     from scipy.stats import norm
     se = np.sqrt(max(pa * (1 - pa), 0.0) * (1 / npr + 1 / nd))
-    return da >= pa - max(FIT, float(norm.isf(ALPHA)) * se)
+    return da >= pa - max(FIT, min(float(norm.isf(ALPHA)) * se, FIT_CAP))
 
 
 def print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k):

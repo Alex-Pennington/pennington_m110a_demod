@@ -150,6 +150,13 @@ def case_counts():
     ok &= s['verdict'] == 'real'
     print(f"counts crashes: far off {s['far_probes']} probes, {s['far_data']} data, expected {s['expected']:.2f}, "
           f"p {s['p']:.2g} -> {s['verdict']}")
+    # fits() on a 2400S block's window frames (448 probes, 896 data): the largest gap right bytes gave at
+    # 8 dB (0.906 / 0.847) fits; 6a capture 11's garbage decode (success=0, 143 wrong bytes, 0.554 / 0.470)
+    # does not, though ALPHA alone would allow it at that agreement
+    right, garbage = rc.fits(0.906, 0.847, 448, 896), rc.fits(0.554, 0.470, 448, 896)
+    ok &= right and not garbage
+    print(f'counts fits(): right bytes at 8 dB {"fit" if right else "not fit"}, garbage decode at 0.55 '
+          f'{"fit" if garbage else "not fit"}')
     print(f'counts -> {"PASS" if ok else "FAIL"}', flush=True)
     return ok
 
