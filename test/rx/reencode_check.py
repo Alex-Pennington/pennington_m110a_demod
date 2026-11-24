@@ -59,6 +59,8 @@ CHANCE = {'150': 0.5, '300': 0.5, '600': 0.5, '1200': 0.25, '2400': 0.125}
 FIT = 0.03  # a right payload's data agreement is within this of the probes' or above
 STEP8 = {'150': 4, '300': 4, '600': 4, '1200': 2, '2400': 1}  # 8PSK index step of the data constellation
 PSK8 = np.exp(1j * np.pi / 4 * np.arange(8))
+DMIN2 = {r: abs(1 - PSK8[s]) ** 2 for r, s in STEP8.items()}  # squared distance to the nearest other point
+TAUS = (6, 8, 10, 12, 15, 20, 30)  # soft thresholds counted per frame, in units of the noise power
 
 
 def scrambler():
@@ -195,7 +197,7 @@ def messages(out):
         yield kv, bytes.fromhex(hx.group(1).replace(' ', '')) if hx else b''
 
 
-def frame_agreement(bb, d0, tb, t0, rate, nf, off):
+def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
     """Per frame: (probe symbols decided right, data symbols equal to the re-encoded ones),
     each out of the frame's probe and data symbol counts."""
     u, k = FRAME[rate]
@@ -220,7 +222,28 @@ def frame_agreement(bb, d0, tb, t0, rate, nf, off):
     tsym = np.round(np.angle(t) / (np.pi / 4)).astype(int) % 8
     pok = np.where(isp, dec == scr, False).reshape(nf, -1).sum(1)
     dok = np.where(~isp, dec == tsym, False).reshape(nf, -1).sum(1)
-    return pok, dok
+    if not soft:
+        return pok, dok
+    # Soft: each symbol's distance from where the sent symbol would land, in units of the noise.
+    # A frame's data lies between the probes of the frame before and its own: G, the channel's
+    # gain and phase, comes from those 2k probes, and the noise power from the median of their
+    # residuals (median / ln 2 is the mean of an exponential; one crash does not move it).
+    rp, refp = r[isp].reshape(nf, k), ref[isp].reshape(nf, k)
+    rd, td = r[~isp].reshape(nf, u), PSK8[tsym[~isp]].reshape(nf, u)
+    zp = rp * np.conj(refp)
+    gsum = zp.sum(1) + np.append(zp[0].sum(), zp[:-1].sum(1))
+    g2 = (gsum / (2 * k))[:, None]
+    prev_rp = np.vstack([rp[:1], rp[:-1]])
+    prev_ref = np.vstack([refp[:1], refp[:-1]])
+    res_p = np.abs(rp - g2 * refp) ** 2
+    s2 = np.median(np.hstack([np.abs(prev_rp - g2 * prev_ref) ** 2, res_p]), 1) / np.log(2) + 1e-30
+    eps_p = res_p / s2[:, None]
+    eps_d = np.abs(rd - g2 * td) ** 2 / s2[:, None]
+    taus = np.array(TAUS)
+    deep_p = (eps_p[:, :, None] > taus).sum(1)
+    deep_d = (eps_d[:, :, None] > taus).sum(1)
+    sep = DMIN2[rate] * np.abs(g2[:, 0]) ** 2 / s2  # the nearest other point, in units of the noise
+    return pok, dok, deep_p, deep_d, sep
 
 
 def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
@@ -233,10 +256,11 @@ def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
             for i in range(blocks)]
 
 
-WIN = 8          # frames per window, as track() follows the grid
-CLEAN = 0.90     # a window is clean when its probe agreement, chance removed, reaches this
-RATIO = 2.0      # right bytes: data errors in clean windows at most RATIO times the probes' rate
-Z, C0 = 3.0, 3   # plus Z sigma of a Poisson count, plus C0 symbols
+WIN = 8       # frames per window in the printed rows, as track() follows the grid
+TAIL = 2      # a block's last frames, whose probes differ from the scrambler's (left out)
+TAU = 12      # a symbol is far off when it lies more than TAU noise powers from where it should
+RHO = 2.0     # right bytes: data symbols far off at most RHO times as often as probes
+ALPHA = 1e-6  # a block is not real when its far-off data symbols are this unlikely for right bytes
 
 
 def windows(n, win=WIN):
@@ -247,34 +271,43 @@ def windows(n, win=WIN):
     return list(zip(e[:-1], e[1:]))
 
 
-def window_check(pok, dok, rate, u, k):
-    """The window check of one block from its per-frame counts.
+def poisson_sf(d, lam):
+    """P(X >= d) for X ~ Poisson(lam)."""
+    if d <= 0:
+        return 1.0
+    from scipy.stats import poisson
+    return float(poisson.sf(d - 1, lam))
+
+
+def window_check(pok, dok, deep_p, deep_d, u, k):
+    """The far-off test of one block from its per-frame counts (its last TAIL frames left out).
 
     A fade inside a block lowers probe and data agreement together, and there the wrong
     codeword the Viterbi decoder chose agrees with the received symbols as well as the right
-    one would. Averaged over the block, the faded frames then hide the disagreement the wrong
-    bytes leave in the rest of the block: the interleaver spreads a wrong codeword's symbols
-    over the whole block, so some land where the signal is clean and the received symbols
-    are the sent ones. So the block is cut into WIN-frame windows; a window is clean when its
-    probe agreement, chance removed, is CLEAN or more; and over the clean windows the data
-    symbols may disagree with the re-encoded ones at most RATIO times as often as the probes
-    are decided wrong there, plus Z sigma of a Poisson count and C0 symbols.
-    Returns (rows, summary): rows per window (first frame, last frame, probes right, probes,
-    data agreeing, data symbols, clean); summary with the counts, the allowance and the verdict
-    'real', 'not real' or 'unverifiable' (no clean window)."""
-    c = CHANCE[rate]
+    one would. Averaged over the block, the faded frames hide the disagreements the wrong
+    bytes leave in the rest of it: the interleaver spreads a wrong codeword's symbols over the
+    whole block, so some land where the signal is clean. There a wrong symbol is not a near
+    miss: the received symbol sits on the point that was sent, a whole constellation step from
+    the re-encoded one, tens of noise powers away. So each symbol's distance from where the
+    re-encoded symbol should land is measured in units of the noise the probes around it show
+    (frame_agreement, soft), and a symbol further than TAU is far off. With the right bytes a
+    data symbol is far off only as noise or a crash puts a probe there: at most RHO times the
+    probes' rate in the block, plus the Gaussian tail exp(-TAU) per symbol. The block is
+    'not real' when its far-off data symbols are less likely than ALPHA under that, else 'real'.
+    Returns (rows, summary): rows per window (first frame, last frame, probe errors, probes,
+    data errors, data symbols, far-off probes, far-off data); summary with the counts, the
+    expected far-off data symbols, p and the verdict."""
+    n = max(1, len(pok) - TAIL)
     rows = []
-    for a, z in windows(len(pok)):
-        pr, pn, dr, dn = int(pok[a:z].sum()), k * (z - a), int(dok[a:z].sum()), u * (z - a)
-        rows.append((a, z - 1, pr, pn, dr, dn, (pr / pn - c) / (1 - c) >= CLEAN))
-    cl = [r for r in rows if r[6]]
-    pr, pn = sum(r[2] for r in cl), sum(r[3] for r in cl)
-    dr, dn = sum(r[4] for r in cl), sum(r[5] for r in cl)
-    expected = RATIO * (pn - pr) / pn * dn if pn else 0.0
-    allowed = int(np.floor(expected + Z * np.sqrt(expected) + C0))
-    verdict = 'unverifiable' if not cl else ('real' if dn - dr <= allowed else 'not real')
-    return rows, dict(windows=len(rows), clean=len(cl), probes_right=pr, probes=pn, data_agree=dr, data=dn,
-                      data_errors=dn - dr, expected=expected, allowed=allowed, verdict=verdict)
+    for a, z in windows(n):
+        rows.append((a, z - 1, int(k * (z - a) - pok[a:z].sum()), k * (z - a), int(u * (z - a) - dok[a:z].sum()),
+                     u * (z - a), int(deep_p[a:z].sum()), int(deep_d[a:z].sum())))
+    npr, nd = k * n, u * n
+    fp, fd = int(deep_p[:n].sum()), int(deep_d[:n].sum())
+    expected = RHO * fp * nd / npr + nd * np.exp(-TAU)
+    p = poisson_sf(fd, expected)
+    return rows, dict(probes=npr, data=nd, far_probes=fp, far_data=fd, expected=expected, p=p,
+                      verdict='not real' if p < ALPHA else 'real')
 
 
 def check(a, x, sr, work):
@@ -282,7 +315,10 @@ def check(a, x, sr, work):
     bb = baseband(rx)
     found = False
     dumps = []
+    claimed = open(a.bytes, 'rb').read() if a.bytes else None
     for kv, payload in messages(out):
+        if claimed is not None and payload:  # --bytes: these bytes in place of the first message's
+            payload, claimed = claimed, None
         found = True
         mode, rate = kv.get('mode', ''), kv.get('mode', '')[:-1]
         label = (f"{a.capture}: {mode} start {kv.get('start_s')} s success={kv.get('success')} bytes={len(payload)}"
@@ -325,12 +361,15 @@ def check(a, x, sr, work):
         _, d, nf, off, rows = best
         tb, t0 = tbs['control']
         ctl = agreement(bb, d, tb, t0, rate, min(nf, (len(tb) - t0) // (p * SPS) - 1), blocks, off)
-        pok, dok = frame_agreement(bb, d, tbs['decoded'][0], tbs['decoded'][1], rate, nf, off)
+        pok, dok, deep_p, deep_d, sep = frame_agreement(bb, d, tbs['decoded'][0], tbs['decoded'][1], rate, nf, off,
+                                                        soft=True)
         if a.frames_json:
             dumps.append({'mode': mode, 'start_s': kv.get('start_s'), 'bytes': len(payload),
                           'sha256': hashlib.sha256(payload).hexdigest()[:12], 'blocks': blocks,
                           'frames_per_block': nframes // blocks, 'u': u, 'k': k,
-                          'probe_ok': pok.tolist(), 'data_ok': dok.tolist()})
+                          'probe_ok': pok.tolist(), 'data_ok': dok.tolist(), 'taus': list(TAUS),
+                          'deep_probe': deep_p.tolist(), 'deep_data': deep_d.tolist(),
+                          'sep': [round(float(v), 2) for v in sep]})
         steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
         print(f'{label}: data start {d / FS:.4f} s (probe coherence {coh:.2f}), grid steps '
               + (', '.join(f'frame {s + 1} {(off[s + 1] - off[s]) / SPS:+.1f} sym' for s in steps) or 'none'))
@@ -342,23 +381,22 @@ def check(a, x, sr, work):
             # New lines (the block line above is unchanged): the window check of this block.
             fpb = nf // blocks
             f0 = b * fpb
-            wrows, s = window_check(pok[f0:f0 + fpb], dok[f0:f0 + fpb], rate, u, k)
-            for i, (w0, w1, pr, pn, dr, dn, cl) in enumerate(wrows):
-                print(f'    block {b + 1} window {i + 1} frames {f0 + w0 + 1}-{f0 + w1 + 1}: probes {pr / pn:.3f} '
-                      f'({pr}/{pn} right), data {dr / dn:.3f} ({dr}/{dn} agree)' + (', clean' if cl else ''))
+            ti = TAUS.index(TAU)
+            wrows, s = window_check(pok[f0:f0 + fpb], dok[f0:f0 + fpb], deep_p[f0:f0 + fpb, ti],
+                                    deep_d[f0:f0 + fpb, ti], u, k)
+            for i, (w0, w1, pe, pn, de, dn, fp, fd) in enumerate(wrows):
+                print(f'    block {b + 1} window {i + 1} frames {f0 + w0 + 1}-{f0 + w1 + 1}: probes {1 - pe / pn:.3f} '
+                      f'({pn - pe}/{pn} right), data {1 - de / dn:.3f} ({dn - de}/{dn} agree), '
+                      f'far off {fp} probes, {fd} data')
             if da < pa - FIT:
                 final = 'NOT REAL: data below the probes over the block (bit errors)'
             elif s['verdict'] == 'not real':
-                final = 'NOT REAL: data disagree where the probes agree (bit errors)'
-            elif s['verdict'] == 'unverifiable':
-                final = 'UNVERIFIABLE: no clean window'
+                final = 'NOT REAL: data symbols far off where the probes are not (bit errors)'
             else:
                 final = 'real'
-            c = CHANCE[rate]
-            print(f"  block {b + 1} window check: clean windows {s['clean']} of {s['windows']} (probes "
-                  f"{c + CLEAN * (1 - c):.3f} or more right), clean probes {s['probes_right']}/{s['probes']} right, "
-                  f"clean data {s['data_errors']}/{s['data']} disagree, allowed {s['allowed']} "
-                  f"(expected {s['expected']:.1f}); verdict {final}")
+            print(f"  block {b + 1} window check: far off (over {TAU} noise powers) {s['far_probes']}/{s['probes']} "
+                  f"probes, {s['far_data']}/{s['data']} data, expected for right bytes {s['expected']:.2f}, "
+                  f"p {s['p']:.2g} (not real under {ALPHA:g}); verdict {final}")
     if not found:
         print(f'{a.capture}: no message')
     if a.frames_json:
@@ -396,6 +434,8 @@ def main():
     ap.add_argument('--offset-hz', type=float, default=0.0)
     ap.add_argument('--sweep', type=float, nargs=4, metavar=('T0', 'T1', 'STEP', 'MS'))
     ap.add_argument('--work', default=None)
+    ap.add_argument('--bytes', default=None,
+                    help="check these bytes in place of the receiver's for the first message with bytes")
     ap.add_argument('--frames-json', default=None, help='write per-frame probe/data counts here (calibration)')
     a = ap.parse_args()
     work = a.work or tempfile.mkdtemp(prefix='reencode.')
