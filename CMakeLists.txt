@@ -234,6 +234,14 @@ if(M110A_HAVE_SCIPY)
                    --work ${CMAKE_BINARY_DIR}/rx_work/rx_end_fade)
   set_tests_properties(rx_end_fade PROPERTIES LABELS "iq;tx" TIMEOUT 1800)
 
+  # the re-encode check: wrong bytes with a fade inside their block are not real, right bytes
+  # are, and its block lines keep the form gale-rx parses (test/rx/reencode_window.py)
+  add_test(NAME rx_reencode_window
+           COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/rx/reencode_window.py
+                   --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>
+                   --work ${CMAKE_BINARY_DIR}/rx_work/rx_reencode_window)
+  set_tests_properties(rx_reencode_window PROPERTIES LABELS "iq;tx" TIMEOUT 1800)
+
   # the decode-quality gate says success=0 for noise after a genuine preamble
   add_test(NAME tx_noise_gate
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/tx/noise_gate.py

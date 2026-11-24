@@ -224,7 +224,8 @@ def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
     dok = np.where(~isp, dec == tsym, False).reshape(nf, -1).sum(1)
     if not soft:
         return pok, dok
-    # Soft: each symbol's distance from where the sent symbol would land, in units of the noise.
+    # Soft: each symbol's distance from where the sent symbol would land, in units of the noise
+    # (for data, the re-encoded symbol).
     # A frame's data lies between the probes of the frame before and its own: G, the channel's
     # gain and phase, comes from those 2k probes, and the noise power from the median of their
     # residuals (median / ln 2 is the mean of an exponential; one crash does not move it).
@@ -239,9 +240,12 @@ def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
     s2 = np.median(np.hstack([np.abs(prev_rp - g2 * prev_ref) ** 2, res_p]), 1) / np.log(2) + 1e-30
     eps_p = res_p / s2[:, None]
     eps_d = np.abs(rd - g2 * td) ** 2 / s2[:, None]
+    # far off: decided as another point, and further than tau noise powers from the sent one
+    miss_p = (dec[isp] != scr[isp]).reshape(nf, k)
+    miss_d = (dec[~isp] != tsym[~isp]).reshape(nf, u)
     taus = np.array(TAUS)
-    deep_p = (eps_p[:, :, None] > taus).sum(1)
-    deep_d = (eps_d[:, :, None] > taus).sum(1)
+    deep_p = ((eps_p[:, :, None] > taus) & miss_p[:, :, None]).sum(1)
+    deep_d = ((eps_d[:, :, None] > taus) & miss_d[:, :, None]).sum(1)
     sep = DMIN2[rate] * np.abs(g2[:, 0]) ** 2 / s2  # the nearest other point, in units of the noise
     return pok, dok, deep_p, deep_d, sep
 
@@ -290,7 +294,9 @@ def window_check(pok, dok, deep_p, deep_d, u, k):
     miss: the received symbol sits on the point that was sent, a whole constellation step from
     the re-encoded one, tens of noise powers away. So each symbol's distance from where the
     re-encoded symbol should land is measured in units of the noise the probes around it show
-    (frame_agreement, soft), and a symbol further than TAU is far off. With the right bytes a
+    (frame_agreement, soft), and a symbol decided as another point and further than TAU is far
+    off. (A symbol near the decision boundary is a near miss, not far off, however small the
+    noise: the clean frames of right bytes on air show such outliers at 12 to 20 noise powers.) With the right bytes a
     data symbol is far off only as noise or a crash puts a probe there: at most RHO times the
     probes' rate in the block, plus the Gaussian tail exp(-TAU) per symbol. The block is
     'not real' when its far-off data symbols are less likely than ALPHA under that, else 'real'.
