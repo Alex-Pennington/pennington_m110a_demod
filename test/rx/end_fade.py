@@ -17,7 +17,7 @@ SNR of the unfaded signal -> I/Q (test/harris/modem.py) -> m110a_rx (AUTO).
   paths    two paths 2 ms (4.8 symbols) apart whose gains swap every preamble frame, so
            the correlation peak moves 4.8 symbols from frame to frame and every frame is a
            chain of its own: one message, exact with EOM, from at least 12 chains.
-  lowsnr   the message at 0 dB, then 40 s of noise: the end is a 3 dB step the step test
+  lowsnr   the message at 0 dB, then 70 s of noise: the end is a 3 dB step the step test
            misses, so the window would run to the end of the input; its first 30 s are
            decoded first and kept, since the signal ends inside them: one message, exact
            with EOM, the window ending at most 31 s after the start.
@@ -218,7 +218,7 @@ def case_lowsnr(a):
     data = payload(300, a.seed)
     sr, s = tx(a, data, "lowsnr")
     sigma = sigma_for(s, sr, 0.0)
-    x = np.concatenate([np.zeros(int(1.0 * sr)), s, np.zeros(int(40 * sr))])
+    x = np.concatenate([np.zeros(int(1.0 * sr)), s, np.zeros(int(70 * sr))])
     x = x + noise(sr, len(x) / sr, sigma, a.seed + 800)
     msgs = rx(a, x, sr, "lowsnr")
     win = float(msgs[0]["end_s"]) - float(msgs[0]["start_s"]) if msgs else float("inf")

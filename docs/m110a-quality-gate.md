@@ -183,11 +183,12 @@ Notes:
 At about 0 dB SNR the end of a message is a 3 dB power step, which the step test (3 dB)
 can miss; the window then ran to the next preamble, `--max-secs` (120 s) or the end of the
 input. A 300L message with 130 s of noise after it took 48 s CPU against 11 s at 2 dB. A
-window with no power step at its end that is longer than 30 s is now decoded over its first
-30 s first, and that decode is kept when it found the EOM, read no mode, or its signal (the
+window with no power step at its end that is longer than 60 s is now decoded over its first
+30 s first (a message that runs past 30 s then costs at most half a decode more), and that decode is kept when it found the EOM, read no mode, or its signal (the
 whole blocks the probes cover) ends at least two blocks before the 30 s. That case now takes
-16 s CPU with the same bytes; rx_end_fade's `lowsnr` case pins it (base: window 54.4 s,
-fail; this branch: 30.0 s).
+16 s CPU with the same bytes; rx_end_fade's `lowsnr` case pins it (0 dB, then 70 s of
+noise: this branch's window 30.0 s). A 32 s 600S burst ending at the input's end is not
+decoded twice: with a 30 s threshold m110a_rx took 21 s CPU on it, against 11.5 s on master.
 
 ## Streaming (ModemRX::push_samples)
 

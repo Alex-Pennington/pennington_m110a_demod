@@ -72,8 +72,9 @@ constexpr double STEP_RATIO = 2.0;             // 3 dB
 constexpr long END_PAD = static_cast<long>(0.5 * FS);  // audio kept after the step
 constexpr float TARGET_RMS = 7000.0f / 32768.0f;  // MS-DMT reference level
 constexpr long MARGIN = static_cast<long>(0.04 * FS);  // audio before frame 1
-// A window with no power step at its end is decoded over its first FIRST_WINDOW before the
-// whole of it (Receiver::decode).
+// A window with no power step at its end, longer than twice this, is decoded over its first
+// FIRST_WINDOW before the whole of it (Receiver::decode); a message that runs past it costs
+// at most half a decode more.
 constexpr long FIRST_WINDOW = static_cast<long>(30 * FS);
 // A decode of a split preamble that clears its block threshold by less than this needs other
 // chains to agree on its bytes (Receiver::process_messages).
@@ -492,13 +493,13 @@ private:
 
     // A window not ended by a power step (at about 0 dB SNR the end is a 3 dB step, which the
     // step test can miss) runs to the next preamble, --max-secs or the end of the input. When
-    // it is longer than FIRST_WINDOW, decode its first FIRST_WINDOW first, and keep that
+    // it is longer than twice FIRST_WINDOW, decode its first FIRST_WINDOW first, and keep that
     // decode when it found the EOM, read no mode, or its signal (the whole blocks the probes
     // cover) ends at least two blocks before that window does: the rest is noise. Otherwise
     // decode the whole window.
     Decoded decode(const Message& m) {
         const long a_first = m.first_frame * DECIM;
-        if (!m.end_at_step && m.end_audio - a_first > FIRST_WINDOW) {
+        if (!m.end_at_step && m.end_audio - a_first > 2 * FIRST_WINDOW) {
             const long a1 = a_first + FIRST_WINDOW;
             Decoded o = decode_window(m, a1);
             if (!o.ran) return o;
