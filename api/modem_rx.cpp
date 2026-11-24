@@ -1195,6 +1195,18 @@ private:
         dfe_cfg.leak = 0.0001f;
         
         DFE dfe(dfe_cfg);
+
+        // The DFE's feed-forward taps span the 11 inputs up to the current one, so on
+        // their own they see no later symbol and cannot cancel precursor ISI. Feed the
+        // input AHEAD symbols early, so the taps span the symbol -5 to +5. An FT-897D
+        // SSB filter (top of the 2400-baud band cut from 2300 Hz, 0.8-1.8 ms of edge
+        // delay) gave a 0.40 precursor, and 2400S decoded at 6 dB with wrong bytes.
+        const size_t AHEAD = dfe_cfg.ff_taps / 2;
+        auto ahead = [AHEAD](const std::vector<complex_t>& v, size_t i, size_t n) {
+            std::vector<complex_t> w(n, complex_t(0.0f, 0.0f));
+            for (size_t k = 0; k < n && i + AHEAD + k < v.size(); k++) w[k] = v[i + AHEAD + k];
+            return w;
+        };
         
         // ========================================
         // Preamble Pretraining
@@ -1220,12 +1232,13 @@ private:
             
             // Train DFE on preamble in chunks
             // Use multiple passes for better convergence
+            // A 20x LMS step here, so the taps converge on the preamble; the data keeps
+            // the tracking step.
             int chunk_size = 32;
+            if (!use_nlms) dfe.set_step(0.1f, 0.05f);
             for (int pass = 0; pass < 2; pass++) {
                 for (int i = 0; i + chunk_size <= pretrain_len; i += chunk_size) {
-                    std::vector<complex_t> rx_chunk(
-                        preamble_symbols.begin() + i,
-                        preamble_symbols.begin() + i + chunk_size);
+                    std::vector<complex_t> rx_chunk = ahead(preamble_symbols, i, chunk_size);
                     std::vector<complex_t> ref_chunk(
                         preamble_ref.begin() + i,
                         preamble_ref.begin() + i + chunk_size);
@@ -1233,6 +1246,7 @@ private:
                     dfe.train(rx_chunk, ref_chunk);
                 }
             }
+            if (!use_nlms) dfe.set_step(dfe_cfg.mu_ff, dfe_cfg.mu_fb);
         }
         
         // ========================================
@@ -1246,16 +1260,17 @@ private:
         
         size_t idx = 0;
         int frame = 0;
-        
+        // The first AHEAD data symbols go into the delay line before the first output.
+        for (size_t k = 0; k < AHEAD && k < symbols.size(); k++) dfe.push(symbols[k]);
+
         while (idx + pattern_len <= symbols.size()) {
             // Get current frame data and probes
-            std::vector<complex_t> data_in(
-                symbols.begin() + idx,
-                symbols.begin() + idx + unknown_len);
+            std::vector<complex_t> data_in = ahead(symbols, idx, unknown_len);
             
             std::vector<complex_t> probe_in(
                 symbols.begin() + idx + unknown_len,
                 symbols.begin() + idx + pattern_len);
+            const std::vector<complex_t> probe_eq = ahead(symbols, idx + unknown_len, known_len);
             
             // Generate probe reference using synchronized scrambler
             scrambler.reset();
@@ -1273,14 +1288,16 @@ private:
             // So we can equalize immediately on first frame
             if (frame == 0 && preamble_symbols.empty()) {
                 // No preamble: train first, then equalize (old behavior)
-                dfe.train(probe_in, probe_ref);
+                dfe.train(probe_eq, probe_ref);
                 dfe.equalize(data_in, output);
             } else {
                 // With preamble or subsequent frames: equalize first, then update
                 // (not on a block-boundary probe, which may carry D1/D2)
                 dfe.equalize(data_in, output);
                 if (!block_boundary_probe(frame, block_frames_))
-                    accumulate_probe_quality(dfe, probe_in, probe_ref, idx + pattern_len);
+                    accumulate_probe_quality(dfe, probe_eq, probe_ref, idx + pattern_len);
+                else
+                    for (const auto& x : probe_eq) dfe.push(x);  // keep the input stream whole
             }
             
             // Pass through original probes
