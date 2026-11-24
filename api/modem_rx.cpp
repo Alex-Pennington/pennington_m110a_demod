@@ -12,6 +12,7 @@
 #include "m110a/brain_decoder.h"
 #include "modem/m110a_codec.h"
 #include "m110a/mode_config.h"
+#include "m110a/m75_rx.h"
 #include "equalizer/dfe.h"
 #include "equalizer/frame_dfe.h"
 #include "dsp/mlse_equalizer.h"
@@ -129,11 +130,12 @@ public:
             detected_freq_offset = detect_result.freq_offset_hz;
         }
         
-        // M75 modes not yet supported
-        if (mode_id == ModeId::M75NS || mode_id == ModeId::M75NL) {
-            result.success = false;
-            result.error = Error(ErrorCode::NOT_IMPLEMENTED, "M75 modes not yet supported");
-            state_ = RxState::DECODE_ERROR;
+        // 75 bps: Walsh sets, no probes, its own demodulator (src/m110a/m75_rx.h)
+        if (m75::is_m75(mode_id)) {
+            result = m75::decode(samples, config_, mode_id, result, config_.mode != Mode::AUTO);
+            if (result.success) { stats_.bytes_received += result.data.size(); stats_.frames_received++; }
+            state_ = result.success ? RxState::COMPLETE : RxState::DECODE_ERROR;
+            last_result_ = result;
             return result;
         }
         
@@ -776,10 +778,7 @@ private:
         ModeId mode_id = string_to_mode_id(detect_result.mode_name);
         result.mode = internal_to_api_mode(mode_id);
         
-        if (mode_id == ModeId::M75NS || mode_id == ModeId::M75NL) {
-            result.success = false;
-            return result;
-        }
+        if (m75::is_m75(mode_id)) return m75::decode(samples, config_, mode_id, result, false);
         
         // Second pass - decode with correct settings
         const auto& mode_cfg = ModeDatabase::get(mode_id);

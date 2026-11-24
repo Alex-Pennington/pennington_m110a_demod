@@ -144,6 +144,14 @@ target_link_libraries(test_table_xi_modes PRIVATE m110a_modem)
 add_test(NAME test_table_xi_modes COMMAND test_table_xi_modes)
 set_tests_properties(test_table_xi_modes PROPERTIES LABELS "rx")
 
+# 75 bps (75S, 75L): Tables IX/X, the 75N interleaver and the symbol stream against the
+# text of MIL-STD-188-110D 5.3.2; ModemTX -> ModemRX loopback, noise and forced-mode
+# gates (docs/m110a-75bps.md)
+add_executable(test_m75 test/test_m75.cpp)
+target_link_libraries(test_m75 PRIVATE m110a_modem)
+add_test(NAME test_m75 COMMAND test_m75)
+set_tests_properties(test_m75 PROPERTIES LABELS "rx;tx;m75" TIMEOUT 1800)
+
 # ---- I/Q receive path through m110a_rx ----
 # Synthetic RSP2 I/Q (test/rx/synth_iq.py: 2 MS/s cs16, dial at +100 kHz)
 # carrying the MS-DMT reference transmissions, generated at test time in the
