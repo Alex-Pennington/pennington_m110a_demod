@@ -28,6 +28,7 @@
 #include "sync/preamble_acq.h"
 #include <vector>
 #include <algorithm>
+#include <limits>
 #include <cmath>
 #include <iostream>
 
@@ -106,6 +107,68 @@ struct BrainDecodeResult {
 };
 
 /**
+ * Downconversion and RRC matched filter as BrainDecoder applies them, fed a piece at a time.
+ *
+ * Input sample i is mixed with exp(-j phase_i), the phase accumulated in float and wrapped
+ * past 2 pi exactly as a whole-buffer pass does, and output i is the sum over the taps of the
+ * mixed samples i - half .. i + half. An output is produced once its last tap's input has
+ * arrived; with eof the remaining outputs are produced with the taps past the end left out,
+ * as a whole-buffer pass leaves them out. So the outputs are the same, value for value,
+ * however the input is divided.
+ */
+class BasebandFilter {
+public:
+    BasebandFilter(const std::vector<float>& taps, float phase_inc)
+        : taps_(taps), half_(static_cast<long>(taps.size() / 2)), inc_(phase_inc) {}
+
+    void push(const float* x, size_t n) {
+        for (size_t i = 0; i < n; i++) {
+            bb_.push_back(complex_t(x[i] * std::cos(phase_), -x[i] * std::sin(phase_)));
+            phase_ += inc_;
+            if (phase_ > 2*PI) phase_ -= 2*PI;
+        }
+        in_ += static_cast<long>(n);
+    }
+
+    /// Produce every output whose taps are all in (or, with eof, every output). Returns the
+    /// number of outputs held.
+    size_t run(bool eof) {
+        const long nt = static_cast<long>(taps_.size());
+        while (static_cast<long>(out_.size()) < in_) {
+            const long i = static_cast<long>(out_.size());
+            if (!eof && i + nt - half_ > in_) break;
+            complex_t sum(0, 0);
+            for (long j = 0; j < nt; j++) {
+                const long idx = i - half_ + j;
+                if (idx >= 0 && idx < in_) sum += bb_[static_cast<size_t>(idx - bb_base_)] * taps_[j];
+            }
+            out_.push_back(sum);
+            // the mixed input is needed from the next output's first tap on
+            const long keep = static_cast<long>(out_.size()) - half_;
+            if (keep - bb_base_ > 65536 && static_cast<size_t>(keep - bb_base_) > bb_.size() / 2) {
+                bb_.erase(bb_.begin(), bb_.begin() + (keep - bb_base_));
+                bb_base_ = keep;
+            }
+        }
+        return out_.size();
+    }
+
+    const std::vector<complex_t>& out() const { return out_; }
+    std::vector<complex_t>& out() { return out_; }
+    long input_samples() const { return in_; }
+
+private:
+    std::vector<float> taps_;
+    long half_;
+    float inc_;
+    float phase_ = 0.0f;
+    std::vector<complex_t> bb_;
+    long bb_base_ = 0;
+    long in_ = 0;
+    std::vector<complex_t> out_;
+};
+
+/**
  * Brain Modem Compatible Decoder
  */
 class BrainDecoder {
@@ -131,45 +194,17 @@ public:
         BrainDecodeResult result;
         
         // Step 1: Two-stage AFC (if enabled)
-        float coarse_freq_offset = 0.0f;
         float best_freq_offset = 0.0f;
         float best_preamble_corr = 0.0f;
         std::vector<complex_t> best_filtered;
         
         if (config_.use_fft_coarse_afc && config_.coarse_search_range > 0.0f) {
-            // STAGE 1: coarse frequency from the common preamble.
-            // The 288-symbol common segment is correlated in nine 32-symbol
-            // blocks; block magnitudes find it at any carrier offset, and
-            // the block-to-block phase step measures the offset
-            // (sync/preamble_acq.h, three offset hypotheses, +/-87.5 Hz).
-            // This replaces a delay-multiply estimate on the data, whose
-            // product of two 8-PSK symbols carries a random multiple of 45
-            // degrees: it averaged to noise, so decoding failed beyond about
-            // +/-5 Hz.
-            auto initial_filtered = downconvert_and_filter(rf_samples);
-            PreambleCorrelator coarse(sps_, config_.baud_rate);
-            if (initial_filtered.size() >= coarse.span()) {
-                const size_t window = static_cast<size_t>(config_.max_search_symbols) * sps_;
-                PreambleHit hit = coarse.search(initial_filtered, 0, window, 1);
-                if (hit.metric >= 0.3f &&
-                    std::abs(hit.freq_hz) <= config_.coarse_search_range) {
-                    coarse_freq_offset = hit.freq_hz;
-                }
-                if (config_.verbose) {
-                    printf("Preamble coarse AFC: %.2f Hz (metric %.2f at sample %zu)\n",
-                           hit.freq_hz, hit.metric, hit.index);
-                }
-            }
+            // STAGE 1: coarse frequency from the common preamble (coarse_afc)
+            const float coarse_freq_offset = coarse_afc(downconvert_and_filter(rf_samples));
             
             // STAGE 2: Fine preamble-based search around coarse estimate
             // Search Â±fine_search_range around the coarse estimate
-            float search_start = coarse_freq_offset - config_.fine_search_range;
-            float search_end = coarse_freq_offset + config_.fine_search_range;
-            
-            for (float freq_off = search_start; 
-                 freq_off <= search_end; 
-                 freq_off += config_.freq_search_step) {
-                
+            for (float freq_off : fine_offsets(coarse_freq_offset)) {
                 auto filtered = downconvert_and_filter_with_offset(rf_samples, freq_off);
                 if (filtered.size() < 288 * sps_) continue;
                 
@@ -241,10 +276,92 @@ public:
             return result;  // AFC failed
         }
 
-        auto& filtered = best_filtered;        // Step 2: Find preamble with fine-grained timing
+        auto& filtered = best_filtered;
+        // Steps 2-4: preamble timing, mode, countdown, carrier line
+        if (!read_header(filtered, result)) {
+            return result;
+        }
+
+        // Step 5: Extract data symbols
+        extract_data_symbols(filtered, result);
+        
+        return result;
+    }
+
+    /**
+     * STAGE 1 of the two-stage AFC: the coarse carrier offset from the common preamble in the
+     * first max_search_symbols of initial_filtered (the input at the nominal carrier), or 0.
+     * The 288-symbol common segment is correlated in nine 32-symbol blocks; block magnitudes
+     * find it at any carrier offset, and the block-to-block phase step measures the offset
+     * (sync/preamble_acq.h, three offset hypotheses, +/-87.5 Hz). This replaces a
+     * delay-multiply estimate on the data, whose product of two 8-PSK symbols carries a
+     * random multiple of 45 degrees: it averaged to noise, so decoding failed beyond about
+     * +/-5 Hz. Reads initial_filtered[0, coarse_afc_need()) only.
+     */
+    float coarse_afc(const std::vector<complex_t>& initial_filtered) const {
+        float coarse_freq_offset = 0.0f;
+        PreambleCorrelator coarse(sps_, config_.baud_rate);
+        if (initial_filtered.size() >= coarse.span()) {
+            const size_t window = static_cast<size_t>(config_.max_search_symbols) * sps_;
+            PreambleHit hit = coarse.search(initial_filtered, 0, window, 1);
+            if (hit.metric >= 0.3f &&
+                std::abs(hit.freq_hz) <= config_.coarse_search_range) {
+                coarse_freq_offset = hit.freq_hz;
+            }
+            if (config_.verbose) {
+                printf("Preamble coarse AFC: %.2f Hz (metric %.2f at sample %zu)\n",
+                       hit.freq_hz, hit.metric, hit.index);
+            }
+        }
+        return coarse_freq_offset;
+    }
+
+    /// Filtered samples coarse_afc() reads when the input is at least this long
+    size_t coarse_afc_need() const {
+        return static_cast<size_t>(config_.max_search_symbols) * sps_ +
+               PreambleCorrelator(sps_, config_.baud_rate).span() - 1;
+    }
+
+    /// STAGE 2 candidates: the coarse offset +/- fine_search_range, freq_search_step apart
+    std::vector<float> fine_offsets(float coarse_freq_offset) const {
+        std::vector<float> v;
+        float search_start = coarse_freq_offset - config_.fine_search_range;
+        float search_end = coarse_freq_offset + config_.fine_search_range;
+        for (float freq_off = search_start; 
+             freq_off <= search_end; 
+             freq_off += config_.freq_search_step) {
+            v.push_back(freq_off);
+        }
+        return v;
+    }
+
+    /// Filtered samples quick_preamble_correlation() reads when the input is at least this long
+    size_t fine_afc_need() const { return static_cast<size_t>(200 + 288) * sps_; }
+
+    /// Filtered samples read_header() reads, at least: its preamble search window. It also
+    /// reads up to data_start(): call it with that much when the result says more.
+    size_t header_need() const { return static_cast<size_t>(config_.max_search_symbols + 288) * sps_ + 1; }
+
+    /// A BasebandFilter for this decoder's carrier, offset by freq_offset_hz
+    BasebandFilter baseband_filter() const {
+        return BasebandFilter(rrc_taps_, 2.0f * PI * config_.carrier_freq / config_.sample_rate);
+    }
+    BasebandFilter baseband_filter(float freq_offset_hz) const {
+        return BasebandFilter(rrc_taps_, 2.0f * PI * (config_.carrier_freq + freq_offset_hz) / config_.sample_rate);
+    }
+
+    /**
+     * Steps 2-4 of decode() on the filtered input chosen by the AFC: preamble timing
+     * (find_preamble), the first preamble frame's symbols, the mode from D1/D2, the
+     * countdown, the carrier line over the preamble frames from the one found to the last,
+     * and the preamble symbols again on that line. False when no preamble is found.
+     * Reads filtered up to max(header_need(), data_start(result)).
+     */
+    bool read_header(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        // Step 2: Find preamble with fine-grained timing
         find_preamble(filtered, result);
         if (!result.preamble_found) {
-            return result;
+            return false;
         }
         
         // Step 3: Extract preamble symbols
@@ -262,11 +379,22 @@ public:
         refine_carrier(filtered, result);
         result.preamble_symbols.clear();
         extract_preamble_symbols(filtered, result);
+        return true;
+    }
 
-        // Step 5: Extract data symbols
-        extract_data_symbols(filtered, result);
-        
-        return result;
+    /**
+     * Where the data starts (filtered samples): after the last preamble frame. find_preamble()
+     * may lock onto any frame (it takes the first correlation above 0.80 in its window, so a
+     * weak frame 0 hands it frame 1), so count from the frame actually found: its countdown
+     * says how many frames follow. Without a readable countdown, assume the found frame is
+     * frame 0. Uses the configured preamble length (set by the caller from the known mode),
+     * which is critical for interoperability: D1/D2 may not match the configured mode.
+     */
+    long data_start(const BrainDecodeResult& result) const {
+        int preamble_symbols = config_.preamble_symbols;
+        int frames_after = preamble_symbols / brain::P_FRAME_LENGTH;
+        if (result.countdown >= 0) frames_after = result.countdown + 1;
+        return result.start_sample + frames_after * brain::P_FRAME_LENGTH * sps_;
     }
     
     /**
@@ -280,12 +408,32 @@ public:
     size_t first_preamble_cut(const std::vector<float>& rf_samples, float threshold = 0.45f,
                               int margin_symbols = 96) {
         const auto bb = downconvert_and_filter(rf_samples);
-        PreambleCorrelator corr(sps_, config_.baud_rate);
-        for (size_t t = 0; t + corr.span() <= bb.size(); t += std::max(1, sps_ / 4))
-            if (corr.evaluate(&bb[t]) >= threshold)
-                return t > static_cast<size_t>(margin_symbols * sps_) ? t - margin_symbols * sps_ : 0;
-        return 0;
+        size_t t = 0;
+        const long cut = scan_first_preamble(bb, t, threshold, margin_symbols);
+        return cut < 0 ? 0 : static_cast<size_t>(cut);
     }
+
+    /**
+     * first_preamble_cut()'s scan over the filtered input bb (downconvert_and_filter), from
+     * start t on: the cut at the first start reaching threshold, or -1 when none does in bb
+     * (t is then where the scan resumes once bb holds more).
+     */
+    long scan_first_preamble(const std::vector<complex_t>& bb, size_t& t, float threshold = 0.45f,
+                             int margin_symbols = 96) const {
+        PreambleCorrelator corr(sps_, config_.baud_rate);
+        for (; t + corr.span() <= bb.size(); t += std::max(1, sps_ / 4))
+            if (corr.evaluate(&bb[t]) >= threshold)
+                return t > static_cast<size_t>(margin_symbols * sps_) ? static_cast<long>(t - margin_symbols * sps_) : 0;
+        return -1;
+    }
+
+    /// The fine AFC's score of a candidate (quick_preamble_correlation)
+    float fine_afc_metric(const std::vector<complex_t>& filtered, float freq_offset_hz) {
+        return quick_preamble_correlation(filtered, freq_offset_hz);
+    }
+
+    /// Samples per symbol
+    int sps() const { return sps_; }
 
     /**
      * Get expected preamble pattern (for external use)
@@ -323,69 +471,21 @@ private:
      * Downconvert to baseband and apply RRC matched filter
      */
     std::vector<complex_t> downconvert_and_filter(const std::vector<float>& rf_samples) {
-        // Downconvert
-        std::vector<complex_t> bb(rf_samples.size());
-        float phase = 0.0f;
-        float phase_inc = 2.0f * PI * config_.carrier_freq / config_.sample_rate;
-        
-        for (size_t i = 0; i < rf_samples.size(); i++) {
-            bb[i] = complex_t(rf_samples[i] * std::cos(phase), 
-                              -rf_samples[i] * std::sin(phase));
-            phase += phase_inc;
-            if (phase > 2*PI) phase -= 2*PI;
-        }
-        
-        // Apply matched filter
-        int half = rrc_taps_.size() / 2;
-        std::vector<complex_t> filtered(bb.size());
-        
-        for (size_t i = 0; i < bb.size(); i++) {
-            complex_t sum(0, 0);
-            for (size_t j = 0; j < rrc_taps_.size(); j++) {
-                int idx = static_cast<int>(i) - half + j;
-                if (idx >= 0 && idx < static_cast<int>(bb.size())) {
-                    sum += bb[idx] * rrc_taps_[j];
-                }
-            }
-            filtered[i] = sum;
-        }
-        
-        return filtered;
+        BasebandFilter f = baseband_filter();
+        f.push(rf_samples.data(), rf_samples.size());
+        f.run(true);
+        return std::move(f.out());
     }
-    
+
     /**
      * Downconvert with frequency offset and apply RRC matched filter
      */
     std::vector<complex_t> downconvert_and_filter_with_offset(
             const std::vector<float>& rf_samples, float freq_offset_hz) {
-        // Downconvert with offset
-        std::vector<complex_t> bb(rf_samples.size());
-        float phase = 0.0f;
-        float phase_inc = 2.0f * PI * (config_.carrier_freq + freq_offset_hz) / config_.sample_rate;
-        
-        for (size_t i = 0; i < rf_samples.size(); i++) {
-            bb[i] = complex_t(rf_samples[i] * std::cos(phase), 
-                              -rf_samples[i] * std::sin(phase));
-            phase += phase_inc;
-            if (phase > 2*PI) phase -= 2*PI;
-        }
-        
-        // Apply matched filter
-        int half = rrc_taps_.size() / 2;
-        std::vector<complex_t> filtered(bb.size());
-        
-        for (size_t i = 0; i < bb.size(); i++) {
-            complex_t sum(0, 0);
-            for (size_t j = 0; j < rrc_taps_.size(); j++) {
-                int idx = static_cast<int>(i) - half + j;
-                if (idx >= 0 && idx < static_cast<int>(bb.size())) {
-                    sum += bb[idx] * rrc_taps_[j];
-                }
-            }
-            filtered[i] = sum;
-        }
-        
-        return filtered;
+        BasebandFilter f = baseband_filter(freq_offset_hz);
+        f.push(rf_samples.data(), rf_samples.size());
+        f.run(true);
+        return std::move(f.out());
     }
     
     /**
@@ -804,59 +904,242 @@ private:
         return "UNKNOWN";
     }
     
+public:
+    /**
+     * The data symbols, on the grid the timing steps move (see DataGrid::advance), found as
+     * the filtered input arrives. advance() searches for steps as far as the input allows,
+     * and extract() appends each data symbol once no later step can move it. Given the
+     * input a piece at a time it finds the same steps and symbols as given all of it at
+     * once (eof): a search window that reaches past the input so far waits for more, and
+     * a step at frame f is taken only once the 2W frames from f are in, as the whole-buffer
+     * search takes it only when they are in the buffer.
+     */
+    class DataGrid {
+    public:
+        DataGrid(const BrainDecoder& dec, const BrainDecodeResult& r, long data_start)
+            : d_(dec), ds_(data_start) {
+            r_.start_sample = r.start_sample;
+            r_.phase_offset = r.phase_offset;
+            r_.phase_rate = r.phase_rate;
+            p_ = dec.config_.unknown_data_len + dec.config_.known_data_len;
+            no_steps_ = dec.config_.unknown_data_len <= 0 || dec.config_.known_data_len <= 0;
+        }
+
+        long data_start() const { return ds_; }
+        const std::vector<std::pair<long, long>>& steps() const { return steps_; }
+
+        /**
+         * Steps in the data's timing: (first frame, grid shift in samples), in frame order.
+         * A sender or recorder whose audio skips or repeats a few milliseconds (a sound-card
+         * underrun) moves every later symbol at once; on air a 300L burst moved 36.8 symbols
+         * (15.3 ms) 1.2 s into its data, and the fixed grid lost its probes for the rest.
+         * At frame f the grid steps when, on the current grid, the W frames before f reach
+         * coherence 0.25 and the W after fall under 0.1, and a grid MIN_STEP..MAX_STEP symbols
+         * away reaches 0.25 on both the 2W frames from f and its second W alone. Noise gives
+         * about 1/(W K) = 0.006-0.008 per window (K = 20 or 16 probes), the largest of the 400 grids
+         * searched about 0.04. Steps under MIN_STEP are left to the DFE (+-5 symbols), so an
+         * echo inside the equalizer's span never moves the grid. A fade or the end of the signal
+         * leaves no other grid at 0.25 and changes nothing. The step takes effect at the first
+         * frame from f whose probes the new grid reads better than the old.
+         *
+         * filtered holds final filtered samples only; eof says no more will come.
+         */
+        void advance(const std::vector<complex_t>& filtered, bool eof) {
+            if (done_) return;
+            const long size = static_cast<long>(filtered.size());
+            if (no_steps_) { done_ = true; return; }
+            for (;;) {
+                if (eof) {
+                    const long nf = (size - ds_) / (p_ * d_.sps_);
+                    if (ds_ >= size || f_ + 2 * W > nf) { done_ = true; return; }
+                } else if (ds_ + f_ * p_ * d_.sps_ + wait_ > size) {
+                    return;  // the last attempt at this frame needed more input
+                }
+                Iteration it = iterate(filtered, eof);
+                if (it.need_more) { wait_ = it.need - (ds_ + f_ * p_ * d_.sps_); return; }
+                // a step is taken only where the whole-buffer search runs: the 2W frames from f in
+                if (!eof && !it.steps.empty() && ds_ + (f_ + 2 * W) * p_ * d_.sps_ > size) {
+                    wait_ = (2 * W) * p_ * d_.sps_;
+                    return;
+                }
+                for (const auto& st : it.steps) steps_.push_back(st);
+                shift_ = it.shift;
+                f_ = it.next_f;
+                wait_ = 0;
+            }
+        }
+
+        /// True once extract() has filled pre_data
+        bool pre_data_done() const { return pre_done_; }
+
+        /// Data frames whose grid no later step can move: all with eof (after advance(eof))
+        long settled_frames() const { return done_ ? std::numeric_limits<long>::max() : f_; }
+
+        /**
+         * Append to out every data symbol from the next one on whose grid is settled and
+         * whose sample is in filtered; with eof, up to the end of filtered. The first call
+         * also fills pre_data: the last preamble frame's zero segment, which ends where the
+         * data begins, on the grid of data symbol 0 (empty when it is not all in filtered).
+         */
+        void extract(const std::vector<complex_t>& filtered, bool eof, std::vector<complex_t>& out,
+                     std::vector<complex_t>* pre_data = nullptr) {
+            if (ended_) return;
+            const long size = static_cast<long>(filtered.size());
+            if (n_ == 0 && !pre_done_) {
+                if (!eof && settled_frames() < 1) return;
+                if (!eof && ds_ > size) return;
+                long shift0 = 0;
+                for (const auto& st : steps_) if (st.first * p_ <= 0) shift0 = st.second;
+                std::vector<complex_t> pre;
+                for (int i = brain::P_ZERO_LENGTH; i > 0; i--) {
+                    const long idx = ds_ - static_cast<long>(i) * d_.sps_ + shift0;
+                    if (idx < 0 || idx >= size) continue;
+                    pre.push_back(filtered[idx] * d_.derotation(r_, (idx - r_.start_sample) / d_.sps_));
+                }
+                if (pre.size() != static_cast<size_t>(brain::P_ZERO_LENGTH)) pre.clear();
+                if (pre_data) *pre_data = std::move(pre);
+                pre_done_ = true;
+            }
+            const long settled = settled_frames();
+            for (;; n_++) {
+                if (!eof && n_ / p_ >= settled) return;
+                while (next_step_ < steps_.size() && steps_[next_step_].first * p_ <= n_)
+                    shift_ex_ = steps_[next_step_++].second;
+                const long idx = ds_ + n_ * d_.sps_ + shift_ex_;
+                if (idx >= size) {
+                    if (eof) ended_ = true;
+                    return;
+                }
+                out.push_back(filtered[idx] * d_.derotation(r_, (idx - r_.start_sample) / d_.sps_));
+            }
+        }
+
+    private:
+        static constexpr long W = 8, MIN_STEP = 8, MAX_STEP = 50, TW = 32;
+        static constexpr double ON = 0.25, OFF = 0.1;
+
+        struct Iteration {
+            bool need_more = false;
+            long need = 0;  // the filtered sample count that would have let it finish
+            std::vector<std::pair<long, long>> steps;
+            long shift = 0;
+            long next_f = 0;
+        };
+
+        /// One pass of the search at frame f_, nothing changed: what it adds and where it goes
+        /// next, or that it reads past the input so far (not at eof)
+        Iteration iterate(const std::vector<complex_t>& filtered, bool eof) const {
+            Iteration it;
+            const long f = f_;
+            long shift = shift_;
+            const long size = static_cast<long>(filtered.size());
+            auto coh = [&](long f0, long f1, long s) -> double {
+                if (it.need_more) return 0.0;
+                double c = d_.grid_coherence(filtered, r_, ds_, f0, f1, s);
+                if (c == -2.0) {
+                    if (eof) return -1.0;
+                    it.need_more = true;
+                    it.need = std::max(it.need, ds_ + f1 * p_ * d_.sps_ + s + 1);
+                    return 0.0;
+                }
+                return c;
+            };
+            it.next_f = f + 1;
+            it.shift = shift;
+            if (coh(f - W, f, shift) < ON) return it;
+            if (it.need_more) return it;
+            // Clock drift: the sender's and recorder's sample clocks differ (36 ppm on air
+            // moved a 300L burst's probes 1.5 symbols in 18 s). Every W frames, fit a parabola
+            // to the last TW frames' coherence on the grid and a quarter symbol either side;
+            // when its peak is a sample or more off, move the grid one sample towards it.
+            if (f % W == 0) {
+                const long d = d_.sps_ / 4, f0 = std::max(0L, f - TW);
+                const double cm = coh(f0, f, shift - d), c0 = coh(f0, f, shift), cp = coh(f0, f, shift + d);
+                if (it.need_more) return it;
+                const double v = cm >= 0.0 && cp >= 0.0 && cm - 2 * c0 + cp < 0.0 ? 0.5 * d * (cm - cp) / (cm - 2 * c0 + cp) : 0.0;
+                if (std::fabs(v) >= 1.0) it.steps.emplace_back(f, shift += v > 0 ? 1 : -1);
+            }
+            it.shift = shift;
+            const double after = coh(f, f + W, shift);
+            if (it.need_more) return it;
+            if (after < 0.0 || after >= OFF) return it;
+            long best = shift;
+            double bc = ON;
+            for (long s = shift - MAX_STEP * d_.sps_; s <= shift + MAX_STEP * d_.sps_; s += std::max(1, d_.sps_ / 4)) {
+                if (std::labs(s - shift) < MIN_STEP * d_.sps_) continue;
+                const double c = coh(f, f + 2 * W, s);
+                if (it.need_more) return it;
+                if (c >= bc) { bc = c; best = s; }
+            }
+            if (best == shift) return it;
+            for (long s = best - d_.sps_ / 4; s <= best + d_.sps_ / 4; s++) {
+                const double c = coh(f, f + 2 * W, s);
+                if (it.need_more) return it;
+                if (c > bc) { bc = c; best = s; }
+            }
+            const double second = coh(f + W, f + 2 * W, best);
+            if (it.need_more) return it;
+            if (second < ON) return it;
+            long g = f;
+            for (;;) {
+                if (!(g + 1 < f + W)) break;
+                const double cn = coh(g, g + 1, best), co = coh(g, g + 1, shift);
+                if (it.need_more) return it;
+                if (!(cn <= co)) break;
+                g++;
+            }
+            const double cg = coh(g, g + W, best);
+            if (it.need_more) return it;
+            std::cout << "[RX] grid step at data frame " << g << " (data +"
+                      << static_cast<double>(g * p_) / d_.config_.baud_rate << " s): "
+                      << static_cast<double>(best - shift) / d_.sps_ << " symbols ("
+                      << 1000.0 * (best - shift) / d_.config_.sample_rate << " ms), coherence "
+                      << cg << " on the new grid, " << after << " on the old" << std::endl;
+            it.steps.emplace_back(g, best);
+            it.shift = best;
+            it.next_f = g + 1;
+            return it;
+        }
+
+        const BrainDecoder& d_;
+        BrainDecodeResult r_;  // the carrier line only
+        long ds_;
+        long p_ = 0;
+        bool no_steps_ = false;
+        // the search
+        long f_ = W;
+        long shift_ = 0;
+        long wait_ = 0;  // input past frame f_'s start the last attempt needed
+        bool done_ = false;
+        std::vector<std::pair<long, long>> steps_;
+        // the extraction
+        long n_ = 0;
+        size_t next_step_ = 0;
+        long shift_ex_ = 0;
+        bool pre_done_ = false;
+        bool ended_ = false;
+    };
+
+private:
     /**
      * Extract data symbols (after preamble)
      */
     void extract_data_symbols(const std::vector<complex_t>& filtered,
                                BrainDecodeResult& result) {
-        // Use configured preamble length (set by caller based on known mode)
-        // This is critical for interoperability - don't rely on D1/D2 detection
-        // which may not match the configured mode exactly
-        int preamble_symbols = config_.preamble_symbols;
-        
-        // Data starts after the last preamble frame. find_preamble() may
-        // lock onto any frame (it takes the first correlation above 0.80 in
-        // its window, so a weak frame 0 hands it frame 1), so count from the
-        // frame actually found: its countdown says how many frames follow.
-        // Without a readable countdown, assume the found frame is frame 0.
-        int frames_after = preamble_symbols / brain::P_FRAME_LENGTH;
-        if (result.countdown >= 0) frames_after = result.countdown + 1;
-        int data_start = result.start_sample + frames_after * brain::P_FRAME_LENGTH * sps_;
+        const long ds = data_start(result);
         
         // Debug output for comparing modes
-        std::cout << "[RX] extract_data: preamble_symbols=" << preamble_symbols
+        std::cout << "[RX] extract_data: preamble_symbols=" << config_.preamble_symbols
                   << " start_sample=" << result.start_sample
-                  << " data_start=" << data_start 
+                  << " data_start=" << ds 
                   << " filtered.size()=" << filtered.size()
                   << " sps=" << sps_ << std::endl;
         
-        // Extract data symbols, the grid moved at each step grid_steps() finds
-        const auto steps = grid_steps(filtered, result, data_start);
-        const long pattern_len = config_.unknown_data_len + config_.known_data_len;
-        size_t next_step = 0;
-        long shift = 0;
-        // The last preamble frame's zero segment, which ends where the data begins,
-        // on the grid of data symbol 0
-        long shift0 = 0;
-        for (const auto& st : steps) if (st.first * pattern_len <= 0) shift0 = st.second;
+        // Extract data symbols, the grid moved at each step DataGrid finds
+        DataGrid grid(*this, result, ds);
+        grid.advance(filtered, true);
         result.pre_data_symbols.clear();
-        for (int i = brain::P_ZERO_LENGTH; i > 0; i--) {
-            const long idx = data_start - static_cast<long>(i) * sps_ + shift0;
-            if (idx < 0 || idx >= static_cast<long>(filtered.size())) continue;
-            result.pre_data_symbols.push_back(
-                filtered[idx] * derotation(result, (idx - result.start_sample) / sps_));
-        }
-        if (result.pre_data_symbols.size() != static_cast<size_t>(brain::P_ZERO_LENGTH))
-            result.pre_data_symbols.clear();
-
-        for (long n = 0;; n++) {
-            while (next_step < steps.size() && steps[next_step].first * pattern_len <= n)
-                shift = steps[next_step++].second;
-            const long idx = data_start + n * sps_ + shift;
-            if (idx >= static_cast<long>(filtered.size())) break;
-            result.data_symbols.push_back(
-                filtered[idx] * derotation(result, (idx - result.start_sample) / sps_));
-        }
+        grid.extract(filtered, true, result.data_symbols, &result.pre_data_symbols);
         
         std::cout << "[RX] extracted " << result.data_symbols.size() << " data symbols" << std::endl;
     }
@@ -864,7 +1147,7 @@ private:
     /**
      * Probe coherence |sum x conj(ref)|^2 / (sum |x|^2 * K) of data frames [f0, f1) read on the
      * data grid moved by shift samples: s / (1 + s) at probe SNR s, about 1/K on noise (K the
-     * probes counted). -1 when a probe falls outside the buffer.
+     * probes counted). -1 when a probe falls before the buffer, -2 when one falls past its end.
      */
     double grid_coherence(const std::vector<complex_t>& filtered, const BrainDecodeResult& r,
                           long data_start, long f0, long f1, long shift) const {
@@ -875,7 +1158,8 @@ private:
         for (long n = f0 * p; n < f1 * p; n++) {
             if (n % p < u) continue;
             const long idx = data_start + n * sps_ + shift;
-            if (idx < 0 || idx >= static_cast<long>(filtered.size())) return -1.0;
+            if (idx < 0) return -1.0;
+            if (idx >= static_cast<long>(filtered.size())) return -2.0;
             const complex_t x = filtered[idx] * derotation(r, (idx - r.start_sample) / sps_);
             const uint8_t c = data_scrambler_[n % 160];
             num += x * std::conj(complex_t(brain::psk8_i[c], brain::psk8_q[c]));
@@ -883,73 +1167,6 @@ private:
             k++;
         }
         return pw > 0.0 ? std::norm(num) / (pw * k) : 0.0;
-    }
-
-    /**
-     * Steps in the data's timing: (first frame, grid shift in samples), in frame order.
-     * A sender or recorder whose audio skips or repeats a few milliseconds (a sound-card
-     * underrun) moves every later symbol at once; on air a 300L burst moved 36.8 symbols
-     * (15.3 ms) 1.2 s into its data, and the fixed grid lost its probes for the rest.
-     * At frame f the grid steps when, on the current grid, the W frames before f reach
-     * coherence 0.25 and the W after fall under 0.1, and a grid MIN_STEP..MAX_STEP symbols
-     * away reaches 0.25 on both the 2W frames from f and its second W alone. Noise gives
-     * about 1/(W K) = 0.006-0.008 per window (K = 20 or 16 probes), the largest of the 400 grids
-     * searched about 0.04. Steps under MIN_STEP are left to the DFE (+-5 symbols), so an
-     * echo inside the equalizer's span never moves the grid. A fade or the end of the signal
-     * leaves no other grid at 0.25 and changes nothing. The step takes effect at the first
-     * frame from f whose probes the new grid reads better than the old.
-     */
-    std::vector<std::pair<long, long>> grid_steps(const std::vector<complex_t>& filtered,
-                                                  const BrainDecodeResult& r, long data_start) const {
-        constexpr long W = 8, MIN_STEP = 8, MAX_STEP = 50, TW = 32;
-        constexpr double ON = 0.25, OFF = 0.1;
-        std::vector<std::pair<long, long>> steps;
-        const long p = config_.unknown_data_len + config_.known_data_len;
-        if (config_.unknown_data_len <= 0 || config_.known_data_len <= 0 ||
-            data_start >= static_cast<long>(filtered.size()))
-            return steps;
-        const long nf = (static_cast<long>(filtered.size()) - data_start) / (p * sps_);
-        auto coh = [&](long f0, long f1, long s) { return grid_coherence(filtered, r, data_start, f0, f1, s); };
-        long shift = 0;
-        for (long f = W; f + 2 * W <= nf; f++) {
-            if (coh(f - W, f, shift) < ON) continue;
-            // Clock drift: the sender's and recorder's sample clocks differ (36 ppm on air
-            // moved a 300L burst's probes 1.5 symbols in 18 s). Every W frames, fit a parabola
-            // to the last TW frames' coherence on the grid and a quarter symbol either side;
-            // when its peak is a sample or more off, move the grid one sample towards it.
-            if (f % W == 0) {
-                const long d = sps_ / 4, f0 = std::max(0L, f - TW);
-                const double cm = coh(f0, f, shift - d), c0 = coh(f0, f, shift), cp = coh(f0, f, shift + d);
-                const double v = cm >= 0.0 && cp >= 0.0 && cm - 2 * c0 + cp < 0.0 ? 0.5 * d * (cm - cp) / (cm - 2 * c0 + cp) : 0.0;
-                if (std::fabs(v) >= 1.0) steps.emplace_back(f, shift += v > 0 ? 1 : -1);
-            }
-            const double after = coh(f, f + W, shift);
-            if (after < 0.0 || after >= OFF) continue;
-            long best = shift;
-            double bc = ON;
-            for (long s = shift - MAX_STEP * sps_; s <= shift + MAX_STEP * sps_; s += std::max(1, sps_ / 4)) {
-                if (std::labs(s - shift) < MIN_STEP * sps_) continue;
-                const double c = coh(f, f + 2 * W, s);
-                if (c >= bc) { bc = c; best = s; }
-            }
-            if (best == shift) continue;
-            for (long s = best - sps_ / 4; s <= best + sps_ / 4; s++) {
-                const double c = coh(f, f + 2 * W, s);
-                if (c > bc) { bc = c; best = s; }
-            }
-            if (coh(f + W, f + 2 * W, best) < ON) continue;
-            long g = f;
-            while (g + 1 < f + W && coh(g, g + 1, best) <= coh(g, g + 1, shift)) g++;
-            std::cout << "[RX] grid step at data frame " << g << " (data +"
-                      << static_cast<double>(g * p) / config_.baud_rate << " s): "
-                      << static_cast<double>(best - shift) / sps_ << " symbols ("
-                      << 1000.0 * (best - shift) / config_.sample_rate << " ms), coherence "
-                      << coh(g, g + W, best) << " on the new grid, " << after << " on the old" << std::endl;
-            steps.emplace_back(g, best);
-            shift = best;
-            f = g;
-        }
-        return steps;
     }
 
     /**
