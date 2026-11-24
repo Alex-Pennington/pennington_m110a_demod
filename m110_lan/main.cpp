@@ -1331,6 +1331,8 @@ struct DecodeJob {
     double t0 = 0, t1 = 0;   // seconds of input (t1 once ended)
     std::deque<std::vector<float>> chunks;  // audio not yet taken by the decoder
     bool ended = false;      // the scanner has closed the burst
+    long a0 = 0;             // input sample of the first audio handed over
+    long eom_end_a = -1;     // the decoder's EOM: the burst may close at this input sample
 };
 std::mutex g_dec_mu;
 std::condition_variable g_dec_cv;
@@ -1432,6 +1434,8 @@ void rx_decode_stream(DecodeJob& j) {
             M.rx_block(j.id, b.data, b.last);
         }
     };
+    long fed = 0;
+    bool eom_told = false;
     for (;;) {
         std::deque<std::vector<float>> got;
         bool ended;
@@ -1444,9 +1448,20 @@ void rx_decode_stream(DecodeJob& j) {
         auto t = Clock::now();
         for (auto& c : got) {
             rx.push_samples(c);
+            fed += long(c.size());
             StreamSync sy;
             if (rx.take_sync(sy)) synced = sy.mode;
             handle(rx.take_blocks());
+            if (!eom_told && (rx.state() == RxState::COMPLETE || rx.state() == RxState::DECODE_ERROR) &&
+                rx.get_result().eom_sequence) {
+                // The message has ended at its EOM: the burst may close --rx-gap after the
+                // audio that decided it, as a level end comes --rx-gap after the signal. A
+                // level end needs the noise before the burst, which a modem that has just
+                // transmitted did not hear.
+                eom_told = true;
+                std::lock_guard<std::mutex> lk(g_dec_mu);
+                j.eom_end_a = j.a0 + fed + long(cfg.rx_gap * kFs);
+            }
         }
         busy += std::chrono::duration<double>(Clock::now() - t).count();
         if (ended) break;
@@ -1586,6 +1601,14 @@ private:
         }
         if (st_ == St::BURST && t75_) track75();
         if (st_ == St::BURST && job_) hand_over(audio_end_);
+        if (st_ == St::BURST && job_) {
+            long eom_a;
+            {
+                std::lock_guard<std::mutex> lk(g_dec_mu);
+                eom_a = job_->eom_end_a;
+            }
+            if (eom_a >= 0 && eom_a <= audio_end_) close_burst(eom_a, "EOM");
+        }
         if (st_ != St::BURST) m75_detect(eof);
         if (eof && st_ == St::BURST) close_burst(audio_end_, "end of input");
         trim();
@@ -1841,6 +1864,7 @@ private:
             job_->id = id_;
             job_->mode = mode;
             job_->t0 = sec(a0_);
+            job_->a0 = a0_;
             pushed_a_ = a0_;
             {
                 std::lock_guard<std::mutex> lk(g_dec_mu);

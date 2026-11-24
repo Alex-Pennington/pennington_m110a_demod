@@ -272,7 +272,10 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
 - **Carrier.** CARRIER DETECTED stays up from preamble sync through the decode and the delivery
   (Table A-VI: "synchronized on a preamble or is processing data from the air"). The data goes
   one blocking factor at a time as it decodes. NO CARRIER follows the last packet once the
-  burst is also over on the air (its level gone, or the next preamble): the last data comes at
+  burst is also over on the air: its level gone, the next preamble, or `--rx-gap` after the
+  audio that decided its EOM. The EOM end does not need the noise floor before the burst, which
+  a modem that has just transmitted did not hear (its burst then ran to `--rx-max`, 120 s, in
+  greybeard-ale's 5066 loopback at 6 dB). The last data comes at
   the EOM, while the far transmitter may still be sending its flush bits and its tail. A DTE
   that answers at NO CARRIER then does not key over it. greybeard-ale's 5066 loopback, whose
   audio relay deafens a keyed side, lost every answer to that before the carrier waited. A chunk
