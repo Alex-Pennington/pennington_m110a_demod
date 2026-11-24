@@ -138,9 +138,16 @@ public:
             const long i = static_cast<long>(out_.size());
             if (!eof && i + nt - half_ > in_) break;
             complex_t sum(0, 0);
-            for (long j = 0; j < nt; j++) {
-                const long idx = i - half_ + j;
-                if (idx >= 0 && idx < in_) sum += bb_[static_cast<size_t>(idx - bb_base_)] * taps_[j];
+            if (i - half_ >= 0 && i - half_ + nt <= in_) {
+                // every tap inside the input: the same sum, in the same order, unchecked
+                const complex_t* x = bb_.data() + (i - half_ - bb_base_);
+                const float* h = taps_.data();
+                for (long j = 0; j < nt; j++) sum += x[j] * h[j];
+            } else {
+                for (long j = 0; j < nt; j++) {
+                    const long idx = i - half_ + j;
+                    if (idx >= 0 && idx < in_) sum += bb_[static_cast<size_t>(idx - bb_base_)] * taps_[j];
+                }
             }
             out_.push_back(sum);
             // the mixed input is needed from the next output's first tap on

@@ -6,6 +6,7 @@
 //   --chunk samples per push_samples call (default 480, 10 ms)
 //   --mode  force the mode (as m110a_rx's --mode names it); default AUTO
 //   --expect the payload: report each decode exact or not
+//   --dump  write the two decodes' bytes to PREFIX.whole.bin and PREFIX.stream.bin
 //
 // Prints one line of key=value fields: the whole-burst and streaming verdicts and bytes
 // (sha of each, same=1 when identical), the streaming blocks (count, bytes, last, the
@@ -87,7 +88,7 @@ Mode mode_of(const std::string& m) {
 
 int main(int argc, char** argv) {
     size_t chunk = 480;
-    std::string path, expect_path;
+    std::string path, expect_path, dump;
     RxConfig cfg;
     cfg.sample_rate = 48000;
     cfg.mode = Mode::AUTO;
@@ -99,9 +100,10 @@ int main(int argc, char** argv) {
         else if (a == "--mode") cfg.mode = mode_of(val());
         else if (a == "--eq") cfg.equalizer = val() == "none" ? Equalizer::NONE : Equalizer::DFE;
         else if (a == "--expect") expect_path = val();
+        else if (a == "--dump") dump = val();
         else path = a;
     }
-    if (path.empty()) { fprintf(stderr, "usage: stream_vs_whole [--chunk N] [--mode M] [--eq dfe|none] [--expect FILE] AUDIO\n"); return 2; }
+    if (path.empty()) { fprintf(stderr, "usage: stream_vs_whole [--chunk N] [--mode M] [--eq dfe|none] [--expect FILE] [--dump PREFIX] AUDIO\n"); return 2; }
     const std::vector<float> x = load(path);
     std::vector<uint8_t> expect;
     if (!expect_path.empty()) {
@@ -149,6 +151,10 @@ int main(int argc, char** argv) {
         all_pass = all_pass && b.passes;
     }
     const bool same = w.data == s.data && w.success == s.success && w.eom_detected == s.eom_detected;
+    if (!dump.empty()) {
+        std::ofstream(dump + ".whole.bin", std::ios::binary).write(reinterpret_cast<const char*>(w.data.data()), long(w.data.size()));
+        std::ofstream(dump + ".stream.bin", std::ios::binary).write(reinterpret_cast<const char*>(s.data.data()), long(s.data.size()));
+    }
     auto exact = [&](const std::vector<uint8_t>& d) { return expect.empty() ? -1 : int(d == expect); };
     std::string errw = w.error ? w.error->message : "", errs = s.error ? s.error->message : "";
     for (auto* e : {&errw, &errs}) for (auto& c : *e) if (c == ' ') c = '_';

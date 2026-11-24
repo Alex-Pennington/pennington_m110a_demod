@@ -122,6 +122,7 @@ def main():
     ap.add_argument("--jobs", type=int, default=2)
     ap.add_argument("--seeds", type=int, default=0, help="seeds per case (default: 4 AWGN, 5 CCIR)")
     a = ap.parse_args()
+    a.bin, a.work = os.path.abspath(a.bin), os.path.abspath(a.work)
     os.makedirs(a.work, exist_ok=True)
     sets = a.sets.split(",")
     gens = []
