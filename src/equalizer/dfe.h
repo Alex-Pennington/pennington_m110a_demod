@@ -64,6 +64,9 @@ public:
         ff_taps_[center] = complex_t(1.0f, 0.0f);
     }
     
+    /// Change the LMS step sizes, e.g. a larger step for preamble pretraining.
+    void set_step(float mu_ff, float mu_fb) { config_.mu_ff = mu_ff; config_.mu_fb = mu_fb; }
+    
     void reset() {
         std::fill(ff_taps_.begin(), ff_taps_.end(), complex_t(0.0f, 0.0f));
         std::fill(fb_taps_.begin(), fb_taps_.end(), complex_t(0.0f, 0.0f));
