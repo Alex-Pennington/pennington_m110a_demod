@@ -220,9 +220,42 @@ in a tail (0.93 above) because the padding is the same for any bytes. Limits:
 `--bytes FILE` checks the given bytes in place of the receiver's. `--frames-json FILE` writes
 the per-frame counts used for calibration. `ctest rx_reencode_window` covers the window check.
 
-Calibration, block by block, old verdict against new, with the truth:
+Calibration, block by block: the old verdict against the new one, with the truth. Truth is
+the synthetic source or the keyed payload. Exact means every byte of the block is right;
+wrong means at least one is not. Tail blocks had no old verdict, because the old check never
+compared them.
 
-CALIBRATION_TABLE
+| Set | Block | Truth | Old | New | Blocks |
+|---|---|---|---|---|---|
+| ModemTX, AWGN, 10 modes, 2 to 30 dB | whole | exact | fit | real | 140 |
+| ModemTX, Watterson moderate and poor, 150L, 300L, 600L, 1200L (12 runs) | whole | exact | fit | real | 197 |
+| ModemTX, Watterson | whole | wrong (1 to 3 bytes) | fit | NOT REAL | 3 |
+| ModemTX, Watterson | whole | wrong | do not fit | NOT REAL | 12 |
+| Review's fades, 300L to 2400L, 10 and 15 dB, −10 to −20 dB | whole | exact | fit | real | 10 |
+| Review's fades | whole | wrong (78 bytes) | fit | NOT REAL | 1 |
+| Review's fades | whole | wrong | do not fit | NOT REAL | 22 |
+| Review's fades | tail | exact | — | real | 20 |
+| Review's fades | tail | wrong (21 to 156 bytes) | — | NOT REAL | 6 |
+| Review's gale-rx cases F and K (300L fades) | whole | exact | fit | real | 4 |
+| Review's F | whole | wrong (12 bytes) | fit | NOT REAL | 1 |
+| Review's F and K | tail | exact / wrong (31 bytes) | — | real / NOT REAL | 4 / 1 |
+| 1200L, 720 B, −15 dB 1 s fade, 10/15/20 dB, m110a_rx at 1af44e2 | whole | exact / wrong (1 to 8 bytes) | fit | real / NOT REAL | 8 / 10 |
+| The same, this branch's base receiver | whole | exact / wrong (1 to 9 bytes) | fit | real / NOT REAL | 7 / 11 |
+| The same, tail (EOM and padding only) | tail | exact | — | real | 9 |
+| Random-length messages with EOM, 10 modes, 12 and 20 dB | tail | exact | — | real | 58 |
+| RSP2 150L on air | whole | exact (as received) | fit | real | 4 |
+| Net 300L bursts 2, 3, 4 | whole | exact (as received) | fit | real | 34 |
+| Net 300L burst 1, blocks 2 and 9 | whole | wrong | do not fit | NOT REAL | 2 |
+| Net 300L burst 1, other blocks | whole | not known | fit | real | 9 |
+| RSP2 and bursts 1 to 4 | tail | not known | — | real | 5 |
+| 6a captures, keyed 2400S/1200S/600S under one block | tail | exact | — | real | 8 |
+| 6a capture 5 (no key for its session) | tail | not known | — | real | 3 |
+| 6a capture 11, 2400S, success=0 | whole | wrong (143 bytes) | do not fit | NOT REAL | 1 |
+
+No wrong block is called real, and no exact block is called anything else. Among exact
+blocks, the most far-off data symbols seen was 1. Every wrong block the old comparison passed
+had 3 or more, p 9e−10 or less. At `TAU` = 15 and with no far-off probes, a block needs 3
+far-off data symbols to be NOT REAL.
 
 ## Left open
 
