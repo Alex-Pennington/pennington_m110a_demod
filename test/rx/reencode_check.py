@@ -50,8 +50,9 @@ there. The verdict is NOT REAL when the block does not fit, or when its far-off 
 are less likely than ALPHA for right bytes (window_check), and real otherwise. For the verdict,
 "fit" is read over the frames window_check reads (the block's last TAIL frames, whose probes
 are D1/D2, left out), and data below the probes by more than FIT is "not fit" only when right
-bytes leave such a gap with odds under ALPHA or it passes FIT_CAP (fits(): a short block's
-agreements are samples).
+bytes leave such a gap with odds under ALPHA (fits(): a short block's agreements are samples).
+A block that passes is "real" only where one wrong byte would have shown, by the far-off test or
+the gap (one_byte_power(), measured on the block); elsewhere the verdict is "NOT VERIFIABLE".
 
 With eom=1, the blocks after the block lines (the data end, EOM, flush and zero padding) are
 compared too, as "tail block N" lines with their own window check; when the block lines already
@@ -82,7 +83,6 @@ FRAME = {'150': (20, 20), '300': (20, 20), '600': (20, 20), '1200': (20, 20), '2
 BPS = {'150': 150, '300': 300, '600': 600, '1200': 1200, '2400': 2400}
 CHANCE = {'150': 0.5, '300': 0.5, '600': 0.5, '1200': 0.25, '2400': 0.125}
 FIT = 0.03  # a right payload's data agreement is within this of the probes' or above
-FIT_CAP = 0.07  # fits() widens FIT for sampling spread to at most this
 STEP8 = {'150': 4, '300': 4, '600': 4, '1200': 2, '2400': 1}  # 8PSK index step of the data constellation
 PSK8 = np.exp(1j * np.pi / 4 * np.arange(8))
 DMIN2 = {r: abs(1 - PSK8[s]) ** 2 for r, s in STEP8.items()}  # squared distance to the nearest other point
@@ -418,25 +418,63 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, f
         verdict = 'fit the signal' if fits(pa, da, k * n, u * n) else 'DO NOT FIT the signal (bit errors)'
         print(f'  tail block {b + 1} (data end, EOM, flush, zero padding): probe agreement {pa:.3f}, data agreement '
               f'{da:.3f}, random-bytes control {ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
-        print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k)
+        print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k, sep, rate)
+
+
+def fit_allowance(pa, npr, nd):
+    """How far data agreement may sit below probe agreement with right bytes: FIT, or what right
+    bytes leave with odds of ALPHA where that is more. The probe and data agreements of a short block
+    are samples: a 2400S block at 8 dB (448 probes, 896 data symbols over its window frames) spreads
+    their difference by about 0.02 with right bytes."""
+    from scipy.stats import norm
+    return max(FIT, float(norm.isf(ALPHA)) * np.sqrt(max(pa * (1 - pa), 0.0) * (1 / npr + 1 / nd)))
 
 
 def fits(pa, da, npr, nd):
-    """Data agreement within FIT of the probe agreement or above, or below it by no more than right
-    bytes leave with odds of ALPHA, and never more than FIT_CAP: the probe and data agreements of a
-    short block are samples, and a 2400S block at 8 dB (448 probes, 896 data symbols over its window
-    frames) spreads their difference by about 0.02 with right bytes (largest gap seen 0.059). The cap
-    keeps a garbage decode at low agreement NOT REAL: 6a capture 11, 2400S, success=0, 143 wrong
-    bytes, gap 0.084 at agreement 0.55, where ALPHA alone would allow 0.136."""
-    from scipy.stats import norm
-    se = np.sqrt(max(pa * (1 - pa), 0.0) * (1 / npr + 1 / nd))
-    return da >= pa - max(FIT, min(float(norm.isf(ALPHA)) * se, FIT_CAP))
+    """Data agreement within fit_allowance() of the probe agreement, or above it."""
+    return da >= pa - fit_allowance(pa, npr, nd)
 
 
-def print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k):
+CODE_WEIGHT = 10  # coded bits one wrong data bit changes: the K=7 code's generators 133 and 171 (octal), 5 + 5
+REPEAT = {'150': 4, '300': 2, '600': 1, '1200': 1, '2400': 1}  # data symbols per coded bit
+POWER = 0.99      # a one-byte error 'would show' when the window check catches it this often
+
+
+def one_byte_power(s, sep, rate):
+    """Whether the window check would have caught one wrong byte in this block, measured on the block.
+    One wrong data bit changes CODE_WEIGHT coded bits, so CODE_WEIGHT x REPEAT data symbols of the
+    re-encoded reference: d symbols on another point than the one sent (the nearest one, a Gray
+    neighbour or BPSK's other point). Two ways to see them:
+      - far off: a symbol on the sent point lies sep noise powers from the re-encoded one (sep, the
+        frame's measured distance to the nearest other point), so it is far off when |s + n|^2 > TAU,
+        noise of unit power: a non-central chi-square, 2 degrees of freedom. The test fires when the
+        far-off count reaches what makes p < ALPHA for right bytes; power is the chance d symbols
+        bring that many more.
+      - the gap: the d symbols lower data agreement by d (p - c (1 - p)) / data symbols (c the share
+        of wrong decisions that land on the re-encoded point: 1 for BPSK, 1/2 otherwise), against
+        fit_allowance().
+    Returns (verifiable, summary)."""
+    from scipy.stats import binom, ncx2
+    d = CODE_WEIGHT * REPEAT[rate]
+    pf = float(np.mean(ncx2.sf(2 * TAU, 2, 2 * np.asarray(sep, float)))) if len(sep) else 0.0
+    need = 1
+    while poisson_sf(s['far_data'] + need, s['expected']) >= ALPHA and need <= d:
+        need += 1
+    far_power = float(binom.sf(need - 1, d, pf)) if need <= d else 0.0
+    pa = s['probe_ok'] / s['probes']
+    c = 1.0 if STEP8[rate] == 4 else 0.5
+    shift = d * max(pa - c * (1 - pa), 0.0) / s['data']
+    allow = fit_allowance(pa, s['probes'], s['data'])
+    ok = far_power >= POWER or shift > allow
+    return ok, (f'one wrong byte moves {d} data symbols: far-off power {far_power:.2f} ({need} more far off needed), '
+                f'gap shift {shift:.3f} against {allow:.3f}')
+
+
+def print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k, sep, rate):
     """The new lines after block b's line: its window rows and its window check verdict. The verdict's
     probe and data agreements come from the window frames (window_check: the block's last TAIL
-    frames left out), not from the block line's figures over every frame."""
+    frames left out), not from the block line's figures over every frame. 'real' only where one wrong
+    byte would have shown (one_byte_power); where it would not, NOT VERIFIABLE."""
     ti = TAUS.index(TAU)
     wrows, s = window_check(pok[f0:f0 + fpb], dok[f0:f0 + fpb], deep_p[f0:f0 + fpb, ti],
                             deep_d[f0:f0 + fpb, ti], u, k)
@@ -444,12 +482,14 @@ def print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k):
         print(f'    block {b + 1} window {i + 1} frames {f0 + w0 + 1}-{f0 + w1 + 1}: probes {1 - pe / pn:.3f} '
               f'({pn - pe}/{pn} right), data {1 - de / dn:.3f} ({dn - de}/{dn} agree), '
               f'far off {fp} probes, {fd} data')
+    n = max(1, min(fpb, len(sep) - f0) - TAIL)
     if not fits(s['probe_ok'] / s['probes'], s['data_ok'] / s['data'], s['probes'], s['data']):
         final = 'NOT REAL: data below the probes over the block (bit errors)'
     elif s['verdict'] == 'not real':
         final = 'NOT REAL: data symbols far off where the probes are not (bit errors)'
     else:
-        final = 'real'
+        ok, why = one_byte_power(s, sep[f0:f0 + n], rate)
+        final = 'real' if ok else f'NOT VERIFIABLE: {why}'
     print(f"  block {b + 1} window check: far off (over {TAU} noise powers) {s['far_probes']}/{s['probes']} "
           f"probes, {s['far_data']}/{s['data']} data, expected for right bytes {s['expected']:.2f}, "
           f"p {s['p']:.2g} (not real under {ALPHA:g}); verdict {final}")
@@ -529,7 +569,7 @@ def check(a, x, sr, work):
                   f'{ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
             # New lines (the block line above is unchanged): the window check of this block.
             fpb = nf // blocks
-            print_window_check(b, b * fpb, fpb, pok, dok, deep_p, deep_d, u, k)
+            print_window_check(b, b * fpb, fpb, pok, dok, deep_p, deep_d, u, k, sep, rate)
         if blocks:
             tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, blocks)
     if not found:

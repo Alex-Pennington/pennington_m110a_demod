@@ -52,7 +52,7 @@ FADE = (6.8, 3.0, -12.0)  # start (s from the message start, 2.0 s into the data
 # gale-rx (greybeard-ale tools/gale_rx.py) reads the block lines with these
 BLOCK_RE = re.compile(r"block \d+: probe agreement ([0-9.]+), data agreement ([0-9.]+)")
 HEAD_RE = re.compile(r": (\S+) start \S+ s success=(\d) bytes=(\d+)(?: sha256 ([0-9a-f]+))?")
-WCHECK_RE = re.compile(r"^  block (\d+) window check: .*; verdict (real|NOT REAL)", re.M)
+WCHECK_RE = re.compile(r"^  block (\d+) window check: .*; verdict (real|NOT REAL|NOT VERIFIABLE)", re.M)
 TAIL_RE = re.compile(r"^  tail block (\d+) \(", re.M)
 # Bytes m110a_rx gave for the fade audio at 10 dB, per noise seed: (first wrong byte, the run).
 # One or two wrong bytes in block 1, and the old per-block comparison calls each block fit.
@@ -150,13 +150,16 @@ def case_counts():
     ok &= s['verdict'] == 'real'
     print(f"counts crashes: far off {s['far_probes']} probes, {s['far_data']} data, expected {s['expected']:.2f}, "
           f"p {s['p']:.2g} -> {s['verdict']}")
-    # fits() on a 2400S block's window frames (448 probes, 896 data): the largest gap right bytes gave at
-    # 8 dB (0.906 / 0.847) fits; 6a capture 11's garbage decode (success=0, 143 wrong bytes, 0.554 / 0.470)
-    # does not, though ALPHA alone would allow it at that agreement
-    right, garbage = rc.fits(0.906, 0.847, 448, 896), rc.fits(0.554, 0.470, 448, 896)
-    ok &= right and not garbage
-    print(f'counts fits(): right bytes at 8 dB {"fit" if right else "not fit"}, garbage decode at 0.55 '
-          f'{"fit" if garbage else "not fit"}')
+    # one_byte_power() on a 2400S block's window frames (28 frames, 448 probes, 896 data, nothing far off):
+    # at 20 dB (nearest other point ~60 noise powers out) one wrong byte would show, so a passing block is
+    # real; at 8 dB (~4.6) it would not, so the block is NOT VERIFIABLE, whatever its gap
+    blk = lambda pr: dict(far_data=0, expected=896 * np.exp(-rc.TAU), probe_ok=int(pr * 448), probes=448,
+                          data_ok=int(pr * 896), data=896)
+    hi, why_hi = rc.one_byte_power(blk(0.999), [60.0] * 28, '2400')
+    lo, why_lo = rc.one_byte_power(blk(0.87), [4.6] * 28, '2400')
+    ok &= hi and not lo
+    print(f'counts one-byte power, 2400S at 20 dB: {"verifiable" if hi else "not verifiable"} ({why_hi})')
+    print(f'counts one-byte power, 2400S at 8 dB: {"verifiable" if lo else "not verifiable"} ({why_lo})')
     print(f'counts -> {"PASS" if ok else "FAIL"}', flush=True)
     return ok
 
@@ -237,8 +240,10 @@ def case_whole2400(a):
         wav = audio(a, data, snr, None, seed, f'whole2400_{snr:g}_{seed}', mode='2400S')
         out = run_check(a, wav, data)
         v = verdicts(out)
-        good = form_ok(out, f'2400S 540 B {snr:g} dB seed {seed}') and v == {b: 'real' for b in (1, 2, 3, 4)} \
-            and TAIL_RE.findall(out) == ['4']
+        # right bytes are never NOT REAL; at 20 dB one wrong byte would show, so they are real
+        good = form_ok(out, f'2400S 540 B {snr:g} dB seed {seed}') and sorted(v) == [1, 2, 3, 4] \
+            and 'NOT REAL' not in v.values() and TAIL_RE.findall(out) == ['4'] \
+            and (snr < 20 or set(v.values()) == {'real'})
         if snr == 20.0:
             bad = bytearray(data)
             bad[300] ^= 0x10
@@ -263,13 +268,13 @@ def case_fade(a, data, seed):
         pl = pls[0]
         for b, verdict in v.items():
             exact = pl[(b - 1) * BLOCK_BYTES:b * BLOCK_BYTES] == data[(b - 1) * BLOCK_BYTES:b * BLOCK_BYTES]
-            good = (verdict == 'real') == exact
+            good = verdict != 'NOT REAL' if exact else verdict != 'real'
             ok &= good
             print(f'fade seed {seed} receiver block {b}: bytes {"exact" if exact else "wrong"}, verdict {verdict} '
                   f'-> {"PASS" if good else "FAIL"}', flush=True)
     # the sent bytes: real
     v = verdicts(run_check(a, wav, data))
-    good = bool(v) and all(x == 'real' for x in v.values())
+    good = bool(v) and 'NOT REAL' not in v.values()
     ok &= good
     print(f'fade seed {seed} sent bytes: verdicts {v} -> {"PASS" if good else "FAIL"}', flush=True)
     # bytes a receiver gave for this audio: wrong in block 1, which the old comparison passes
@@ -305,7 +310,8 @@ def block_bytes(mode, b, n):
 
 def sweep_one(a, mode, snr, i):
     """One random-length eom=1 message: the receiver's bytes (each verdict against whether its block is
-    exact), the sent bytes (every verdict real) and the sent bytes with one bit flipped (its block NOT REAL)."""
+    exact), the sent bytes (never NOT REAL) and the sent bytes with one bit flipped (its block never real).
+    Verdicts are counted as real / NOT VERIFIABLE / NOT REAL."""
     r = random.Random(f'reencode_window/sweep {mode} {snr} {i}')
     bits = block_bits(mode)
     if mode in ('150S', '300S') and i % 2:  # long enough that the block lines' whole-byte count can reach the EOM
@@ -317,8 +323,9 @@ def sweep_one(a, mode, snr, i):
     w.work = os.path.join(a.work, f'sweep_{mode}_{snr:g}_{i}')
     os.makedirs(w.work, exist_ok=True)
     wav = audio(w, data, snr, None, 100 + i, 'msg', mode=mode)
-    res = dict(mode=mode, snr=snr, n=n, rx_false=0, rx_true_rej=0, rx_real_wrong=0, rx_ok=0, sent_false=0,
-               sent_blocks=0, flip_rej=None, missing=[], eom=0)
+    V3 = ('real', 'NOT VERIFIABLE', 'NOT REAL')
+    res = dict(mode=mode, snr=snr, n=n, missing=[], eom=0, **{f'{key} {x}': 0 for key in ('rx exact', 'rx wrong', 'sent', 'flip')
+                                                                for x in V3})
     sr, x = wavfile.read(wav)
     msgs = list(rc.messages(rc.decode(a.rx, x.astype(float) / 32768.0, sr, 0.0, w.work)[0]))
     pls = [pl for _, pl in msgs if pl]
@@ -329,10 +336,7 @@ def sweep_one(a, mode, snr, i):
     for b, verdict in v.items():
         lo, hi = block_bytes(mode, b, n)
         exact = len(pl) == n and pl[lo:hi] == data[lo:hi]
-        if verdict == 'NOT REAL':
-            res['rx_false' if exact else 'rx_true_rej'] += 1
-        else:
-            res['rx_ok' if exact else 'rx_real_wrong'] += 1
+        res[f"rx {'exact' if exact else 'wrong'} {verdict}"] += 1
     out = run_check(w, wav, data)
     v = verdicts(out)
     total = -(-(8 * n + rc.EOM_BITS) // bits)
@@ -342,40 +346,41 @@ def sweep_one(a, mode, snr, i):
         res['missing'].append('silent tail')
     if 'no message' in out or not v:
         res['missing'] = ['no message']
-    res['sent_blocks'] = len(v)
-    res['sent_false'] = sum(x == 'NOT REAL' for x in v.values())
+    for x in v.values():
+        res[f'sent {x}'] += 1
     at = r.randrange(16, n) if n > 16 else n - 1
     bad = bytearray(data)
     bit = r.randrange(8)
     bad[at] ^= 1 << bit
     blk = (8 * at + bit) // bits + 1  # ModemTX sends each byte LSB first (api/modem_tx.cpp)
     v = verdicts(run_check(w, wav, bytes(bad)))
-    res['flip_rej'] = (v.get(blk) == 'NOT REAL') if v else None
+    if blk in v:
+        res[f'flip {v[blk]}'] += 1
     os.remove(wav)
     return res
 
 
 def case_sweep(a):
     """Random-length eom=1 messages in all ten probe modes at each --sweep-snr: no right bytes NOT REAL, no
-    block left without a verdict. Wrong bytes are reported, not required (a block at low SNR can hide one bit)."""
+    wrong block real (the receiver's or one flipped bit), no block left without a verdict. Counts are
+    real / NOT VERIFIABLE / NOT REAL."""
     from concurrent.futures import ThreadPoolExecutor
     jobs = [(m, float(s), i) for s in a.sweep_snr.split(',') for m in SWEEP_MODES for i in range(a.sweep_n)]
     with ThreadPoolExecutor(a.jobs) as ex:
         results = list(ex.map(lambda j: sweep_one(a, *j), jobs))
     ok = True
-    print('sweep: mode  SNR  msgs  eom=1  rx exact real/NOT REAL  rx wrong NOT REAL/real  sent NOT REAL/blocks  '
-          'one bit flipped NOT REAL  blocks without a verdict')
+    print('sweep: mode  SNR  msgs  eom=1  real/NOT VERIFIABLE/NOT REAL for: rx exact blocks | rx wrong blocks | '
+          'sent bytes | one flipped bit  ; blocks without a verdict')
     for s in a.sweep_snr.split(','):
         for m in SWEEP_MODES:
             rs = [x for x in results if x['mode'] == m and x['snr'] == float(s)]
             g = lambda key: sum(x[key] for x in rs)
-            flips = [x['flip_rej'] for x in rs if x['flip_rej'] is not None]
+            t = lambda key: '/'.join(str(g(f'{key} {x}')) for x in ('real', 'NOT VERIFIABLE', 'NOT REAL'))
             miss = [(x['n'], x['missing']) for x in rs if x['missing']]
-            bad = g('rx_false') or g('sent_false') or miss
+            bad = g('rx exact NOT REAL') or g('sent NOT REAL') or g('rx wrong real') or g('flip real') or miss
             ok &= not bad
-            print(f"sweep: {m:5} {float(s):4.0f} {len(rs):5}  {g('eom'):5}  {g('rx_ok'):5}/{g('rx_false'):<5}  "
-                  f"{g('rx_true_rej'):5}/{g('rx_real_wrong'):<5}  {g('sent_false'):4}/{g('sent_blocks'):<5}  "
-                  f"{sum(flips):3}/{len(flips):<3}  {miss or 'none'}{'  FAIL' if bad else ''}", flush=True)
+            print(f"sweep: {m:5} {float(s):4.0f} {len(rs):5}  {g('eom'):5}  {t('rx exact'):>11} | {t('rx wrong'):>8} | "
+                  f"{t('sent'):>11} | {t('flip'):>8}  ; {miss or 'none'}{'  FAIL' if bad else ''}", flush=True)
     print(f'sweep -> {"PASS" if ok else "FAIL"}', flush=True)
     return ok
 
