@@ -72,6 +72,9 @@ constexpr double STEP_RATIO = 2.0;             // 3 dB
 constexpr long END_PAD = static_cast<long>(0.5 * FS);  // audio kept after the step
 constexpr float TARGET_RMS = 7000.0f / 32768.0f;  // MS-DMT reference level
 constexpr long MARGIN = static_cast<long>(0.04 * FS);  // audio before frame 1
+// A window with no power step at its end is decoded over its first FIRST_WINDOW before the
+// whole of it (Receiver::decode).
+constexpr long FIRST_WINDOW = static_cast<long>(30 * FS);
 // Chains on one preamble's frame grid: within this of a whole number of frames apart.
 // Two Watterson paths 2 ms apart move the correlation peak by 4.8 symbols.
 constexpr long GRID_TOL = 10L * SPS_SCAN;
@@ -165,6 +168,7 @@ struct Message {
     int hits;
     float metric, freq;   // mean over the hits
     long end_audio = -1;  // decided end, absolute audio index
+    bool end_at_step = false;  // end_audio is a power step
     std::vector<double> pw;  // 0.1 s block power from first_frame * DECIM on
     bool done = false;    // decoded, result in out
     Decoded out;
@@ -350,6 +354,7 @@ private:
         const long kmax = std::min<long>(static_cast<long>(m.pw.size()),
                                          (limit - a_first) / BLOCK);
         const long k = find_step(m.pw, k0, kmax);
+        m.end_at_step = k >= 0;
         if (k >= 0) m.end_audio = a_first + k * BLOCK + END_PAD;
         else if (next || audio_end_ >= limit) m.end_audio = limit;
         else if (eof) m.end_audio = audio_end_;
@@ -463,11 +468,35 @@ private:
         }
     }
 
+    // A window not ended by a power step (at about 0 dB SNR the end is a 3 dB step, which the
+    // step test can miss) runs to the next preamble, --max-secs or the end of the input. When
+    // it is longer than FIRST_WINDOW, decode its first FIRST_WINDOW first, and keep that
+    // decode when it found the EOM, read no mode, or its signal (the whole blocks the probes
+    // cover) ends at least two blocks before that window does: the rest is noise. Otherwise
+    // decode the whole window.
     Decoded decode(const Message& m) {
+        const long a_first = m.first_frame * DECIM;
+        if (!m.end_at_step && m.end_audio - a_first > FIRST_WINDOW) {
+            const long a1 = a_first + FIRST_WINDOW;
+            Decoded o = decode_window(m, a1);
+            if (!o.ran) return o;
+            const int pf = preamble_frames(o.r.mode);
+            const double block_s = pf == 24 ? 4.8 : 0.6;
+            const double covered = pf * 0.2 + static_cast<double>(o.r.block_quality_db.size()) * block_s;
+            const bool ended = covered + 2 * block_s <= static_cast<double>(a1 - a_first) / FS;
+            if (opt_.verbose)
+                fprintf(stderr, "m110a_rx: msg at %.3f s: first %.0f s decoded, eom=%d, signal %.1f s: %s\n",
+                        a_first / FS, FIRST_WINDOW / FS, o.eom ? 1 : 0, covered,
+                        o.eom || pf == 0 || ended ? "kept" : "decoding the whole window");
+            if (o.eom || pf == 0 || ended) return o;
+        }
+        return decode_window(m, m.end_audio);
+    }
+
+    Decoded decode_window(const Message& m, long a1) {
         Decoded o;
         const long a_first = m.first_frame * DECIM;
         const long a0 = std::max(a_first - MARGIN, audio_base_);
-        const long a1 = m.end_audio;
         o.a1 = a1;
         if (a1 - a0 < static_cast<long>(0.5 * FS)) return o;
         o.ran = true;
