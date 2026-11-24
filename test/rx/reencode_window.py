@@ -78,8 +78,8 @@ def audio(a, data, snr, fade, seed, tag, mode=MODE):
 
 
 def run_check(a, wav, claimed=None):
-    cmd = [sys.executable, '-I', os.path.join(HERE, 'reencode_check.py'), wav, '--rx', a.rx, '--tx', a.tool,
-           '--work', a.work]
+    cmd = [sys.executable, '-I', getattr(a, 'check', None) or os.path.join(HERE, 'reencode_check.py'), wav, '--rx', a.rx,
+           '--tx', a.tool, '--work', a.work]
     if claimed is not None:
         cb = os.path.join(a.work, 'claimed.bin')
         with open(cb, 'wb') as f:
@@ -181,6 +181,58 @@ def case_short(a):
     return ok and good
 
 
+def case_tails(a):
+    """300S and 150S blocks hold 22.5 and 11.25 bytes. Random lengths with eom=1, at 15 dB: each message
+    ends in tail block lines, or in one line saying the block lines already cover the data end, EOM
+    and flush (300S, 1277 B: the block lines count 58 blocks of 22 B, and the message has 58). Never
+    silent; every block has a verdict, real for the sent bytes."""
+    r = random.Random('reencode_window/tails')
+    ok = True
+    for mode, n in (('300S', 1277), ('300S', r.randrange(23, 400)), ('150S', r.randrange(12, 120)),
+                    ('150S', r.randrange(120, 400))):
+        data = (b'DE AAM402 tails ' + r.randbytes(n))[:n]
+        wav = audio(a, data, 15.0, None, 1, f'tails_{mode}_{n}', mode=mode)
+        out = run_check(a, wav, data)
+        v = verdicts(out)
+        bits = block_bits(mode)
+        total = -(-(8 * n + rc.EOM_BITS) // bits)
+        tails = [int(b) for b in TAIL_RE.findall(out)]
+        cover = re.search(r'^  tail check \(eom=1, \d+ blocks?\): the block lines cover', out, re.M)
+        good = form_ok(out, f'tails {mode} {n} B') and sorted(v) == list(range(1, total + 1)) \
+            and all(x == 'real' for x in v.values()) and bool(tails or cover) and not (tails and cover)
+        ok &= good
+        print(f'tails {mode} {n} B: {total} blocks, tail blocks {tails or "none"}, '
+              f'{"cover line" if cover else "no cover line"}, verdicts NOT REAL '
+              f'{[b for b, x in v.items() if x != "real"] or "none"} -> {"PASS" if good else "FAIL"}', flush=True)
+        os.remove(wav)
+    return ok
+
+
+def case_whole2400(a):
+    """2400S, 540 B: exactly 3 blocks, so the tail block holds EOM, flush and zero padding only. At 8, 14 and
+    20 dB the sent bytes are real in every block, the tail included (its last two frames, D1/D2 probes,
+    are left out of its comparison as the window check leaves them out), and one flipped bit at 20 dB
+    is NOT REAL."""
+    data = (b'DE AAM402 whole blocks ' + random.Random('reencode_window/whole2400').randbytes(540))[:540]
+    ok = True
+    for snr, seed in ((8.0, 1), (8.0, 2), (14.0, 1), (14.0, 2), (20.0, 1)):
+        wav = audio(a, data, snr, None, seed, f'whole2400_{snr:g}_{seed}', mode='2400S')
+        out = run_check(a, wav, data)
+        v = verdicts(out)
+        good = form_ok(out, f'2400S 540 B {snr:g} dB seed {seed}') and v == {b: 'real' for b in (1, 2, 3, 4)} \
+            and TAIL_RE.findall(out) == ['4']
+        if snr == 20.0:
+            bad = bytearray(data)
+            bad[300] ^= 0x10
+            v2 = verdicts(run_check(a, wav, bytes(bad)))
+            good &= v2.get(2) == 'NOT REAL'
+            print(f'2400S 540 B {snr:g} dB one wrong bit in block 2: verdicts {v2}', flush=True)
+        ok &= good
+        print(f'2400S 540 B {snr:g} dB seed {seed}: verdicts {v} -> {"PASS" if good else "FAIL"}', flush=True)
+        os.remove(wav)
+    return ok
+
+
 def case_fade(a, data, seed):
     wav = audio(a, data, a.fade_snr, FADE, seed, 'fade')
     ok = True
@@ -238,7 +290,10 @@ def sweep_one(a, mode, snr, i):
     exact), the sent bytes (every verdict real) and the sent bytes with one bit flipped (its block NOT REAL)."""
     r = random.Random(f'reencode_window/sweep {mode} {snr} {i}')
     bits = block_bits(mode)
-    n = r.randrange(8, (3 if mode[-1] == 'S' else 2) * bits // 8 + 1)
+    if mode in ('150S', '300S') and i % 2:  # long enough that the block lines' whole-byte count can reach the EOM
+        n = r.randrange(900, 1401)
+    else:
+        n = r.randrange(8, (3 if mode[-1] == 'S' else 2) * bits // 8 + 1)
     data = (b'DE AAM402 sweep ' + r.randbytes(n))[:n]
     w = argparse.Namespace(**vars(a))
     w.work = os.path.join(a.work, f'sweep_{mode}_{snr:g}_{i}')
@@ -246,10 +301,11 @@ def sweep_one(a, mode, snr, i):
     wav = audio(w, data, snr, None, 100 + i, 'msg', mode=mode)
     res = dict(mode=mode, snr=snr, n=n, rx_false=0, rx_true_rej=0, rx_real_wrong=0, rx_ok=0, sent_false=0,
                sent_blocks=0, flip_rej=None, missing=[], eom=0)
-    out = run_check(w, wav)
-    msgs = list(rc.messages(out))
-    pls = [pl for _, pl in msgs]
+    sr, x = wavfile.read(wav)
+    msgs = list(rc.messages(rc.decode(a.rx, x.astype(float) / 32768.0, sr, 0.0, w.work)[0]))
+    pls = [pl for _, pl in msgs if pl]
     res['eom'] = sum(kv.get('eom') == '1' for kv, _ in msgs)
+    out = run_check(w, wav)
     v = verdicts(out)
     pl = pls[0] if pls else b''
     for b, verdict in v.items():
@@ -312,18 +368,20 @@ def main():
     ap.add_argument('--work', required=True)
     ap.add_argument('--fade-snr', type=float, default=10.0)
     ap.add_argument('--fade-seeds', default='4,6', help=f'noise seeds of the fade case, of {sorted(BAD)}')
-    ap.add_argument('--cases', default='counts,clean,short,fade',
-                    help='of counts,clean,short,fade,sweep (sweep is long and not in the default)')
+    ap.add_argument('--cases', default='counts,clean,short,tails,whole2400,fade',
+                    help='of counts,clean,short,tails,whole2400,fade,sweep (sweep is long and not in the default)')
     ap.add_argument('--sweep-snr', default='8,20')
     ap.add_argument('--sweep-n', type=int, default=4, help='messages per mode and SNR')
     ap.add_argument('--jobs', type=int, default=4)
+    ap.add_argument('--check', default=None, help='the reencode_check.py to run (default: the one beside this file)')
     a = ap.parse_args()
     os.makedirs(a.work, exist_ok=True)
     data = payload()
     ok = True
     for c in a.cases.split(','):
         ok &= {'counts': lambda: case_counts(), 'clean': lambda: case_clean(a, data),
-               'short': lambda: case_short(a), 'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')]),
+               'short': lambda: case_short(a), 'tails': lambda: case_tails(a), 'whole2400': lambda: case_whole2400(a),
+               'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')]),
                'sweep': lambda: case_sweep(a)}[c]()
     print('reencode_window: all cases pass' if ok else 'reencode_window: FAILED')
     return 0 if ok else 1
