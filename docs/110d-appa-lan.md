@@ -29,7 +29,7 @@ build/bin/m110_lan --mode 600S --tx-out tx_%d.wav --rx-in -      # receive audio
 
 | Option | Meaning |
 |---|---|
-| `--mode M` | Transmit waveform: 75S 75L 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S. The default is 600S. The receiver takes every one of these whatever `--mode` says (it reads the mode from the preamble). |
+| `--mode M` | Transmit waveform: 75S 75L 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S. The default is 600S. The receiver reads each burst's mode from its preamble whatever `--mode` says. The 75 bps finder, which reaches below 0 dB, runs only with `--mode 75S` or `75L` (see "The modem behind the interface"). |
 | `--tx-out FILE\|-` | Transmit audio. A file gets one WAV per transmission (`%d` in the name numbers them, and without it each transmission overwrites the last). `-` writes raw s16le 48 kHz mono to stdout. |
 | `--tx-format wav\|raw` | The default is `wav` for a file and `raw` for stdout. |
 | `--rx-in FILE\|-` | Receive audio: a 16-bit mono 48 kHz WAV, or raw s16le 48 kHz. `-` reads stdin. A regular file is read once a DTE is connected; a pipe or other stream is read from the start, and a burst that ends with no DTE is dropped. |
@@ -211,16 +211,20 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
     against the eight Walsh patterns, after the correlator's carrier-offset estimate is taken
     out, summed over up to three frames until one pattern leads the next by 2:1. The pair gives
     the mode (MIL-STD-188-110 Table XI). CARRIER DETECTED then goes up with that mode's rate and
-    blocking factor (A.5.1.2.6 step 2). A peak whose mode cannot be read is ignored, and so is
-    one that reads 75S or 75L: 75 bps has its own finder (below). The burst
+    blocking factor (A.5.1.2.6 step 2). A peak whose mode cannot be read is ignored. So is one
+    that reads 75S or 75L when the modem is configured for 75 bps, because the 75 bps finder
+    (below) takes those. The burst
     ends when the mean level over `--rx-gap` falls below its end level, at a later preamble, at
     `--rx-max`, or at the end of the input. The end level is the geometric mean of the burst's
     level over its first preamble frame and the quietest 0.1 s of the second before it, measured
     in the signal's band, and never above 1/30 of the burst's level.
-  - The scanner also finds **75 bps bursts** with the 75 bps acquisition (`m75::acquire`,
-    `src/m110a/m75_acq.h`, docs/m110a-75bps.md), which integrates the whole preamble (3 frames
-    for 75S, 24 for 75L) and so reaches far below the correlator above. It runs every 0.5 s over
-    the last 6 s of input, from the end of the last burst on. A preamble is taken when it is
+  - **With `--mode 75S` or `--mode 75L`**, the scanner also finds **75 bps bursts** with the
+    75 bps acquisition (`m75::acquire`, `src/m110a/m75_acq.h`, docs/m110a-75bps.md). It
+    integrates the whole preamble (3 frames for 75S, 24 for 75L), so it reaches far below the
+    correlator above. A sliding form of its coarse search (`m75::SlidingAcq`, same file) scores
+    every possible end of preamble once, as the audio arrives. Every 0.5 s, when that search
+    holds an end in the last 6 s of input (from the end of the last burst on) at 0.75 of the
+    threshold or more, `m75::acquire` runs on those 6 s. A preamble is taken when it is
     found (significance at least 9), its D1/D2 read 7,5 or 5,5 clearly (best code 1.1 times the
     next), its countdown is the one D1/D2 name (3 frames for 75S, 24 for 75L), and two runs
     0.5 s apart agree on where it ends. The countdown and agreement rules are there because a
@@ -228,6 +232,27 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
     (measured at -6 dB: 4 frames in, as a 3-frame countdown with z 23.7). CARRIER DETECTED goes
     up then, at 75 bps and blocking factor 45 or 360, so for 75 bps it follows the end of the
     preamble, as A.5.1.2.6 step 2 says ("fully detected a preamble").
+    The finder costs CPU all the time the receiver is idle, so under any other `--mode` it is
+    not built. A 75 bps preamble the correlator reads then starts a burst like any other mode
+    (found near 0 dB and above, ended by level, decoded AUTO), as before 75 bps transmit
+    existed. Measured (`appa_lan_75`): configured for 600S, a clean 75S burst is delivered
+    exact.
+
+    Idle receive CPU, 30 s of white noise in 300-3300 Hz fed in real time, process user plus
+    system time from `/proc` (one core = 100%; the host's load average was 18-27 throughout):
+
+    | Configured `--mode` | master (no 75 bps) | finder always on, `acquire` every 0.5 s | finder only for 75 bps, behind `SlidingAcq` (now) |
+    |---|---|---|---|
+    | 75S | refused | 36.2% | 7.2% |
+    | 75L | refused | 36.3% | 7.3% |
+    | 150S | 2.6% | 35.2% | 2.6% |
+    | 600S | 2.7% | 36.6% | 2.5% |
+    | 2400S | 2.6% | 34.2% | 2.6% |
+
+    `SlidingAcq` alone, on 120 s of noise, measured as a standalone loop: 6.5% of one core.
+    Its highest significance on that noise was 6.3, under the 6.75 that runs `m75::acquire`.
+    On a 75L preamble at -6 dB its significance matched `m75::acquire`'s on the same windows
+    to 0.1 (76.0 against 76.1).
     The burst is then followed set by set as the audio arrives, with the decoder's own matched
     filter and Walsh RAKE. Each interleaver block is decoded as it completes, and the burst
     ends at the EOM. Without an EOM it ends when no set has carried signal for one interleaver
@@ -254,7 +279,17 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   The decoder's own reach is lower (ModemRX to -8 dB AWGN for every seed tried,
   docs/m110a-75bps.md); this test does not sweep it.
 
-  RESULTS75
+  | Case | CARRIER DETECTED after the preamble's last sample | Burst end | Bytes |
+  |---|---|---|---|
+  | 75S clean | 1.09 s | EOM | 60 exact |
+  | 75S -6 dB, 2 noise seeds | 1.14 s, 1.09 s | EOM | 60 exact, both |
+  | 75L clean | 0.95 s | EOM | 60 exact |
+  | 75L -6 dB, 2 noise seeds | 0.99 s, 0.99 s | EOM | 60 exact, both |
+
+  The carrier time is two finder runs 0.5 s apart, plus the wait for the next 0.5 s mark.
+  The test allows 2.7 s. When `m75::acquire` ran on every 0.5 s step, the same cases measured
+  1.19 to 2.72 s, because the scanner fell behind real time. TCP packets: 75S 5, 6, 5, 6, 6,
+  5, 6, 6, 5, 6, 4 bytes; 75L 45, 15.
 
 - **Not done: data before the burst ends.** The decoder is the one-shot `decode()`. It returns
   bytes only once it has the whole burst, so the first data comes a decode time after the
