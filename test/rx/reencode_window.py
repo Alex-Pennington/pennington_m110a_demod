@@ -3,7 +3,8 @@ let wrong bytes pass, and the existing output lines keep their form.
 
   counts   window_check() on made-up per-frame counts: a faded block of right bytes is real; the
            same block with 7 far-off data symbols in its clean frames, as a wrong codeword leaves
-           them, is not; crashes that put probes and data far off alike leave it real.
+           them, is not; crashes that put probes and data far off alike leave it real. And
+           one_byte_power() on a 2400S block: verifiable at 20 dB, not at 8 dB.
   clean    ModemTX (300L, 400 bytes) in white noise at 10 dB -> reencode_check.py: every block
            "fit the signal", window check verdict real, and the tail (bytes 360-399, EOM,
            flush, padding) checked as block 3, real; with one byte of the tail wrong, block 3
@@ -22,10 +23,12 @@ let wrong bytes pass, and the existing output lines keep their form.
            block lines or in one 'tail check' line saying the block lines cover the data end, EOM
            and flush, never in silence.
   whole2400  2400S, 540 B (exactly 3 blocks; the tail block is EOM, flush and padding only) at 8, 14
-           and 20 dB: the sent bytes real in all 4 blocks; at 20 dB one wrong bit is NOT REAL.
+           and 20 dB: the sent bytes never NOT REAL in any of the 4 blocks (at 8 dB NOT VERIFIABLE, since
+           one wrong byte would not show there), real at 20 dB, where one wrong bit is NOT REAL.
   sweep    (not in the default; --cases sweep) random-length eom=1 messages in the ten probe modes at
-           each --sweep-snr: the receiver's bytes, the sent bytes and one flipped bit. Passes when no
-           exact block is NOT REAL and every block has a verdict; flipped bits are counted, not required.
+           each --sweep-snr: the receiver's bytes, the sent bytes and one flipped bit, counted as real /
+           NOT VERIFIABLE / NOT REAL. Passes when no exact block is NOT REAL, no wrong block is real,
+           and every block has a verdict.
   format   gale-rx's parse of the output (its BLOCK_RE and HEAD_RE) finds exactly one block line
            per block and the same numbers as the block lines, and no window line matches them.
 
