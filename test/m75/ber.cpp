@@ -27,6 +27,7 @@
 // Usage: m75_ber --mode 75S|75L [--rx-mode AUTO|75S|75L] [--bytes N] [--seeds A:B]
 //                [--snr DB] [--path DELAY_MS:GAIN_DB:DOPPLER_HZ ...] [--foff HZ]
 //                [--tone F:SIR ...] [--sweep SIR] [--fsk SIR] [--voice SIR] [--cochannel SIR]
+//                [--co-foff HZ] [--co-skip S]
 //                [--no-excise] [--tune FIELD=VALUE ...] [--save SEED:OUT.f32] [-v]
 
 #include "api/modem.h"
@@ -192,6 +193,7 @@ struct Opts {
     double foff = 0;
     std::vector<std::pair<double, double>> tones;
     double sweep_sir = NAN, fsk_sir = NAN, voice_sir = NAN, co_sir = NAN;
+    double co_foff = NAN, co_skip = NAN;  // pin the co-channel interferer's offset / entry (s)
     bool excise = true, verbose = false;
     long save_seed = -1;
     std::string save_path;
@@ -229,6 +231,8 @@ int main(int argc, char** argv) {
         else if (a == "--fsk") o.fsk_sir = atof(val().c_str());
         else if (a == "--voice") o.voice_sir = atof(val().c_str());
         else if (a == "--cochannel") o.co_sir = atof(val().c_str());
+        else if (a == "--co-foff") o.co_foff = atof(val().c_str());
+        else if (a == "--co-skip") o.co_skip = atof(val().c_str());
         else if (a == "--no-excise") o.excise = false;
         else if (a == "-v") o.verbose = true;
         else if (a == "--tune") {  // RxTuning field=value, for exploring the receiver's constants
@@ -301,11 +305,15 @@ int main(int argc, char** argv) {
             std::vector<uint8_t> d2;
             while (d2.size() < static_cast<size_t>(y.size() / FS * 10 + 200)) d2.push_back(static_cast<uint8_t>(ir.next() >> 56));
             const std::vector<double> s2 = transmit(d2, api::Mode::M75_LONG);
-            const size_t skip = static_cast<size_t>((4.8 + 5.0 * ir.uniform()) * FS);
+            const double u_skip = ir.uniform();
+            const size_t skip = static_cast<size_t>((std::isnan(o.co_skip) ? 4.8 + 5.0 * u_skip : o.co_skip) * FS);
             std::vector<double> part(s2.begin() + std::min(skip, s2.size()), s2.end());
             part.resize(y.size(), 0.0);
             appe::Config c2;
-            c2.foff_hz = 6.0 * ir.uniform() - 3.0;
+            const double u_foff = ir.uniform();
+            c2.foff_hz = std::isnan(o.co_foff) ? 6.0 * u_foff - 3.0 : o.co_foff;
+            if (o.verbose) fprintf(stderr, "co-channel: entered %.4f s after its preamble start, offset %+.2f Hz\n",
+                                   skip / double(FS), c2.foff_hz);
             appe::Stats st2;
             add_scaled(y, appe::apply(part, FS, c2, st2), ps, o.co_sir);
         }
