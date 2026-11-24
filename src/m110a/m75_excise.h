@@ -10,25 +10,29 @@
 // so an interferer that is strong in a few frequency bins can be cut out there at a small
 // cost to the wanted signal. Design:
 //
-//  - Short-time Fourier transform: Hann analysis window of about 40 ms (a power of two,
-//    2048 points at 48 kHz, 23 Hz bins), hop half a window, overlap-add synthesis without
+//  - Short-time Fourier transform: Hann analysis window of about 160 ms (a power of two,
+//    8192 points at 48 kHz, 5.9 Hz bins), hop half a window, overlap-add synthesis without
 //    a second window (a periodic Hann at 50% overlap sums to 1, so untouched frames come
-//    back as they went in).
+//    back as they went in). The length was chosen on test/m75/ber.cpp's interferers at
+//    +10 dB SNR (docs/m110a-75bps.md): 40 ms left a speech-like signal at -25 dB at BER
+//    about 1e-1, 80 and 320 ms about 2e-3, 160 ms none in 21600 bits; tones, the swept CW
+//    (150 Hz/s moves 24 Hz in a window) and the co-channel case were clean at every length.
 //  - Floor: per frame, the median bin power over carrier +/- 1000 Hz (the flat part of the
 //    RRC spectrum) pooled over the frames 8 either side, divided by ln 2 (the median of an
-//    exponential is ln 2 times its mean). Pooled over 0.4 s it follows fading and level
-//    changes but is not moved by interference in fewer than half the bins.
+//    exponential is ln 2 times its mean). Pooled over about 1.4 s it is not moved by
+//    interference in fewer than half the bins.
 //  - Detection: a frame is hit when any bin within carrier +/- 1650 Hz (the signal's band)
 //    holds more than `detect_db` (20 dB) over its floor. Noise and the 75 bps signal give
 //    exponential bin powers: exceeding 100 times the mean has probability e^-100, so a
 //    signal with no narrowband interference is never touched, and the receiver sees the
 //    input itself, sample for sample.
 //  - Weighting: in a hit frame and the frames either side, each in-band bin above `keep`
-//    (3) times the floor is scaled in amplitude by keep x floor / power. That is about the
+//    (1) times the floor is scaled in amplitude by keep x floor / power. That is about the
 //    weight a combiner gives a bin whose interference outweighs the signal (weight in
 //    proportion to S / (S + I) on amplitude): a tone 50 dB up is left at -50 dB, a bin a
-//    little over the floor loses little. Tones, sweeps and FSK are cut where they are;
-//    the harmonics of a voice are cut harmonic by harmonic.
+//    little over the floor loses little. Tones and sweeps are cut where they are; the
+//    harmonics of a voice are cut harmonic by harmonic. FSK's keying splatters across the
+//    band, which this cannot clear: cm_cancel below takes it.
 
 #ifndef M110A_M75_EXCISE_H
 #define M110A_M75_EXCISE_H
@@ -44,12 +48,19 @@ namespace m75 {
 
 struct ExciseTuning {
     double detect_db = 20.0;     // a frame is hit when a bin holds this much over the floor
-    double keep = 3.0;           // in hit frames, a bin of power p above keep x floor is scaled to (keep x floor)^2 / p
+    double keep = 1.0;           // in hit frames, a bin of power p above keep x floor is scaled to (keep x floor)^2 / p
     double band_hz = 1650.0;     // excision band: carrier +/- this
     double floor_band_hz = 1000.0;  // floor estimated over carrier +/- this
     int floor_frames = 8;        // floor pooled over this many frames either side
-    double window_s = 0.04;      // analysis window, rounded up to a power of two
+    double window_s = 0.16;      // analysis window, rounded up to a power of two
 };
+
+/// The excision constants ModemRX's 75 bps path uses. A test tool may change them; ModemRX
+/// itself never does.
+inline ExciseTuning& default_excise_tuning() {
+    static ExciseTuning t;
+    return t;
+}
 
 struct ExciseStats {
     long frames = 0, hit_frames = 0;
@@ -92,7 +103,7 @@ inline void fft_inplace(std::vector<std::complex<float>>& a, bool inverse) {
  * `out` untouched when nothing was found (the caller then uses rf as it is).
  */
 inline bool excise(const std::vector<float>& rf, float fs, float carrier, std::vector<float>& out,
-                   ExciseStats* stats = nullptr, const ExciseTuning& t = ExciseTuning()) {
+                   ExciseStats* stats = nullptr, const ExciseTuning& t = default_excise_tuning()) {
     size_t N = 1;
     while (N < static_cast<size_t>(t.window_s * fs)) N <<= 1;
     const size_t H = N / 2;
