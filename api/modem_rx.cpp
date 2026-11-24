@@ -1260,7 +1260,9 @@ private:
         
         size_t idx = 0;
         int frame = 0;
-        
+        // The first AHEAD data symbols go into the delay line before the first output.
+        for (size_t k = 0; k < AHEAD && k < symbols.size(); k++) dfe.push(symbols[k]);
+
         while (idx + pattern_len <= symbols.size()) {
             // Get current frame data and probes
             std::vector<complex_t> data_in = ahead(symbols, idx, unknown_len);
@@ -1294,6 +1296,8 @@ private:
                 dfe.equalize(data_in, output);
                 if (!block_boundary_probe(frame, block_frames_))
                     accumulate_probe_quality(dfe, probe_eq, probe_ref, idx + pattern_len);
+                else
+                    for (const auto& x : probe_eq) dfe.push(x);  // keep the input stream whole
             }
             
             // Pass through original probes
