@@ -16,8 +16,8 @@
 //    45th / 360th, scrambler 160 periodic, no probes. 75S and 75L, several lengths.
 // 4. Loopback, clean: AUTO reads D1/D2 7,5 / 5,5 and the bytes come back exact with the
 //    EOM; forced mode too; lengths around set, block and byte boundaries.
-// 5. Noise after a genuine 75 bps preamble: success=0. A 75L signal forced as 75S:
-//    success=0 (its preamble says 75L).
+// 5. Noise after a genuine 75 bps preamble: success=0. 30 s of noise forced as 75S and
+//    as 75L: success=0. A 75L signal forced as 75S: success=0.
 
 #include "api/modem.h"
 #include "m110a/brain_preamble.h"
@@ -253,6 +253,19 @@ static void noise_after_preamble(Mode m) {
     report(buf, !r.success && r.mode == m);
 }
 
+// test_signal_end's "30 s noise, every forced mode" leaves out 75S and 75L: here they are
+static void noise_forced(Mode m) {
+    std::mt19937 rng(3);
+    std::normal_distribution<float> n(0.0f, 0.2f);
+    Samples s(30 * 48000);
+    for (auto& v : s) v = n(rng);
+    const DecodeResult r = rx(s, m);
+    char buf[200];
+    snprintf(buf, sizeof buf, "30 s noise, forced %s: success=%d q=%.1f bytes %zu", mode_name(m).c_str(), r.success,
+             r.quality_db, r.data.size());
+    report(buf, !r.success);
+}
+
 static void forced_wrong() {
     const std::string text = "DE AAM402 FORCED";
     const DecodeResult r = rx(tx_audio(Mode::M75_LONG, text), Mode::M75_SHORT);
@@ -282,6 +295,8 @@ int main() {
     loopback(Mode::M75_LONG, Mode::AUTO, "D");
     noise_after_preamble(Mode::M75_SHORT);
     noise_after_preamble(Mode::M75_LONG);
+    noise_forced(Mode::M75_SHORT);
+    noise_forced(Mode::M75_LONG);
     forced_wrong();
     std::cout << "\n" << passed << "/" << (passed + failed) << " 75 bps cases passed" << std::endl;
     return failed ? 1 : 0;

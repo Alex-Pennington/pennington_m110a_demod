@@ -41,7 +41,8 @@ add_executable(hfchansim hfchansim/main.cpp)
 add_executable(m110a_rx m110a_rx/main.cpp)
 target_link_libraries(m110a_rx PRIVATE m110a_modem)
 
-# Harris-mode transmitter: payload bits -> WAV (600H, 1200H, 2400V; docs/harris-tx.md)
+# Transmitter for the Harris modes and 75 bps: payload bits -> WAV (600H, 1200H, 2400V,
+# docs/harris-tx.md; 75S, 75L, docs/m110a-75bps.md)
 add_executable(m110a_tx m110a_tx/main.cpp)
 target_link_libraries(m110a_tx PRIVATE m110a_modem)
 
@@ -151,6 +152,11 @@ add_executable(test_m75 test/test_m75.cpp)
 target_link_libraries(test_m75 PRIVATE m110a_modem)
 add_test(NAME test_m75 COMMAND test_m75)
 set_tests_properties(test_m75 PROPERTIES LABELS "rx;tx;m75" TIMEOUT 1800)
+# WAV -> ModemRX, printing m110a_rx's message lines: test/m75/m75_sweep.py --wav-rx measures
+# the modem without m110a_rx's I/Q front end and preamble scanner
+add_executable(m75_wav_rx test/m75/wav_rx.cpp)
+target_link_libraries(m75_wav_rx PRIVATE m110a_modem)
+set_target_properties(m75_wav_rx PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- I/Q receive path through m110a_rx ----
 # Synthetic RSP2 I/Q (test/rx/synth_iq.py: 2 MS/s cs16, dial at +100 kHz)

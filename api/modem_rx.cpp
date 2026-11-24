@@ -112,6 +112,15 @@ public:
             auto detect_result = detector.decode(samples);
             record_preamble(detect_result, result);
 
+            // A 75 bps preamble below this pass's reach, found by integrating whole frames
+            // (src/m110a/m75_acq.h): decode it as the mode its D1/D2 name
+            ModeId low_snr_mode;
+            if ((detect_result.mode_name == "UNKNOWN" || detect_result.correlation < 0.5f) &&
+                m75::find_low_snr(samples, config_, low_snr_mode)) {
+                detect_result.mode_name = ModeDatabase::get(low_snr_mode).name;
+                detect_result.correlation = 1.0f;
+            }
+
             // Check mode detection
             if (detect_result.mode_name == "UNKNOWN" || detect_result.correlation < 0.5f) {
                 result.success = false;

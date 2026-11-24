@@ -7,9 +7,9 @@
 // The waveform is MIL-STD-188-110D 5.3.2 at 75 bps (src/m110a/m75_codec.h). This file is
 // the demodulator; the standard leaves its design open. Design (docs/m110a-75bps.md):
 //
-//  - BrainDecoder finds the preamble, reads D1/D2 and the countdown, and measures the
-//    carrier offset and phase line, as for every other mode. The data starts after the
-//    last preamble frame.
+//  - m75::acquire (src/m110a/m75_acq.h) finds the end of the preamble, the carrier
+//    offset and D1/D2 by integrating whole preamble frames, well below the SNR where the
+//    shared BrainDecoder acquisition gives out. The data starts at the end of the preamble.
 //  - Each set of 32 symbols carries one of four orthogonal Walsh words, scrambled. The
 //    matched-filter output is descrambled and correlated with the four words at every
 //    tap of a delay window (a quarter symbol apart, +/-6 ms about the preamble timing);
@@ -31,8 +31,8 @@
 
 #include "api/modem_rx.h"
 #include "dsp/fir_filter.h"
-#include "m110a/brain_decoder.h"
 #include "m110a/brain_preamble.h"
+#include "m110a/m75_acq.h"
 #include "m110a/m75_codec.h"
 #include "m110a/mode_config.h"
 
@@ -51,18 +51,18 @@ namespace m75 {
 /// Receiver constants. Chosen and checked on the AWGN and Watterson sweeps of
 /// test/m75/m75_sweep.py (docs/m110a-75bps.md).
 struct RxTuning {
-    double window_ms = 6.0;       // delay window either side of the preamble timing
-    double profile_alpha = 0.25;  // per-set update of the tap energy profile
-    double noise_beta = 0.02;     // per-set update of the noise floor
-    double soft_scale = 16.0;     // soft bit = scale * (sqrt M0 - sqrt M1) / sqrt(noise)
-    double max_p = 0.20;          // success: largest channel-bit disagreement p
-    double signal_ratio = 2.0;    // a set carries signal when (Mwin - Mlose) / noise >= this
+    double window_ms = 6.0;         // delay window either side of the preamble timing
+    double profile_alpha = 0.03;    // per-set update of the tap energy profile (the mean
+                                    // power-delay profile weighs square-law combining)
+    double weight_floor = 2.0;      // tap weight = profile - weight_floor x noise floor, >= 0
+    double noise_beta = 0.02;       // per-set update of the noise floor
+    double soft_scale = 16.0;       // soft bit = scale * (sqrt M0 - sqrt M1) / sqrt(noise)
+    double min_quality_db = 11.25;  // success: quality_db = 10 log10((1 - p) / p) at least this
+    double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
 };
 
-/// Channel bit disagreement p for a quality_db: success needs quality_db at or above this
-inline float quality_threshold_db(const RxTuning& t) {
-    return static_cast<float>(10.0 * std::log10((1.0 - t.max_p) / t.max_p));
-}
+/// Success needs quality_db at or above this
+inline float quality_threshold_db(const RxTuning& t) { return static_cast<float>(t.min_quality_db); }
 
 /**
  * Per-set Walsh demodulator over matched-filter output y (complex baseband, one sample
@@ -127,6 +127,7 @@ public:
         double noise_m;   // noise expectation of a metric (noise floor x sum of weights)
         int win;
         double ratio;     // (M_win - mean M_lose) / noise_m
+        double excess;    // winner's tap energy over the losers' mean, summed over the window
     };
 
     /// Demodulate set k (the sets must come in order: the profile follows them)
@@ -134,7 +135,7 @@ public:
         const bool ex = exceptional_set(k, per_block_);
         std::vector<double> wgt(ntaps_);
         double wsum = 0.0;
-        for (int j = 0; j < ntaps_; j++) { wgt[j] = std::max(0.0, prof_[j] - noise_); wsum += wgt[j]; }
+        for (int j = 0; j < ntaps_; j++) { wgt[j] = std::max(0.0, prof_[j] - t_.weight_floor * noise_); wsum += wgt[j]; }
         if (wsum <= 0.0) {  // no profile above the floor: weigh every tap alike
             for (int j = 0; j < ntaps_; j++) wgt[j] = 1.0;
             wsum = ntaps_;
@@ -171,11 +172,13 @@ public:
         o.ratio = o.noise_m > 0.0 ? (o.m[o.win] - lose) / o.noise_m : 0.0;
 
         // follow the channel: winner's tap energies into the profile, losers' into the floor
-        double fl = 0.0;
+        double fl = 0.0, ew = 0.0;
         for (int j = 0; j < ntaps_; j++) {
             prof_[j] += t_.profile_alpha * (e[o.win * ntaps_ + j] - prof_[j]);
+            ew += e[o.win * ntaps_ + j];
             for (int v = 0; v < 4; v++) if (v != o.win) fl += e[v * ntaps_ + j];
         }
+        o.excess = ew - fl / 3.0;
         noise_ += t_.noise_beta * (fl / (3.0 * ntaps_) - noise_);
         for (int j = 0; j < ntaps_; j++) slow_[j] += 0.02 * (std::max(0.0, prof_[j] - noise_) - slow_[j]);
         recentre();
@@ -183,6 +186,9 @@ public:
     }
 
     double noise() const { return noise_; }
+    /// Sum over the window's taps of p(tap)^2, p the raised-cosine pulse at unit peak: a
+    /// symbol's energy as the taps see it, about (sps / step)(1 - alpha / 4)
+    double taps_per_symbol() const { return static_cast<double>(sps_) / step_ * (1.0 - 0.35 / 4.0); }
     long shift() const { return shift_; }
 
 private:
@@ -226,17 +232,16 @@ private:
     }
 };
 
-/// Matched-filter output of rf at carrier + foff, the same filter and alignment as
-/// BrainDecoder (RRC alpha 0.35, 6 symbols each side, centred), derotated by the
-/// preamble's phase line. Computed only where the data and the last preamble frame
-/// lie, from sample lo on.
-inline std::vector<std::complex<float>> matched_filter(const std::vector<float>& rf, float fs, float carrier,
-                                                       const BrainDecodeResult& pre, int sps, long lo) {
+/// Matched-filter output of rf at carrier `fc` (the offset found included), the same
+/// filter and alignment as BrainDecoder (RRC alpha 0.35, 6 symbols each side, centred).
+/// Computed only from sample lo on (the last preamble frame and the data).
+inline std::vector<std::complex<float>> matched_filter(const std::vector<float>& rf, float fs, double fc,
+                                                       int sps, long lo) {
     const auto taps = generate_srrc_taps(0.35f, 6, static_cast<float>(sps));
     const long half = static_cast<long>(taps.size() / 2);
     const long n = static_cast<long>(rf.size());
     std::vector<std::complex<float>> bb(rf.size());
-    const double w = 2.0 * M_PI * (carrier + pre.freq_offset_hz) / fs;
+    const double w = 2.0 * M_PI * fc / fs;
     for (long i = 0; i < n; i++) {
         const double ph = std::fmod(w * static_cast<double>(i), 2.0 * M_PI);
         bb[i] = std::complex<float>(static_cast<float>(rf[i] * std::cos(ph)), static_cast<float>(-rf[i] * std::sin(ph)));
@@ -246,8 +251,7 @@ inline std::vector<std::complex<float>> matched_filter(const std::vector<float>&
         std::complex<float> acc(0, 0);
         const long j0 = std::max(0L, half - i), j1 = std::min<long>(static_cast<long>(taps.size()), n - i + half);
         for (long j = j0; j < j1; j++) acc += bb[i - half + j] * taps[j];
-        const double a = pre.phase_offset - pre.phase_rate * static_cast<double>(i - pre.start_sample) / sps;
-        y[i] = acc * std::complex<float>(static_cast<float>(std::cos(a)), static_cast<float>(std::sin(a)));
+        y[i] = acc;
     }
     return y;
 }
@@ -255,7 +259,7 @@ inline std::vector<std::complex<float>> matched_filter(const std::vector<float>&
 /// Internal result of a 75 bps receive
 struct RxOut {
     bool preamble = false;
-    BrainDecodeResult pre;
+    Acquisition acq;
     std::vector<uint8_t> data;
     long eom_bit = -1;
     long sets = 0, signal_sets = 0, blocks = 0;
@@ -282,29 +286,48 @@ inline void soft_bits(const WalshRake::SetOut& o, double scale, soft_bit_t& firs
     last = clip(scale * (b0[1] - b1[1]) / den);
 }
 
+/// Acquisition of the last buffer acquire_cached() was asked about: ModemRX's AUTO pass
+/// asks whether a 75 bps preamble is there (find_low_snr) and then decodes the same buffer.
+inline Acquisition acquire_cached(const std::vector<float>& rf, float fs, float carrier, float frange) {
+    struct Key { const float* p = nullptr; size_t n = 0; float fs = 0, fc = 0, fr = 0, a = 0, b = 0; };
+    thread_local Key key;
+    thread_local Acquisition last;
+    Key k;
+    k.p = rf.data(); k.n = rf.size(); k.fs = fs; k.fc = carrier; k.fr = frange;
+    k.a = rf.empty() ? 0.0f : rf[rf.size() / 3];
+    k.b = rf.empty() ? 0.0f : rf[rf.size() - 1];
+    if (k.p == key.p && k.n == key.n && k.fs == key.fs && k.fc == key.fc && k.fr == key.fr && k.a == key.a &&
+        k.b == key.b)
+        return last;
+    last = acquire(rf, fs, carrier, frange);
+    key = k;
+    return last;
+}
+
+/// D1/D2 read clearly: the best defined code's energy at least `ratio` times the
+/// runner-up's. 1.25 for refusing a forced mode; 1.1 for taking the mode in AUTO, where a
+/// wrong reading cannot pass the decode gate (a 150S read as 75S decodes to garbage).
+inline bool clear_d(const Acquisition& a, double ratio = 1.25) { return a.pair_ratio >= ratio; }
+
 /**
- * Receive one 75 bps message from rf (a real passband buffer starting near the preamble).
+ * Receive one 75 bps message from rf (a real passband buffer holding its preamble within
+ * its first 15 s). mode: the mode to decode as.
  */
-inline RxOut receive(const std::vector<float>& rf, ModeId mode, const BrainDecoderConfig& base_cfg,
+inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
                      const RxTuning& t = RxTuning()) {
     RxOut r;
-    const auto& mc = ModeDatabase::get(mode);
-    BrainDecoderConfig dc = base_cfg;
-    dc.baud_rate = 2400.0f;
-    dc.unknown_data_len = SET_SYMBOLS;
-    dc.known_data_len = 0;
-    dc.preamble_symbols = mc.preamble_symbols();
-    BrainDecoder dec(dc);
-    r.pre = dec.decode(rf);
-    if (!r.pre.preamble_found) { r.error = "75 bps: no preamble found"; return r; }
+    r.acq = acquire_cached(rf, fs, carrier, frange);
+    if (!r.acq.found) {
+        char buf[120];
+        snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
+        r.error = buf;
+        return r;
+    }
     r.preamble = true;
-
-    const int sps = static_cast<int>(dc.sample_rate / 2400.0f);
-    int frames_after = dc.preamble_symbols / brain::P_FRAME_LENGTH;
-    if (r.pre.countdown >= 0) frames_after = r.pre.countdown + 1;
-    const long data_start = r.pre.start_sample + static_cast<long>(frames_after) * brain::P_FRAME_LENGTH * sps;
+    const int sps = static_cast<int>(std::lround(fs / 2400.0f));
+    const long data_start = r.acq.data_start;
     const long lo = data_start - static_cast<long>(brain::P_FRAME_LENGTH + 64) * sps;
-    const auto y = matched_filter(rf, dc.sample_rate, dc.carrier_freq, r.pre, sps, lo);
+    const auto y = matched_filter(rf, fs, carrier + r.acq.freq_offset_hz, sps, lo);
 
     // the last preamble frame as sent (countdown 0)
     auto pre_syms = BrainPreambleEncoder().encode(mode == ModeId::M75NS ? 0 : 1, mode == ModeId::M75NL);
@@ -314,7 +337,7 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, const BrainDecod
     rake.init_from_preamble(last);
 
     std::vector<soft_bit_t> soft;
-    std::vector<double> ratio;
+    std::vector<double> ratio, excess;
     for (long k = 0; rake.available(k); k++) {
         const auto o = rake.demod(k);
         soft_bit_t a, b;
@@ -322,6 +345,7 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, const BrainDecod
         soft.push_back(a);
         soft.push_back(b);
         ratio.push_back(o.ratio);
+        excess.push_back(o.excess);
     }
     r.sets = static_cast<long>(ratio.size());
 
@@ -368,36 +392,50 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, const BrainDecod
     }
     r.p = n ? dis / n : 0.5;
 
-    // SNR: signal power from the matched-filter output over the signal sets, noise from
-    // the floor (noise-only energy of a 32-symbol correlation is 32 sigma^2)
-    if (r.signal_sets > 0) {
-        double pw = 0.0;
-        long m = 0;
-        for (long i = data_start; i < data_start + r.signal_sets * SET_SYMBOLS * sps &&
-                                  i < static_cast<long>(y.size()); i += sps, m++)
-            pw += std::norm(y[i]);
-        const double s2 = rake.noise() / SET_SYMBOLS;
-        const double s = m && s2 > 0 ? pw / m / s2 - 1.0 : 0.0;
-        // matched-filter noise bandwidth 2400 Hz; the standard counts noise in 3 kHz
-        r.snr_db = s > 0 ? 10.0 * std::log10(s * 2400.0 / 3000.0) : -99.0;
+    // SNR: a set's winning word exceeds the losers' mean by 32^2 S sum_j p(tap_j)^2 over the
+    // window, S the symbol energy at the matched filter's peak; the noise floor per tap is
+    // 32 sigma^2. S / sigma^2 is Es/N0 (matched filter); the standard counts noise in 3 kHz.
+    if (r.signal_sets > 0 && rake.noise() > 0.0) {
+        double ex = 0.0;
+        for (long k = 0; k < r.signal_sets; k++) ex += excess[k];
+        ex /= r.signal_sets;
+        const double es_n0 = ex / (static_cast<double>(SET_SYMBOLS) * rake.taps_per_symbol() * rake.noise());
+        r.snr_db = es_n0 > 0 ? 10.0 * std::log10(es_n0 * 2400.0 / 3000.0) : -99.0;
     }
-    char buf[256];
+    char buf[320];
     snprintf(buf, sizeof buf,
-             "[RX M75] data_start=%ld sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f snr=%.1f dB shift=%ld",
-             data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.snr_db, rake.shift());
+             "[RX M75] acq z=%.1f frames=%d foff=%+.1f Hz D1,D2=%d,%d (pair ratio %.2f) data_start=%ld "
+             "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f snr=%.1f dB shift=%ld",
+             r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.snr_db,
+             rake.shift());
     std::cout << buf << std::endl;
     return r;
 }
 
-/// The standard 110A mode a clearly read D1/D2 names when it is not `forced`, or ""
+/// In a forced mode, the Table XI data mode a clearly read D1/D2 names instead, or ""
 /// (as ModemRXImpl::preamble_contradicts does for the other modes)
-inline std::string preamble_contradicts(const BrainDecodeResult& b, ModeId forced) {
-    static const char* const KNOWN[] = {"M75NS", "M75NL", "M150S", "M150L", "M300S", "M300L", "M600S",
-                                        "M600L", "M1200S", "M1200L", "M2400S", "M2400L", "M4800S"};
-    if (std::find(std::begin(KNOWN), std::end(KNOWN), b.mode_name) == std::end(KNOWN)) return "";
-    if (b.d1_corr < 1.5f * b.d1_corr2 || b.d2_corr < 1.5f * b.d2_corr2) return "";
-    const std::string want = forced == ModeId::M75NS ? "M75NS" : "M75NL";
-    return b.mode_name == want ? "" : b.mode_name.substr(1);
+inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
+    static const struct { int d1, d2; const char* name; } KNOWN[] = {
+        {7, 5, "75S"}, {5, 5, "75L"}, {7, 4, "150S"}, {5, 4, "150L"}, {6, 7, "300S"}, {4, 7, "300L"},
+        {6, 6, "600S"}, {4, 6, "600L"}, {6, 5, "1200S"}, {4, 5, "1200L"}, {6, 4, "2400S"}, {4, 4, "2400L"},
+        {7, 6, "4800S"}};
+    if (!clear_d(a)) return "";
+    for (const auto& k : KNOWN)
+        if (k.d1 == a.d1 && k.d2 == a.d2) {
+            const bool same = (forced == ModeId::M75NS && k.d1 == 7 && k.d2 == 5) ||
+                              (forced == ModeId::M75NL && k.d1 == 5 && k.d2 == 5);
+            return same ? "" : k.name;
+        }
+    return "";
+}
+
+/// ModemRX's AUTO pass, when the shared acquisition found no preamble: is there a 75 bps
+/// one, found and with D1/D2 read clearly as 7,5 or 5,5? Its mode in `mode`.
+inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
+    const Acquisition a = acquire_cached(rf, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
+    if (!a.found || !a.is_75 || !clear_d(a, 1.1)) return false;
+    mode = a.mode;
+    return true;
 }
 
 /**
@@ -406,20 +444,17 @@ inline std::string preamble_contradicts(const BrainDecodeResult& b, ModeId force
  */
 inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId mode,
                                 api::DecodeResult res, bool forced, const RxTuning& t = RxTuning()) {
-    BrainDecoderConfig dc;
-    dc.sample_rate = cfg.sample_rate;
-    dc.carrier_freq = cfg.carrier_freq;
-    dc.freq_search_range = cfg.freq_search_range;
-    dc.freq_search_step = 0.5f;
-    dc.use_fft_coarse_afc = cfg.use_fft_coarse_afc;
-    dc.coarse_search_range = cfg.coarse_search_range;
-    dc.fine_search_range = cfg.fine_search_range;
-    const RxOut r = receive(rf, mode, dc, t);
+    // AUTO: the mode D1/D2 name, read over the whole preamble, when they name a 75 bps one
+    if (!forced) {
+        const Acquisition a = acquire_cached(rf, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
+        if (a.found && a.is_75 && clear_d(a, 1.1)) mode = a.mode;
+    }
+    const RxOut r = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);
     res.mode = mode == ModeId::M75NS ? api::Mode::M75_SHORT : api::Mode::M75_LONG;
-    if (res.d1 < 0 && r.preamble) {
-        res.d1 = r.pre.d1;
-        res.d2 = r.pre.d2;
-        res.countdown = r.pre.countdown;
+    if (r.preamble) {  // as the 75 bps acquisition read them: the frame locked onto is the last
+        res.d1 = r.acq.d1;
+        res.d2 = r.acq.d2;
+        res.countdown = 0;
     }
     if (!r.preamble) {
         res.success = false;
@@ -429,12 +464,12 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     res.data = r.data;
     res.eom_sequence = r.eom_bit >= 0;
     res.eom_detected = res.eom_sequence;
-    res.freq_offset_hz = r.pre.freq_offset_hz;
+    res.freq_offset_hz = r.acq.freq_offset_hz;
     res.snr_db = static_cast<float>(r.snr_db);
     res.ber_estimate = static_cast<float>(r.p);
     res.quality_db = static_cast<float>(10.0 * std::log10((1.0 - r.p) / std::max(r.p, 1e-4)));
     res.quality_threshold_db = quality_threshold_db(t);
-    res.success = r.p <= t.max_p && (r.eom_bit >= 0 || r.blocks > 0);
+    res.success = res.quality_db >= res.quality_threshold_db && (r.eom_bit >= 0 || r.blocks > 0);
     if (!res.success) {
         char buf[200];
         if (r.eom_bit < 0 && r.blocks == 0)
@@ -445,7 +480,7 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
                      res.quality_db, res.quality_threshold_db, 100.0 * r.p);
         res.error = api::Error(api::ErrorCode::RX_DECODE_FAILED, buf);
     }
-    const std::string other = forced ? preamble_contradicts(r.pre, mode) : "";
+    const std::string other = forced ? preamble_contradicts(r.acq, mode) : "";
     if (res.success && !other.empty()) {
         res.success = false;
         res.error = api::Error(api::ErrorCode::RX_DECODE_FAILED,
