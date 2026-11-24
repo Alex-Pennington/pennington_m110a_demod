@@ -323,7 +323,7 @@ private:
         return -1;
     }
 
-    // next: the message after m, when its preamble is already known, else nullptr.
+    // next: the next message whose preamble is already known, else nullptr.
     bool decide_end(Message& m, const Message* next, bool eof) {
         const long a_first = m.first_frame * DECIM;
         long limit = a_first + static_cast<long>(opt_.max_secs * FS);
@@ -347,7 +347,13 @@ private:
     void process_messages(bool eof) {
         while (!pending_.empty()) {
             Message& m = pending_.front();
-            if (!decide_end(m, pending_.size() > 1 ? &pending_[1] : nullptr, eof)) break;
+            // A preamble that starts within 24 frames (the longest preamble) of m's first
+            // frame may be m's own: a fast fade splits a long preamble into several
+            // chains. Only a later one is a different message, and bounds m.
+            const Message* next = nullptr;
+            for (size_t i = 1; i < pending_.size() && !next; i++)
+                if (pending_[i].first_frame >= m.first_frame + 24 * FRAME_SCAN) next = &pending_[i];
+            if (!decide_end(m, next, eof)) break;
             m.end_audio = std::min(m.end_audio, audio_end_);
             decode(m);
             pending_.pop_front();

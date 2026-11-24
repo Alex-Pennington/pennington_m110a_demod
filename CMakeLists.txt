@@ -218,7 +218,8 @@ if(M110A_HAVE_SCIPY)
 
   # message end: a fade or dropout inside the message does not end it, the end does not
   # move with the lead-in, a real end ends it within 1 s, a cut message gives a whole-block
-  # prefix and nothing after it, and two messages 1 s apart both decode (test/rx/end_fade.py)
+  # prefix and nothing after it, two messages 1 s apart both decode, and a preamble split by
+  # dropouts still decodes (test/rx/end_fade.py)
   add_test(NAME rx_end_fade
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/rx/end_fade.py
                    --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>

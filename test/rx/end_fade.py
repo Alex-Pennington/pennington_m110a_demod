@@ -12,9 +12,12 @@ SNR of the unfaded signal -> I/Q (test/harris/modem.py) -> m110a_rx (AUTO).
   cut      the message stopped halfway through its third interleaver block (no EOM), then
            noise: success, a whole-block prefix of the payload, nothing after it.
   two      two messages 1 s apart: both exact with EOM.
+  split    two 0.5 s dropouts inside the 24-frame preamble, which split it into three
+           preamble chains: the first message is exact with EOM, and no message
+           reports success with other bytes.
 
 Usage: python3 -I -B test/rx/end_fade.py --tool MODEM_TX_WAV --rx M110A_RX --work DIR
-           [--snr 18] [--seed 1] [--cases fade,leadin,end,cut,two]
+           [--snr 18] [--seed 1] [--cases fade,leadin,end,cut,two,split]
 The payload text starts "DE AAM402".
 """
 import argparse
@@ -175,7 +178,21 @@ def case_two(a):
     return show("two", msgs, ok)
 
 
-CASES = {"fade": case_fade, "leadin": case_leadin, "end": case_end, "cut": case_cut, "two": case_two}
+def case_split(a):
+    data = payload(300, a.seed)
+    sr, s = tx(a, data, "split")
+    sigma = sigma_for(s, sr, a.snr)
+    t = np.arange(len(s)) / sr
+    g = np.where(((t >= 1.0) & (t < 1.5)) | ((t >= 2.6) & (t < 3.1)), 10 ** (-30 / 20), 1.0)
+    x = np.concatenate([np.zeros(int(1.0 * sr)), s * g, np.zeros(int(6 * sr))])
+    x = x + noise(sr, len(x) / sr, sigma, a.seed + 600)
+    msgs = rx(a, x, sr, "split")
+    false_ok = [m for m in msgs if m.get("success") == "1" and m["data"] != data]
+    ok = len(msgs) >= 1 and exact(msgs[0], data) and not false_ok
+    return show("split", msgs, ok, f"preamble chains {len(msgs)}, success with other bytes {len(false_ok)}")
+
+
+CASES = {"fade": case_fade, "leadin": case_leadin, "end": case_end, "cut": case_cut, "two": case_two, "split": case_split}
 
 
 def main():
