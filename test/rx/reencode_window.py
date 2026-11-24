@@ -6,11 +6,12 @@ let wrong bytes pass, and the existing output lines keep their form.
            them, is not; crashes that put probes and data far off alike leave it real.
   clean    ModemTX (300L, 400 bytes) in white noise at 10 dB -> reencode_check.py: every block
            "fit the signal" and window check verdict real.
-  fade     the same message with a 3 s -15 dB fade inside block 1. The receiver's bytes are
-           checked, and then two claimed payloads with --bytes: the sent bytes (verdict real),
-           and the sent bytes with BAD_RUN, bytes the receiver once gave for this audio, in place
-           (verdict NOT REAL in block 1, though the old per-block comparison says it fits).
-           Whatever the receiver decodes, its verdict must be real only when its block is exact.
+  fade     the same message with a 3 s -12 dB fade inside block 1 (noise seeds 4 and 6). The receiver's
+           bytes are checked, and then two claimed payloads with --bytes: the sent bytes (verdict
+           real), and the sent bytes with the run m110a_rx gave for this audio when this test was
+           written, one or two wrong bytes (verdict NOT REAL in block 1, though the old per-block
+           comparison says it fits). Whatever the receiver decodes now, its verdict must be real
+           exactly when its block is exact.
   format   gale-rx's parse of the output (its BLOCK_RE and HEAD_RE) finds exactly one block line
            per block and the same numbers as the block lines, and no window line matches them.
 
@@ -33,13 +34,14 @@ sys.path.insert(0, HERE)
 import reencode_check as rc  # noqa: E402
 
 MODE, NBYTES, BLOCK_BYTES, SR = '300L', 400, 180, 48000
-FADE = (4.8 + 2.0, 3.0, -15.0)  # start (s from the message start), length (s), depth (dB)
+FADE = (6.8, 3.0, -12.0)  # start (s from the message start, 2.0 s into the data), length (s), depth (dB)
 # gale-rx (greybeard-ale tools/gale_rx.py) reads the block lines with these
 BLOCK_RE = re.compile(r"block \d+: probe agreement ([0-9.]+), data agreement ([0-9.]+)")
 HEAD_RE = re.compile(r": (\S+) start \S+ s success=(\d) bytes=(\d+)(?: sha256 ([0-9a-f]+))?")
 WCHECK_RE = re.compile(r"^  block (\d+) window check: .*; verdict (real|NOT REAL)", re.M)
-BAD_AT = 122     # BAD_RUN replaces the payload's bytes from here
-BAD_RUN = bytes.fromhex('00')  # set below from the calibration decode; see CALIBRATED
+# Bytes m110a_rx gave for the fade audio at 10 dB, per noise seed: (first wrong byte, the run).
+# One or two wrong bytes in block 1, and the old per-block comparison calls each block fit.
+BAD = {4: (62, 'ac'), 5: (112, '04'), 6: (120, '2cbd')}
 
 
 def payload():
@@ -147,13 +149,13 @@ def case_clean(a, data):
     return ok
 
 
-def case_fade(a, data):
-    wav = audio(a, data, a.fade_snr, FADE, a.fade_seed, 'fade')
+def case_fade(a, data, seed):
+    wav = audio(a, data, a.fade_snr, FADE, seed, 'fade')
     ok = True
     # the receiver's own bytes: real only where the block is exact
     pls = decoded(a, wav)
     out = run_check(a, wav)
-    ok &= form_ok(out, 'fade')
+    ok &= form_ok(out, f'fade seed {seed}')
     v = verdicts(out)
     if pls:
         pl = pls[0]
@@ -161,22 +163,24 @@ def case_fade(a, data):
             exact = pl[(b - 1) * BLOCK_BYTES:b * BLOCK_BYTES] == data[(b - 1) * BLOCK_BYTES:b * BLOCK_BYTES]
             good = (verdict == 'real') == exact
             ok &= good
-            print(f'fade receiver block {b}: bytes {"exact" if exact else "wrong"}, verdict {verdict} '
+            print(f'fade seed {seed} receiver block {b}: bytes {"exact" if exact else "wrong"}, verdict {verdict} '
                   f'-> {"PASS" if good else "FAIL"}', flush=True)
     # the sent bytes: real
     v = verdicts(run_check(a, wav, data))
     good = bool(v) and all(x == 'real' for x in v.values())
     ok &= good
-    print(f'fade sent bytes: verdicts {v} -> {"PASS" if good else "FAIL"}', flush=True)
+    print(f'fade seed {seed} sent bytes: verdicts {v} -> {"PASS" if good else "FAIL"}', flush=True)
     # bytes a receiver gave for this audio: wrong in block 1, which the old comparison passes
-    bad = data[:BAD_AT] + BAD_RUN + data[BAD_AT + len(BAD_RUN):]
+    at, run = BAD[seed]
+    run = bytes.fromhex(run)
+    bad = data[:at] + run + data[at + len(run):]
     out = run_check(a, wav, bad)
     v = verdicts(out)
     bl = BLOCK_RE.findall(out)
     old_fit = bool(bl) and float(bl[0][1]) >= float(bl[0][0]) - rc.FIT
     good = v.get(1) == 'NOT REAL'
     ok &= good
-    print(f'fade wrong bytes ({sum(x != y for x, y in zip(bad, data))} in block 1): old comparison '
+    print(f'fade seed {seed} wrong bytes ({sum(x != y for x, y in zip(bad, data))} in block 1): old comparison '
           f'{"fits" if old_fit else "does not fit"}, window check {v.get(1)} -> {"PASS" if good else "FAIL"}',
           flush=True)
     os.remove(wav)
@@ -189,7 +193,7 @@ def main():
     ap.add_argument('--rx', required=True)
     ap.add_argument('--work', required=True)
     ap.add_argument('--fade-snr', type=float, default=10.0)
-    ap.add_argument('--fade-seed', type=int, default=1)
+    ap.add_argument('--fade-seeds', default='4,6', help=f'noise seeds of the fade case, of {sorted(BAD)}')
     ap.add_argument('--cases', default='counts,clean,fade')
     a = ap.parse_args()
     os.makedirs(a.work, exist_ok=True)
@@ -197,7 +201,7 @@ def main():
     ok = True
     for c in a.cases.split(','):
         ok &= {'counts': lambda: case_counts(), 'clean': lambda: case_clean(a, data),
-               'fade': lambda: case_fade(a, data)}[c]()
+               'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')])}[c]()
     print('reencode_window: all cases pass' if ok else 'reencode_window: FAILED')
     return 0 if ok else 1
 

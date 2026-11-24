@@ -149,6 +149,58 @@ repairs a step gives the same bytes at nearby positions.
 
 The payload is never printed, only its length and a sha256 prefix.
 
+### Fades inside a block: the window check
+
+The per-block comparison assumes the channel is even over the block. A fade inside a block
+lowers probe and data agreement together. Inside the fade, the wrong codeword the Viterbi
+decoder chose agrees with the received symbols as well as the right one would, so averaged
+over 4.8 s a few wrong bytes move data agreement by 0.001 to 0.01. An independent review found
+300L at 10 dB with a −15 dB, 3 s fade: 12 wrong bytes in block 1, probe 0.911 and data 0.898,
+"fit". 1200L with a −15 dB, 1 s fade gave 1 to 9 wrong bytes in a fitting block, on m110a_rx
+from 1af44e2 and from this branch's base alike.
+
+Counting hard disagreements per window does not close it. The interleaver spreads a wrong
+codeword's symbols over the block, so some of them land where the signal is clean, but one
+wrong byte leaves about 7 of them in 5760 data symbols. Hard counts cannot tell 7 from noise.
+A floor on window error share fails as well: real 300L blocks reach 0.36 in one window and
+decode exact.
+
+What separates them is the distance. Where the signal is clean, a wrong symbol is no near
+miss. The received symbol sits on the point that was sent, a whole constellation step from
+the re-encoded one, and that is tens of noise powers. So the check measures each symbol's
+distance from where the sent symbol should land, in units of the noise. The channel's gain
+and phase come from the 2 × k probes around the symbol: a frame's data lies between the
+previous frame's probes and its own. The noise power is the median of those probes'
+residuals divided by ln 2, so one crash does not move it. A symbol is **far off** when it is
+decided as another point than the one sent and lies more than `TAU` = 15 noise powers out.
+Right bytes put data symbols far off only as noise or a crash puts probes there. The expected
+count is `RHO` = 2 times the probes' rate in the block, plus the Gaussian tail e^−15 per
+symbol. The block is NOT REAL when its far-off data symbols are less likely than `ALPHA` = 1e−6
+under that (Poisson). The block's last 2 frames are left out, because their probes differ
+from the scrambler's: ModemTX gives 8 to 16 probe errors there on a clean signal.
+
+The new lines come after each block line. The block line itself is unchanged, and gale-rx
+parses it:
+
+```
+  block 1: probe agreement 0.911, data agreement 0.898, random-bytes control 0.498 (chance 0.500): the bytes fit the signal
+    block 1 window 1 frames 1-8: probes 1.000 (160/160 right), data 0.994 (159/160 agree), far off 0 probes, 1 data
+    ...
+  block 1 window check: far off (over 15 noise powers) 0/5720 probes, 34/5720 data, expected for right bytes 0.00, p 1e-85 (not real under 1e-06); verdict NOT REAL: data symbols far off where the probes are not (bit errors)
+```
+
+The verdict is `real`, `NOT REAL: data below the probes over the block (bit errors)` (the old
+comparison) or `NOT REAL: data symbols far off where the probes are not (bit errors)`.
+gale-rx works out its own "content ok" from the block line's two numbers, so it does not see
+this verdict until it reads the `window check` line.
+
+`--bytes FILE` checks the given bytes in place of the receiver's. `--frames-json FILE` writes
+the per-frame counts used for calibration. `ctest rx_reencode_window` covers the window check.
+
+Calibration, block by block, old verdict against new, with the truth:
+
+CALIBRATION_TABLE
+
 ## Left open
 
 - **`signal_frames` on the hand-cut slice:** the base receiver reports 1 block (180 B).

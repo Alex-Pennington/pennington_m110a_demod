@@ -32,6 +32,23 @@ modem's own 300L TX:
     errors, 0.048 at 1 %, 0.120 at 3 %, 0.301 at 10 %.
 So "fit" means under about 0.5 % bit errors, and the gap says roughly how many there are.
 
+That holds where the channel is even over the block. A fade inside a block lowers probe and
+data agreement together, and there the wrong codeword the Viterbi decoder chose agrees with
+the received symbols as well as the right one would, so a block can "fit" with wrong bytes
+(300L at 10 dB with a -15 dB/3 s fade: 12 wrong bytes, data 0.013 below probes; 1200L with a
+-15 dB/1 s fade: 1 to 9 wrong bytes, within 0.01). So after each block line come new lines
+(the block line is unchanged; gale-rx parses it):
+  - a row per 8-frame window: probes right, data agreeing, and far-off probes and data;
+  - "block N window check: ...; verdict real" or "verdict NOT REAL: ...".
+A symbol is far off when it is decided as another point than the one sent (for data, the
+re-encoded one) and lies more than TAU noise powers from where that one should land, the noise
+and the channel's gain measured on the 2 x k probes around it. The interleaver spreads a wrong
+codeword's symbols over the block, so some land where the signal is clean, and there a wrong
+symbol sits on the point that was sent, a whole constellation step (tens of noise powers) from
+the re-encoded one. Right bytes put data symbols far off only as noise or a crash puts probes
+there. The verdict is NOT REAL when the block does not fit, or when its far-off data symbols
+are less likely than ALPHA for right bytes (window_check), and real otherwise.
+
 Sweep (--sweep T0 T1 STEP MS): delete MS ms of audio at each position from T0 to T1 s,
 STEP s apart, decode each and count the different payloads. A cut that repairs a timing
 step gives the same bytes at every position near the step. Different bytes at each
@@ -262,7 +279,7 @@ def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
 
 WIN = 8       # frames per window in the printed rows, as track() follows the grid
 TAIL = 2      # a block's last frames, whose probes differ from the scrambler's (left out)
-TAU = 12      # a symbol is far off when it lies more than TAU noise powers from where it should
+TAU = 15      # a symbol is far off when it lies more than TAU noise powers from where it should
 RHO = 2.0     # right bytes: data symbols far off at most RHO times as often as probes
 ALPHA = 1e-6  # a block is not real when its far-off data symbols are this unlikely for right bytes
 
@@ -316,6 +333,92 @@ def window_check(pok, dok, deep_p, deep_d, u, k):
                       verdict='not real' if p < ALPHA else 'real')
 
 
+EOM_BITS = 32 + 144  # EOM 4B65A5B2 and the coder flush, after the data (M110ACodec)
+
+
+def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps):
+    """With eom=1, the blocks the per-block check leaves out: the data's last, partial block, the
+    EOM and flush, and zero padding to the end of the interleaver block, all of which the
+    re-encoded reference carries (ModemTX, include_eom). Printed as 'tail block N' lines with
+    their window rows and window checks. d: the data start the whole blocks chose, or None."""
+    if kv.get('eom') != '1':
+        return
+    u, k = FRAME[rate]
+    p = u + k
+    pre_s = 4.8 if mode[-1] == 'L' else 0.6
+    bits = int(round(BPS[rate] * pre_s))            # data bits per interleaver block
+    first = len(payload) // int(BPS[rate] * pre_s / 8)  # whole blocks the block lines cover
+    total = -(-(8 * len(payload) + EOM_BITS) // bits)
+    if total <= first:
+        return
+    fpb = int(round(pre_s * 2400 / p))
+    nframes = total * fpb
+    tb, t0 = tbs['decoded']
+    period = int(np.lcm(160, p)) * SPS
+    room = lambda dd: min((len(bb) - dd) // (p * SPS) - 1, (len(tb) - t0) // (p * SPS) - 1)
+    if d is None:  # no whole block chose the start: choose it over all the blocks, as check() does
+        best = None
+        for m in range(-((d0 - start) // period), 2):
+            dd = d0 + m * period
+            if room(dd) < nframes:
+                continue
+            off = track(bb, dd, u, k, nframes)
+            score = np.mean([r[1] for r in agreement(bb, dd, tb, t0, rate, nframes, total, off)])
+            if best is None or score > best[0]:
+                best = (score, dd)
+        if best is None:
+            print(f'{label}: tail not checked (the signal ends before the last block does)')
+            return
+        d = best[1]
+        steps = np.flatnonzero(np.abs(np.diff(track(bb, d, u, k, nframes))) >= 8 * SPS)
+    if room(d) < nframes:
+        print(f'{label}: tail not checked (the signal ends before the last block does)')
+        return
+    off = track(bb, d, u, k, nframes)
+    rows = agreement(bb, d, tb, t0, rate, nframes, total, off)
+    ctb, ct0 = tbs['control']
+    ctl = agreement(bb, d, ctb, ct0, rate, min(nframes, (len(ctb) - ct0) // (p * SPS) - 1), total, off)
+    pok, dok, deep_p, deep_d, sep = frame_agreement(bb, d, tb, t0, rate, nframes, off, soft=True)
+    if first == 0:
+        steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
+        print(f'{label}: tail check (eom=1, {total} block{"s" if total > 1 else ""}): data start {d / FS:.4f} s '
+              f'(probe coherence {coh:.2f}), grid steps '
+              + (', '.join(f'frame {s + 1} {(off[s + 1] - off[s]) / SPS:+.1f} sym' for s in steps) or 'none'))
+    if a.frames_json:
+        dumps.append({'mode': mode, 'start_s': kv.get('start_s'), 'bytes': len(payload),
+                      'sha256': hashlib.sha256(payload).hexdigest()[:12], 'blocks': total, 'tail_from': first,
+                      'frames_per_block': fpb, 'u': u, 'k': k,
+                      'probe_ok': pok.tolist(), 'data_ok': dok.tolist(), 'taus': list(TAUS),
+                      'deep_probe': deep_p.tolist(), 'deep_data': deep_d.tolist(),
+                      'sep': [round(float(v), 2) for v in sep]})
+    for b in range(first, total):
+        (pa, da), ca = rows[b], (ctl[b][1] if b < len(ctl) else float('nan'))
+        verdict = 'fit the signal' if da >= pa - FIT else 'DO NOT FIT the signal (bit errors)'
+        print(f'  tail block {b + 1} (data end, EOM, flush, zero padding): probe agreement {pa:.3f}, data agreement '
+              f'{da:.3f}, random-bytes control {ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
+        print_window_check(b, b * fpb, fpb, pa, da, pok, dok, deep_p, deep_d, u, k)
+
+
+def print_window_check(b, f0, fpb, pa, da, pok, dok, deep_p, deep_d, u, k):
+    """The new lines after block b's line: its window rows and its window check verdict."""
+    ti = TAUS.index(TAU)
+    wrows, s = window_check(pok[f0:f0 + fpb], dok[f0:f0 + fpb], deep_p[f0:f0 + fpb, ti],
+                            deep_d[f0:f0 + fpb, ti], u, k)
+    for i, (w0, w1, pe, pn, de, dn, fp, fd) in enumerate(wrows):
+        print(f'    block {b + 1} window {i + 1} frames {f0 + w0 + 1}-{f0 + w1 + 1}: probes {1 - pe / pn:.3f} '
+              f'({pn - pe}/{pn} right), data {1 - de / dn:.3f} ({dn - de}/{dn} agree), '
+              f'far off {fp} probes, {fd} data')
+    if da < pa - FIT:
+        final = 'NOT REAL: data below the probes over the block (bit errors)'
+    elif s['verdict'] == 'not real':
+        final = 'NOT REAL: data symbols far off where the probes are not (bit errors)'
+    else:
+        final = 'real'
+    print(f"  block {b + 1} window check: far off (over {TAU} noise powers) {s['far_probes']}/{s['probes']} "
+          f"probes, {s['far_data']}/{s['data']} data, expected for right bytes {s['expected']:.2f}, "
+          f"p {s['p']:.2g} (not real under {ALPHA:g}); verdict {final}")
+
+
 def check(a, x, sr, work):
     out, rx = decode(a.rx, x, sr, a.offset_hz, work, dump=True)
     bb = baseband(rx)
@@ -338,7 +441,8 @@ def check(a, x, sr, work):
         blocks = len(payload) // int(BPS[rate] * pre_s / 8)
         if blocks == 0:
             print(f'{label}: not checked (no whole block)')
-            continue
+            if kv.get('eom') != '1':
+                continue
         nframes = blocks * int(round(pre_s * 2400 / p))
         start = int(float(kv['start_s']) * FS)
         coh, d0 = find_data_start(bb, start + int((pre_s - 0.3) * FS), start + int((pre_s + 0.3) * FS), u, k)
@@ -347,6 +451,9 @@ def check(a, x, sr, work):
         for which, pl in (('decoded', payload), ('control', rng.integers(0, 256, len(payload), dtype=np.uint8).tobytes())):
             tb = tx_symbols(a.tx, mode, pl, work)
             tbs[which] = (tb, find_data_start(tb, 0, len(tb) - 1, u, k)[1])
+        if blocks == 0:
+            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, None, tbs, dumps)
+            continue
         # The probe grid repeats every period, so the probes alone leave the data start open
         # by whole periods: try each from the found preamble's start on, keep the one the
         # decoded bytes agree with best; the control is scored at that same start.
@@ -386,23 +493,9 @@ def check(a, x, sr, work):
                   f'{ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
             # New lines (the block line above is unchanged): the window check of this block.
             fpb = nf // blocks
-            f0 = b * fpb
-            ti = TAUS.index(TAU)
-            wrows, s = window_check(pok[f0:f0 + fpb], dok[f0:f0 + fpb], deep_p[f0:f0 + fpb, ti],
-                                    deep_d[f0:f0 + fpb, ti], u, k)
-            for i, (w0, w1, pe, pn, de, dn, fp, fd) in enumerate(wrows):
-                print(f'    block {b + 1} window {i + 1} frames {f0 + w0 + 1}-{f0 + w1 + 1}: probes {1 - pe / pn:.3f} '
-                      f'({pn - pe}/{pn} right), data {1 - de / dn:.3f} ({dn - de}/{dn} agree), '
-                      f'far off {fp} probes, {fd} data')
-            if da < pa - FIT:
-                final = 'NOT REAL: data below the probes over the block (bit errors)'
-            elif s['verdict'] == 'not real':
-                final = 'NOT REAL: data symbols far off where the probes are not (bit errors)'
-            else:
-                final = 'real'
-            print(f"  block {b + 1} window check: far off (over {TAU} noise powers) {s['far_probes']}/{s['probes']} "
-                  f"probes, {s['far_data']}/{s['data']} data, expected for right bytes {s['expected']:.2f}, "
-                  f"p {s['p']:.2g} (not real under {ALPHA:g}); verdict {final}")
+            print_window_check(b, b * fpb, fpb, pa, da, pok, dok, deep_p, deep_d, u, k)
+        if blocks:
+            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps)
     if not found:
         print(f'{a.capture}: no message')
     if a.frames_json:
