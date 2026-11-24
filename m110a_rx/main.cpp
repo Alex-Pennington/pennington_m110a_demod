@@ -7,6 +7,13 @@
  *           offset within +/-87 Hz) -> per message: find its end, normalise
  *           its level, decode with ModemRX -> cut at EOM -> print.
  *
+ * A message's end, for the decode window: the power steps down and stays down
+ * (see Receiver::find_step). Measured only from the message's own audio, so it is
+ * the same whatever lead-in precedes the preamble, and a fade, however deep or
+ * slow, is not a step. Without a step the window runs to the next message's
+ * preamble, --max-secs or the end of the input. Inside the window ModemRX ends
+ * the bytes at the EOM, or at the last interleaver block the probes cover.
+ *
  * Usage: m110a_rx [options] INPUT
  *   INPUT            .cs16 (int16 I/Q), .cf32 (float32 I/Q), .iqr, or - for stdin.
  *                    PREFIX.json beside PREFIX.cs16 (rsp2_stream.py --record)
@@ -57,6 +64,11 @@ constexpr long FRAME_SCAN = 480L * SPS_SCAN;   // preamble frame, scan samples
 constexpr long HOLD_SCAN = 120L * SPS_SCAN;    // peak hold window
 constexpr long TOL_SCAN = 2L * SPS_SCAN;       // frame spacing tolerance
 constexpr long BLOCK = 4800;                   // 0.1 s power blocks
+// End step: the power before the step at least STEP_RATIO times every 0.5 s mean of the
+// STEP_HOLD blocks from it.
+constexpr int STEP_HOLD = 40;                  // 4 s
+constexpr double STEP_RATIO = 2.0;             // 3 dB
+constexpr long END_PAD = static_cast<long>(0.5 * FS);  // audio kept after the step
 constexpr float TARGET_RMS = 7000.0f / 32768.0f;  // MS-DMT reference level
 constexpr long MARGIN = static_cast<long>(0.04 * FS);  // audio before frame 1
 
@@ -139,6 +151,7 @@ struct Message {
     int hits;
     float metric, freq;   // mean over the hits
     long end_audio = -1;  // decided end, absolute audio index
+    std::vector<double> pw;  // 0.1 s block power from first_frame * DECIM on
 };
 
 class Receiver {
@@ -169,7 +182,6 @@ public:
     void push_audio(const std::vector<float>& a, bool eof) {
         audio_.insert(audio_.end(), a.begin(), a.end());
         audio_end_ += static_cast<long>(a.size());
-        update_blocks();
         scan(eof);
         process_messages(eof);
         trim();
@@ -182,15 +194,6 @@ public:
 private:
     // ---------------- buffers (absolute indices) ----------------
     float audio_at(long n) const { return audio_[static_cast<size_t>(n - audio_base_)]; }
-
-    void update_blocks() {
-        while ((static_cast<long>(blocks_.size()) + 1) * BLOCK <= audio_end_) {
-            long b0 = static_cast<long>(blocks_.size()) * BLOCK;
-            double p = 0;
-            for (long n = b0; n < b0 + BLOCK; n++) { double v = audio_at(n); p += v * v; }
-            blocks_.push_back(p / BLOCK);
-        }
-    }
 
     void trim() {
         long keep = std::min(scan_t_ * DECIM, audio_end_) - static_cast<long>(40 * FS);
@@ -281,54 +284,76 @@ private:
     }
 
     // ---------------- message end and decode ----------------
-    bool decide_end(Message& m, bool eof) {
+    // Block powers on a grid anchored at the message's first preamble frame, so they
+    // do not move with the audio before it.
+    void update_power(Message& m) {
         const long a_first = m.first_frame * DECIM;
-        const long cap = a_first + static_cast<long>(opt_.max_secs * FS);
-        // power of the preamble, and of the noise before it
-        auto mean_blocks = [&](long a0, long a1, bool median) {
-            std::vector<double> v;
-            for (long b = (a0 + BLOCK - 1) / BLOCK; (b + 1) * BLOCK <= a1; b++)
-                if (b >= 0 && b < static_cast<long>(blocks_.size())) v.push_back(blocks_[b]);
-            if (v.empty()) return std::make_pair(0.0, 0);
-            if (median) {
-                std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
-                return std::make_pair(v[v.size() / 2], static_cast<int>(v.size()));
+        for (;;) {
+            const long b0 = a_first + static_cast<long>(m.pw.size()) * BLOCK;
+            if (b0 + BLOCK > audio_end_) break;
+            double p = 0;
+            for (long n = b0; n < b0 + BLOCK; n++) {
+                double v = n >= audio_base_ ? audio_at(n) : 0.0;
+                p += v * v;
             }
-            double s = 0; for (double x : v) s += x;
-            return std::make_pair(s / v.size(), static_cast<int>(v.size()));
-        };
-        auto sig = mean_blocks(a_first, m.preamble_end * DECIM, false);
-        auto noise = mean_blocks(a_first - static_cast<long>(3 * FS), a_first - BLOCK, true);
-        double thr = -1;
-        if (sig.second > 0) {
-            if (noise.second >= 5 && sig.first > 1.4 * noise.first)
-                thr = noise.first + 0.35 * (sig.first - noise.first);
-            else if (noise.second < 5)
-                thr = 0.45 * sig.first;  // no noise reference: half the preamble power
+            m.pw.push_back(p / BLOCK);
         }
-        if (thr > 0) {
-            const long quiet = 15;  // 1.5 s below threshold ends the message
-            long run = 0;
-            for (long b = (m.preamble_end * DECIM) / BLOCK + 1;
-                 b < static_cast<long>(blocks_.size()) && b * BLOCK < cap; b++) {
-                run = blocks_[b] < thr ? run + 1 : 0;
-                if (run == quiet) {
-                    m.end_audio = (b - quiet + 1) * BLOCK + static_cast<long>(0.5 * FS);
-                    break;
-                }
+    }
+
+    // First block k (from k0, k + STEP_HOLD <= kmax) where the power steps down and stays
+    // down: the 0.3 s before k (k-4..k-2; k-1 may hold the step) and the 1 s before it are
+    // both at least STEP_RATIO times the highest 0.5 s mean of the STEP_HOLD blocks from k.
+    // A transmitter unkeying leaves that, even while the receiver's AGC brings the noise
+    // back up after it. A fade does not: a slow one has no step, and a fast one comes back
+    // up inside the hold. -1 when there is none.
+    static long find_step(const std::vector<double>& pw, long k0, long kmax) {
+        k0 = std::max<long>(k0, 10);
+        for (long k = k0; k + STEP_HOLD <= kmax; k++) {
+            const double before_short = (pw[k - 4] + pw[k - 3] + pw[k - 2]) / 3.0;
+            double before_long = 0;
+            for (long j = k - 10; j < k; j++) before_long += pw[j];
+            const double before = std::min(before_short, before_long / 10.0);
+            bool down = true;
+            for (long j = k; j + 5 <= k + STEP_HOLD && down; j += 5) {
+                const double mj = (pw[j] + pw[j + 1] + pw[j + 2] + pw[j + 3] + pw[j + 4]) / 5.0;
+                down = STEP_RATIO * mj <= before;
             }
+            if (down) return k;
         }
-        if (m.end_audio < 0 && audio_end_ >= cap) m.end_audio = cap;
-        if (m.end_audio < 0 && eof) m.end_audio = audio_end_;
-        if (m.end_audio < 0) return false;
-        m.end_audio = std::min(m.end_audio, cap);
+        return -1;
+    }
+
+    // next: the next message whose preamble is already known, else nullptr.
+    bool decide_end(Message& m, const Message* next, bool eof) {
+        const long a_first = m.first_frame * DECIM;
+        long limit = a_first + static_cast<long>(opt_.max_secs * FS);
+        if (next) limit = std::min(limit, next->first_frame * DECIM - MARGIN);
+        update_power(m);
+        const long k0 = (m.preamble_end * DECIM - a_first + BLOCK - 1) / BLOCK + 1;
+        const long kmax = std::min<long>(static_cast<long>(m.pw.size()),
+                                         (limit - a_first) / BLOCK);
+        const long k = find_step(m.pw, k0, kmax);
+        if (k >= 0) m.end_audio = a_first + k * BLOCK + END_PAD;
+        else if (next || audio_end_ >= limit) m.end_audio = limit;
+        else if (eof) m.end_audio = audio_end_;
+        else return false;
+        m.end_audio = std::max(std::min(m.end_audio, limit), m.preamble_end * DECIM);
+        if (opt_.verbose)
+            fprintf(stderr, "m110a_rx: msg %d end %.3f s (%s)\n", m.id, m.end_audio / FS,
+                    k >= 0 ? "power step" : next ? "next preamble" : audio_end_ >= limit ? "max-secs" : "end of input");
         return audio_end_ >= m.end_audio || eof;
     }
 
     void process_messages(bool eof) {
         while (!pending_.empty()) {
             Message& m = pending_.front();
-            if (!decide_end(m, eof)) break;
+            // A preamble that starts within 24 frames (the longest preamble) of m's first
+            // frame may be m's own: a fast fade splits a long preamble into several
+            // chains. Only a later one is a different message, and bounds m.
+            const Message* next = nullptr;
+            for (size_t i = 1; i < pending_.size() && !next; i++)
+                if (pending_[i].first_frame >= m.first_frame + 24 * FRAME_SCAN) next = &pending_[i];
+            if (!decide_end(m, next, eof)) break;
             m.end_audio = std::min(m.end_audio, audio_end_);
             decode(m);
             pending_.pop_front();
@@ -401,7 +426,6 @@ private:
 
     std::vector<float> audio_;
     long audio_base_ = 0, audio_end_ = 0;
-    std::vector<double> blocks_;
     std::vector<std::complex<float>> bb_;
     long bb_base_ = 0;
     long scan_t_ = 0;
