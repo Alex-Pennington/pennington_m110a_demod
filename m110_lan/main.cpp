@@ -212,15 +212,18 @@ uint8_t udp_tx_state(TxSt s) {  // Table A-XIV
     }
 }
 
-// One burst from the air, from preamble sync until its data is delivered or it is dropped.
-// Its bytes arrive block by block as the streaming decoder decodes them (DECODING, data
-// growing); READY once no more will come; FAILED with none.
+// One burst from the air, from preamble sync until its data is delivered and the burst is
+// over, or it is dropped. Its bytes arrive block by block as the streaming decoder decodes them
+// (DECODING, data growing); READY once no more will come; FAILED with none. The carrier stays
+// up until the burst is also over on the air (air_done): the data can be complete, at the EOM,
+// while the far transmitter is still sending its flush bits and tail.
 struct Reception {
     uint64_t id = 0;  // the scanner's burst number; 0 for none
     Mode mode = Mode::AUTO;
     uint32_t rate = 0, bf = 0;
     Clock::time_point sync_at;  // when the preamble was synchronised
     enum St { DECODING, READY, FAILED } st = DECODING;
+    bool air_done = false;         // the burst has ended and its decode is over
     bool data_started = false;
     std::vector<uint8_t> data;
     bool cut = false;              // delivery ended at a block below the quality gate
@@ -452,6 +455,7 @@ public:
         if (!r) return;
         r->st = ok ? Reception::READY : Reception::FAILED;
         r->data = std::move(data);
+        r->air_done = true;  // decoded whole, after the burst ended
         deliver_tick();
     }
     // One decoded interleaver block of burst id: its bytes, and whether it is the last
@@ -463,18 +467,23 @@ public:
         deliver_tick();
     }
     // A block of burst id fell below the quality gate: what was received before it is all
-    // that is delivered (the reception ends after it, A.5.1.2.6 step 6's LAST and NO CARRIER)
+    // that is delivered (the delivery ends after it with LAST, A.5.1.2.6 step 6; NO CARRIER
+    // follows once the burst is over)
     void rx_cut(uint64_t id) {
         Reception* r = held(id);
         if (!r || r->st != Reception::DECODING) return;
         r->cut = true;
-        rx_end(id);
+        r->st = r->data.empty() ? Reception::FAILED : Reception::READY;
+        deliver_tick();
     }
-    // The decode of burst id is over: whatever is not yet marked complete ends here
+    // The burst id is over on the air and its decode is done: whatever is not yet complete
+    // ends here, and NO CARRIER can follow the last packet
     void rx_end(uint64_t id) {
         Reception* r = held(id);
-        if (!r || r->st != Reception::DECODING) return;
-        r->st = r->data.empty() && !r->data_started ? Reception::FAILED : Reception::READY;
+        if (!r) return;
+        if (r->st == Reception::DECODING)
+            r->st = r->data.empty() && !r->data_started ? Reception::FAILED : Reception::READY;
+        r->air_done = true;
         deliver_tick();
     }
     void start_reception(Reception r) {
@@ -520,10 +529,17 @@ public:
             rx_pending.pop_front();
             start_reception(std::move(r));
         }
-        if (cur.st == Reception::FAILED) { end_reception(); return; }  // no data packets
+        if (cur.st == Reception::FAILED || (cur.st == Reception::READY && cur.data.empty() && !cur.data_started)) {
+            if (cur.air_done) end_reception();  // no data packets
+            return;
+        }
         const bool complete = cur.st == Reception::READY;
         if (!complete && cur.data.empty()) return;
-        if (complete && cur.data.empty() && !cur.data_started) { end_reception(); return; }
+        if (cur.last_sent || (udp_have_dte && !tcp_established && out_framed &&
+                              out_sets_sent * out_set_bytes >= out_stream.size())) {
+            if (cur.air_done) end_reception();  // all delivered: NO CARRIER once the burst is over
+            return;
+        }
         if (!cur.data_started) {
             cur.data_started = true;
             logf("rx: %s %u bps, first data", mode_name(cur.mode).c_str(), cur.rate);
@@ -548,8 +564,9 @@ public:
                 if (i >= npk) {
                     // every byte went in packets that were not marked last (the delivery was
                     // cut at a block below the quality gate): end it with an empty LAST
-                    if (!cur.last_sent) tcp_send(tcp::data_transfer(i == 0 ? tcp::FIRST_AND_LAST : tcp::LAST, next_pid(), nullptr, 0));
-                    end_reception();
+                    tcp_send(tcp::data_transfer(i == 0 ? tcp::FIRST_AND_LAST : tcp::LAST, next_pid(), nullptr, 0));
+                    cur.last_sent = true;
+                    if (cur.air_done) end_reception();
                     return;
                 }
                 end = i + 1 >= npk ? total : upto(i + 1);
@@ -587,6 +604,7 @@ public:
             done = out_framed && out_sets_sent * out_set_bytes >= out_stream.size();
         } else {
             done = complete;
+            if (done) cur.last_sent = true;
         }
         if (sent) {
             rx = RxSt::RECEIVING;  // the receive interleaver has filled
@@ -595,7 +613,7 @@ public:
             // chunk deliver_idx no sooner than deliver_idx - 1 chunks after the first
             next_deliver = cur.first_sent + std::chrono::microseconds(long(per * 1e6 * double(deliver_idx - 1)));
         }
-        if (done) end_reception();
+        if (done && cur.air_done) end_reception();
     }
 
     // ======================= UDP =======================

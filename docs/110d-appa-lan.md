@@ -271,7 +271,11 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
     preamble read (forced, so ModemRX refuses it if the preamble contradicts it).
 - **Carrier.** CARRIER DETECTED stays up from preamble sync through the decode and the delivery
   (Table A-VI: "synchronized on a preamble or is processing data from the air"). The data goes
-  one blocking factor at a time as it decodes, and NO CARRIER follows the last packet. A chunk
+  one blocking factor at a time as it decodes. NO CARRIER follows the last packet once the
+  burst is also over on the air (its level gone, or the next preamble): the last data comes at
+  the EOM, while the far transmitter may still be sending its flush bits and its tail. A DTE
+  that answers at NO CARRIER then does not key over it. greybeard-ale's 5066 loopback, whose
+  audio relay deafens a keyed side, lost every answer to that before the carrier waited. A chunk
   goes once all its bytes are decoded. It goes as LAST only when the decoder has said no more
   will come, and it holds back only until then: before the last block, the decoder reports a
   block once at least one more byte is known to follow it. Delivery is paced at the air rate:
@@ -283,8 +287,9 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   delivered gets its CARRIER DETECTED after that one's NO CARRIER.
 - **Measured** (`appa_rx_stream`): CARRIER DETECTED arrives 0.15 s after the preamble's first
   sample goes into the input, and no audio is dropped while a 32 s 600S burst is decoded. That
-  burst's data arrives during the burst. See "Data during the burst" below for the timings. A 600S burst in noise band-limited to 300-3300 Hz is found at -2 dB SNR (carrier, then
-  NO CARRIER: the 110A receiver's own mode detection fails there, so nothing is decoded), and
+  burst's data arrives during the burst. See "Data during the burst" below for the timings.
+  A 600S burst in noise band-limited to 300-3300 Hz is found at -2 dB SNR (carrier, then NO
+  CARRIER: the 110A receiver's own mode detection fails there, so nothing is decoded), and
   found and decoded exact at 2 dB.
 - **Measured, 75 bps** (`appa_lan_75` phase `rx75`, input fed in real time 10 ms at a time,
   4 s of input before the burst, `--rx-fast`): see the table below. Every case delivered the
@@ -316,10 +321,11 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   | streaming (this build) | -29.28 s | +0.40 s | 0.41 / 0.73 / 1.01 s | 1.5 s |
 
   A block can go no sooner than one interleaver span after its end (0.6 s at 600S): it needs
-  the next block whole. That is 0.66 s with the 34-bit traceback (0.06 s at 600 bps). The
-  median 0.73 s is 0.07 s over that. The overage is the data grid's lookahead: the timing-step
-  search settles a frame's grid 8 frames later (0.13 s at 600S), the price of giving
-  `decode()`'s bytes. The last block goes 0.41 s after the end, once its EOM is decoded.
+  the next block whole, which also covers the Viterbi's 34-bit traceback (0.06 s at 600 bps).
+  One span plus the traceback is 0.66 s. The median, 0.73 s, is one span plus the data grid's
+  lookahead: the timing-step search settles a frame's grid 8 frames later (0.13 s at 600S),
+  which it must wait for to give `decode()`'s bytes. The rest is the decoder's own time under
+  load. The last block goes 0.41 s after the end, once its EOM is decoded.
   A 75 bps burst from the 75 bps finder is still decoded whole when it ends.
 - **Below the quality gate.** Each block is judged as it decodes. It passes when its
   `block_quality_db` clears the mode's block threshold and the burst's `quality_db` (the first
