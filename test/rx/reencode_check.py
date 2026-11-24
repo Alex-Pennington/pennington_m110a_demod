@@ -367,12 +367,12 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps):
             if best is None or score > best[0]:
                 best = (score, dd)
         if best is None:
-            print(f'{label}: tail not checked (the signal ends before the last block does)')
+            print('  tail not checked (the signal ends before the last block does)')
             return
         d = best[1]
         steps = np.flatnonzero(np.abs(np.diff(track(bb, d, u, k, nframes))) >= 8 * SPS)
     if room(d) < nframes:
-        print(f'{label}: tail not checked (the signal ends before the last block does)')
+        print('  tail not checked (the signal ends before the last block does)')
         return
     off = track(bb, d, u, k, nframes)
     rows = agreement(bb, d, tb, t0, rate, nframes, total, off)
@@ -381,7 +381,8 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps):
     pok, dok, deep_p, deep_d, sep = frame_agreement(bb, d, tb, t0, rate, nframes, off, soft=True)
     if first == 0:
         steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
-        print(f'{label}: tail check (eom=1, {total} block{"s" if total > 1 else ""}): data start {d / FS:.4f} s '
+        # indented and without the label: a second head line would read as a second message
+        print(f'  tail check (eom=1, {total} block{"s" if total > 1 else ""}): data start {d / FS:.4f} s '
               f'(probe coherence {coh:.2f}), grid steps '
               + (', '.join(f'frame {s + 1} {(off[s + 1] - off[s]) / SPS:+.1f} sym' for s in steps) or 'none'))
     if a.frames_json:
