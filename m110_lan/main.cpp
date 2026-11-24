@@ -1156,10 +1156,15 @@ constexpr long kHold = 40 * kSps;          // a correlation peak is the best wit
 constexpr long kPreroll = kFs / 4;         // decode from 0.25 s before the hit (a whole frame)
 // 75 bps acquisition (m75::acquire) over the last kM75Window of input, every kM75Step: both
 // runs that agree on a 75L preamble's end (below) hold all of it (24 frames, 4.8 s), since the
-// second ends at most 2 steps after it. One run costs about 0.3 s of CPU (measured, one core).
+// second ends at most 2 steps after it. One run costs about 0.3 s of CPU (measured, one core),
+// so it runs only behind the sliding coarse search (kM75Prescreen).
 constexpr double kM75Window = 6.0;
 constexpr double kM75Step = 0.5;
 constexpr long kM75Agree = 2 * 2 * 20;     // two runs agree on the end of preamble within 2 symbols
+// acquire() runs only when the sliding coarse search (m75::SlidingAcq) has an end of preamble
+// in the window at this share of acquire()'s threshold or more: the coarse grid loses up to a
+// few percent of the significance to the carrier step and the decimation phase
+constexpr double kM75Prescreen = 0.75;
 
 bool is_75(Mode m) { return m == Mode::M75_SHORT || m == Mode::M75_LONG; }
 
@@ -1307,8 +1312,17 @@ public:
             lo_[n] = std::complex<float>(float(std::cos(w)), float(std::sin(w)));
         }
         gap_blocks_ = std::max<long>(1, std::lround(cfg.rx_gap * 100));
+        // The 75 bps finder runs only when the modem is configured for 75 bps: it costs CPU
+        // all the time the receiver is idle. Otherwise a 75 bps preamble the correlator reads
+        // is taken by the correlator, and the burst ends by level, as for any mode.
+        if (is_75(cfg.mode)) {
+            const RxConfig rc;
+            sacq_ = std::make_unique<m110a::m75::SlidingAcq>(float(kFs), rc.carrier_freq, rc.coarse_search_range,
+                                                              kM75Window + 1.0, m110a::m75::AcqTuning().coarse_step_hz);
+        }
     }
     void feed(const std::vector<float>& x) {
+        if (sacq_) sacq_->push(x.data(), x.size());
         audio_.insert(audio_.end(), x.begin(), x.end());
         audio_end_ += long(x.size());
         run(false);
@@ -1392,13 +1406,16 @@ private:
     // the window ending inside a long preamble, that is a boundary before the true end. So a
     // preamble is taken when two runs, kM75Step apart, agree on its end (or at end of input).
     void m75_detect(bool eof) {
+        if (!sacq_) return;
         if (!eof && audio_end_ < m75_next_) return;
         m75_next_ = audio_end_ + long(kM75Step * kFs);
         const long w0 = std::max({audio_end_ - long(kM75Window * kFs), m75_floor_, audio_base_});
         if (audio_end_ - w0 < 4 * kFs / 5) return;
+        const m110a::m75::AcqTuning tune;
+        if (sacq_->best(w0, audio_end_).z < kM75Prescreen * tune.min_z) { m75_cand_ = false; return; }
         std::vector<float> rf(audio_.begin() + (w0 - audio_base_), audio_.end());
         const RxConfig rc;
-        const auto a = m110a::m75::acquire(rf, float(kFs), rc.carrier_freq, rc.coarse_search_range);
+        const auto a = m110a::m75::acquire(rf, float(kFs), rc.carrier_freq, rc.coarse_search_range, tune);
         if (!a.found || !a.is_75 || !m110a::m75::clear_d(a, 1.1)) return;
         const long ds = w0 + a.data_start;
         const Mode mode = a.mode == m110a::ModeId::M75NS ? Mode::M75_SHORT : Mode::M75_LONG;
@@ -1564,7 +1581,7 @@ private:
         Mode mode;
         const bool known = mode_from_d1d2(d1, d2, mode);
         if (known && r1 >= 2.0f && r2 >= 2.0f) {
-            if (is_75(mode)) {
+            if (is_75(mode) && sacq_) {
                 // 75 bps is taken by the 75 bps acquisition, which reads the whole preamble and
                 // where it ends (m75_detect); its burst ends at the EOM, not by level
                 if (sec(hit_a_) - last75_log_ > 5.0) {
@@ -1641,7 +1658,7 @@ private:
             DecodeJob j;
             j.id = id_;
             j.mode = mode_;
-            j.forced = is_75(mode_);
+            j.forced = t75_ != nullptr;  // found by the 75 bps finder; a correlator burst decodes AUTO
             j.t0 = sec(a0_);
             j.t1 = sec(end_a);
             j.s.resize(size_t(end_a - a0_));
@@ -1670,7 +1687,7 @@ private:
             bb_base_ = keep_bb;
         }
         long keep_a = std::min(bb_end() * kDecim - half_, scan_t_ * kDecim - kPreroll - kFs);
-        keep_a = std::min(keep_a, audio_end_ - long((kM75Window + 1.0) * kFs));  // the 75 bps window
+        if (sacq_) keep_a = std::min(keep_a, audio_end_ - long((kM75Window + 1.0) * kFs));  // the 75 bps window
         if (st_ != St::IDLE) keep_a = std::min(keep_a, std::min(a0_, hit_a_ - kPreroll));
         if (keep_a - audio_base_ > 10 * kFs) {
             audio_.erase(audio_.begin(), audio_.begin() + (keep_a - audio_base_));
@@ -1713,6 +1730,7 @@ private:
     double gap_sum_ = 0;
 
     // 75 bps
+    std::unique_ptr<m110a::m75::SlidingAcq> sacq_;  // only when configured for 75 bps
     std::unique_ptr<Track75> t75_;
     long m75_next_ = 0;    // input sample at which the 75 bps acquisition runs next
     long m75_floor_ = 0;   // it searches from here on: the end of the last burst

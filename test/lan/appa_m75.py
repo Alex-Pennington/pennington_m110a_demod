@@ -13,7 +13,8 @@ Phases
            time, clean and at -6 dB (white noise in 300-3300 Hz, SNR over that band): no carrier
            on the noise before it; CARRIER DETECTED with rate 75 and the blocking factor, timed
            from the end of the preamble; the same bytes to the DTE, one packet per blocking
-           factor under the chunk rule below; NO CARRIER; no receive audio dropped
+           factor under the chunk rule below; NO CARRIER; no receive audio dropped. Then, with
+           the modem configured for 600S (75 bps finder off), a clean 75S burst still received
   framing  one packet per blocking factor of bf bits, carrying bytes floor(bf*i/8) to
            floor(bf*(i+1)/8) (docs/110d-appa-lan.md, "Blocking factor"). 150S (90 bits) and
            300S (180 bits) both ways exact with that pacing, delivery rate measured against the
@@ -43,7 +44,7 @@ BF = {"75S": 45, "75L": 360, "150S": 90, "300S": 180, "600S": 360, "600L": 2880,
       "1200S": 720, "2400S": 1440, "4800S": 2880}
 RATE = {m: int(m[:-1]) for m in BF}
 PREAMBLE_S = {"75S": 0.6, "75L": 4.8}   # 3 or 24 frames of 0.2 s (MIL-STD-188-110 Table XI)
-CD_LIMIT_S = 3.0                  # CARRIER DETECTED within this of the preamble's last sample
+CD_LIMIT_S = 2.7                  # CARRIER DETECTED within this of the preamble's last sample
 
 
 def msg_for(mode):
@@ -209,6 +210,28 @@ def phase_rx75(a, wavs):
             if lat is not None:
                 lats.setdefault(mode, []).append(round(lat, 3))
     print(f"INFO  carrier detect after the end of the preamble (s): {lats}")
+    if "75S" in wavs:
+        other_config(a, wavs["75S"])
+
+
+def other_config(a, wav):
+    """Configured for 600S, the 75 bps finder does not run (it costs CPU while idle); a clean
+    75S burst is still received, through the preamble correlator, as before 75 bps transmit."""
+    srv = A.Server(a.server, a.work, "m75rx_cfg600S", ["--rx-fast"])
+    d = A.TcpDte(srv.tcp)
+    try:
+        A.handshake(d)
+        A.feed(srv.p, wav, True)
+        cds, data = A.collect_rx(d, 60)
+        got = b"".join(A.payload(p)[14:] for p in data)
+        rb = [struct.unpack(">BII", A.payload(c)[1:10]) for c in cds]
+        log = R.log_text(srv)
+        A.check(got == msg_for("75S") and (1, 75, 45) in rb, "A.5.1.2.6",
+                f"configured 600S: a clean 75S burst delivered exact ({len(got)} bytes), carrier {rb}; "
+                f"75 bps finder off: {'75 bps acquisition' not in log}")
+    finally:
+        d.close()
+        srv.stop()
 
 
 # ======================================================================== framing
