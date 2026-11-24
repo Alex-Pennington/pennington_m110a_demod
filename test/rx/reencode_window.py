@@ -312,7 +312,7 @@ def sweep_one(a, mode, snr, i):
     """One random-length eom=1 message: the receiver's bytes (each verdict against whether its block is
     exact), the sent bytes (never NOT REAL) and the sent bytes with one bit flipped (its block never real).
     Verdicts are counted as real / NOT VERIFIABLE / NOT REAL."""
-    r = random.Random(f'reencode_window/sweep {mode} {snr} {i}')
+    r = random.Random(f'reencode_window/{a.sweep_tag} {mode} {snr} {i}')
     bits = block_bits(mode)
     if mode in ('150S', '300S') and i % 2:  # long enough that the block lines' whole-byte count can reach the EOM
         n = r.randrange(900, 1401)
@@ -320,9 +320,9 @@ def sweep_one(a, mode, snr, i):
         n = r.randrange(8, (3 if mode[-1] == 'S' else 2) * bits // 8 + 1)
     data = (b'DE AAM402 sweep ' + r.randbytes(n))[:n]
     w = argparse.Namespace(**vars(a))
-    w.work = os.path.join(a.work, f'sweep_{mode}_{snr:g}_{i}')
+    w.work = os.path.join(a.work, f'{a.sweep_tag}_{mode}_{snr:g}_{i}')
     os.makedirs(w.work, exist_ok=True)
-    wav = audio(w, data, snr, None, 100 + i, 'msg', mode=mode)
+    wav = audio(w, data, snr, None, 100 + i if a.sweep_tag == 'sweep' else r.randrange(10 ** 6), 'msg', mode=mode)
     V3 = ('real', 'NOT VERIFIABLE', 'NOT REAL')
     res = dict(mode=mode, snr=snr, n=n, missing=[], eom=0, **{f'{key} {x}': 0 for key in ('rx exact', 'rx wrong', 'sent', 'flip')
                                                                 for x in V3})
@@ -396,6 +396,7 @@ def main():
                     help='of counts,clean,short,tails,whole2400,fade,sweep (sweep is long and not in the default)')
     ap.add_argument('--sweep-snr', default='8,20')
     ap.add_argument('--sweep-n', type=int, default=4, help='messages per mode and SNR')
+    ap.add_argument('--sweep-tag', default='sweep', help='seeds the sweep lengths, payloads and (if not "sweep") noise')
     ap.add_argument('--jobs', type=int, default=4)
     ap.add_argument('--check', default=None, help='the reencode_check.py to run (default: the one beside this file)')
     a = ap.parse_args()
