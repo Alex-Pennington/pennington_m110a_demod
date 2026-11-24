@@ -18,16 +18,18 @@
 //    about 1e-1, 80 and 320 ms about 2e-3, 160 ms none in 21600 bits; tones, the swept CW
 //    (150 Hz/s moves 24 Hz in a window) and the co-channel case were clean at every length.
 //  - Floor: per frame, the median bin power over carrier +/- 1000 Hz (the flat part of the
-//    RRC spectrum) pooled over the frames 8 either side, divided by ln 2 (the median of an
-//    exponential is ln 2 times its mean). Pooled over about 1.4 s it is not moved by
-//    interference in fewer than half the bins.
+//    RRC spectrum) pooled over the frames 32 either side, divided by ln 2 (the median of an
+//    exponential is ln 2 times its mean). Pooled over about 5.5 s it is not moved by
+//    interference in fewer than half the bins, and a voice's phrases (1-3 s) do not lift it
+//    much (speech-like at -25 dB, seeds 1-24: 8 frames either side BER 2.3e-3, 16 2.3e-4,
+//    32 1.3e-4, with keep 0.5 below 8.1e-5).
 //  - Detection: a frame is hit when any bin within carrier +/- 1650 Hz (the signal's band)
 //    holds more than `detect_db` (20 dB) over its floor. Noise and the 75 bps signal give
 //    exponential bin powers: exceeding 100 times the mean has probability e^-100, so a
 //    signal with no narrowband interference is never touched, and the receiver sees the
 //    input itself, sample for sample.
 //  - Weighting: in a hit frame and the frames either side, each in-band bin above `keep`
-//    (1) times the floor is scaled in amplitude by keep x floor / power. That is about the
+//    (0.5) times the floor is scaled in amplitude by keep x floor / power. That is about the
 //    weight a combiner gives a bin whose interference outweighs the signal (weight in
 //    proportion to S / (S + I) on amplitude): a tone 50 dB up is left at -50 dB, a bin a
 //    little over the floor loses little. Tones and sweeps are cut where they are; the
@@ -48,10 +50,10 @@ namespace m75 {
 
 struct ExciseTuning {
     double detect_db = 20.0;     // a frame is hit when a bin holds this much over the floor
-    double keep = 1.0;           // in hit frames, a bin of power p above keep x floor is scaled to (keep x floor)^2 / p
+    double keep = 0.5;           // in hit frames, a bin of power p above keep x floor is scaled to (keep x floor)^2 / p
     double band_hz = 1650.0;     // excision band: carrier +/- this
     double floor_band_hz = 1000.0;  // floor estimated over carrier +/- this
-    int floor_frames = 8;        // floor pooled over this many frames either side
+    int floor_frames = 32;       // floor pooled over this many frames either side
     double window_s = 0.16;      // analysis window, rounded up to a power of two
 };
 
