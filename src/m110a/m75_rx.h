@@ -65,6 +65,14 @@ struct RxTuning {
     double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
     bool excise = true;             // narrowband interference excision (m75_excise.h) in front
+    double alt_profile_alpha = 0.01;  // a second decode with this profile update when the first
+                                      // is not clean; the better kept (0: none)
+    double max_drift_ppm = 0.0;     // window re-centring at most this clock error (0: no limit)
+    double alt_max_drift_ppm = 200.0;  // ... in the second decode: under slow fading the profile's
+                                       // centroid swings between the paths, which is not drift
+    double centre_alpha = 0.02;     // per-set update of the profile the window centres on
+    double alt_centre_alpha = 0.002;  // ... in the second decode (about 13 s: the mean profile)
+    double alt_window_ms = 16.0;    // the second decode's delay window, either side
 };
 
 /// The tuning ModemRX's 75 bps path uses. A test tool may change it (m75_ber --no-excise);
@@ -196,7 +204,7 @@ public:
             for (int v = 0; v < 4; v++) if (v != o.win) fl += e[v * ntaps_ + j];
         }
         noise_ += t_.noise_beta * (fl / (3.0 * ntaps_) - noise_);
-        for (int j = 0; j < ntaps_; j++) slow_[j] += 0.02 * (std::max(0.0, prof_[j] - noise_) - slow_[j]);
+        for (int j = 0; j < ntaps_; j++) slow_[j] += t_.centre_alpha * (std::max(0.0, prof_[j] - noise_) - slow_[j]);
         recentre();
         return o;
     }
@@ -215,6 +223,7 @@ private:
     double noise_ = 1e-12;
     double centre0_ = 0.0;
     long shift_ = 0;
+    long sets_ = 0, last_move_ = 0;
     std::complex<float> scr_[SCRAMBLER_PERIOD];
 
     long tap_offset(int j) const { return static_cast<long>(j - half_) * step_; }
@@ -229,11 +238,17 @@ private:
     // Move the window one tap when the slow profile's centroid has moved a tap or more
     // (clock drift); the profiles move with it, so the channel stays where it was.
     void recentre() {
+        sets_++;
         const double c = centroid();
         int d = 0;
         if (c - centre0_ >= 1.0) d = 1;
         else if (c - centre0_ <= -1.0) d = -1;
         if (d == 0) return;
+        // at most max_drift_ppm: one tap (step_ samples) per step_ / (ppm 1e-6 x 32 sps) sets
+        if (t_.max_drift_ppm > 0.0 &&
+            static_cast<double>(sets_ - last_move_) * t_.max_drift_ppm * 1e-6 * SET_SYMBOLS * sps_ < step_)
+            return;
+        last_move_ = sets_;
         shift_ += d * step_;
         auto mv = [&](std::vector<double>& p) {
             if (d > 0) { std::rotate(p.begin(), p.begin() + 1, p.end()); p.back() = 0.0; }
@@ -356,33 +371,11 @@ inline std::vector<float> lead_in(const std::vector<float>& buffer, const std::v
 /// wrong reading cannot pass the decode gate (a 150S read as 75S decodes to garbage).
 inline bool clear_d(const Acquisition& a, double ratio = 1.25) { return a.pair_ratio >= ratio; }
 
-/**
- * Receive one 75 bps message from rf (a real passband buffer holding its preamble within
- * its first 15 s). mode: the mode to decode as.
- */
-inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
-                     const RxTuning& t = RxTuning()) {
-    RxOut r;
-    ExciseStats ex;
-    const std::vector<float>& in = t.excise ? excised(rf, fs, carrier, &ex) : rf;
-    r.excised_frames = ex.hit_frames;
-    r.acq = acquire_cached(in, fs, carrier, frange);
-    if (!r.acq.found) {
-        char buf[120];
-        snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
-        r.error = buf;
-        return r;
-    }
-    r.preamble = true;
-    const int sps = static_cast<int>(std::lround(fs / 2400.0f));
-    const long data_start = r.acq.data_start;
-    const long lo = data_start - static_cast<long>(brain::P_FRAME_LENGTH + 64) * sps;
-    const auto y = matched_filter(in, fs, carrier + r.acq.freq_offset_hz, sps, lo);
-
-    // the last preamble frame as sent (countdown 0)
-    auto pre_syms = BrainPreambleEncoder().encode(mode == ModeId::M75NS ? 0 : 1, mode == ModeId::M75NL);
-    std::vector<std::complex<float>> last(pre_syms.end() - brain::P_FRAME_LENGTH, pre_syms.end());
-
+/// Demodulate and decode the data after the preamble from matched-filter output y: fills
+/// r's sets, signal_sets, blocks, eom_bit, data, p, p_block and snr_db; returns the
+/// window shift the RAKE ended at.
+inline long demod_decode(const std::vector<std::complex<float>>& y, int sps, long data_start, ModeId mode,
+                         const std::vector<std::complex<float>>& last, const RxTuning& t, RxOut& r) {
     WalshRake rake(y, sps, data_start, mode, t);
     rake.init_from_preamble(last);
 
@@ -473,13 +466,65 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
         const double es_n0 = b > 0.0 && kp > 0.0 ? a / b / (SET_SYMBOLS * kp) : 1e4;
         r.snr_db = es_n0 > 0 ? std::min(40.0, 10.0 * std::log10(es_n0 * 2400.0 / 3000.0)) : -99.0;
     }
+    return rake.shift();
+}
+
+/**
+ * Receive one 75 bps message from rf (a real passband buffer holding its preamble within
+ * its first 15 s). mode: the mode to decode as.
+ */
+inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
+                     const RxTuning& t = RxTuning()) {
+    RxOut r;
+    ExciseStats ex;
+    const std::vector<float>& in = t.excise ? excised(rf, fs, carrier, &ex) : rf;
+    r.excised_frames = ex.hit_frames;
+    r.acq = acquire_cached(in, fs, carrier, frange);
+    if (!r.acq.found) {
+        char buf[120];
+        snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
+        r.error = buf;
+        return r;
+    }
+    r.preamble = true;
+    const int sps = static_cast<int>(std::lround(fs / 2400.0f));
+    const long data_start = r.acq.data_start;
+    const long lo = data_start - static_cast<long>(brain::P_FRAME_LENGTH + 64) * sps;
+    const auto y = matched_filter(in, fs, carrier + r.acq.freq_offset_hz, sps, lo);
+
+    // the last preamble frame as sent (countdown 0)
+    auto pre_syms = BrainPreambleEncoder().encode(mode == ModeId::M75NS ? 0 : 1, mode == ModeId::M75NL);
+    std::vector<std::complex<float>> last(pre_syms.end() - brain::P_FRAME_LENGTH, pre_syms.end());
+
+    // Two profile time constants: the RAKE's weights follow the channel's power-delay
+    // profile, at t.profile_alpha per set and, when that decode is not clean, again at
+    // t.alt_profile_alpha (slower: under slow fading the fast profile chases each fade and
+    // decision errors in a fade pull the weights off the paths), with the window's
+    // re-centring limited to t.alt_max_drift_ppm and centred on a profile averaged over about
+    // 13 s, in a window of +/- t.alt_window_ms (the profile's centroid swings between the
+    // paths as they fade, which the first decode follows as drift: a path 10 ms off can
+    // leave its +/- 12 ms window). The decode whose channel
+    // bits agree better with it (lower p) is kept; a tie keeps the first.
+    long shift = demod_decode(y, sps, data_start, mode, last, t, r);
+    bool alt = false;
+    if (t.alt_profile_alpha > 0.0 && r.p > 0.0) {
+        RxTuning t2 = t;
+        t2.profile_alpha = t.alt_profile_alpha;
+        t2.max_drift_ppm = t.alt_max_drift_ppm;
+        t2.centre_alpha = t.alt_centre_alpha;
+        t2.window_ms = t.alt_window_ms;
+        RxOut r2 = r;
+        const long shift2 = demod_decode(y, sps, data_start, mode, last, t2, r2);
+        if (r2.p < r.p) { r = r2; shift = shift2; alt = true; }
+    }
     char buf[320];
     snprintf(buf, sizeof buf,
              "[RX M75] acq z=%.1f frames=%d foff=%+.1f Hz D1,D2=%d,%d (pair ratio %.2f) data_start=%ld "
              "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f snr=%.1f dB shift=%ld",
              r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.snr_db,
-             rake.shift());
+             shift);
     std::cout << buf;
+    if (alt) std::cout << " profile_alpha=" << t.alt_profile_alpha;
     if (r.excised_frames > 0) std::cout << " excised_frames=" << r.excised_frames << " cut=" << ex.cut_share;
     std::cout << std::endl;
     return r;

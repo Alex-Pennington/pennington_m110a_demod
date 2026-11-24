@@ -27,7 +27,7 @@
 // Usage: m75_ber --mode 75S|75L [--rx-mode AUTO|75S|75L] [--bytes N] [--seeds A:B]
 //                [--snr DB] [--path DELAY_MS:GAIN_DB:DOPPLER_HZ ...] [--foff HZ]
 //                [--tone F:SIR ...] [--sweep SIR] [--fsk SIR] [--voice SIR] [--cochannel SIR]
-//                [--no-excise] [--save SEED:OUT.f32]
+//                [--no-excise] [--tune FIELD=VALUE ...] [--save SEED:OUT.f32] [-v]
 
 #include "api/modem.h"
 #include "channel/appe_channel.h"
@@ -192,7 +192,7 @@ struct Opts {
     double foff = 0;
     std::vector<std::pair<double, double>> tones;
     double sweep_sir = NAN, fsk_sir = NAN, voice_sir = NAN, co_sir = NAN;
-    bool excise = true;
+    bool excise = true, verbose = false;
     long save_seed = -1;
     std::string save_path;
 };
@@ -230,6 +230,28 @@ int main(int argc, char** argv) {
         else if (a == "--voice") o.voice_sir = atof(val().c_str());
         else if (a == "--cochannel") o.co_sir = atof(val().c_str());
         else if (a == "--no-excise") o.excise = false;
+        else if (a == "-v") o.verbose = true;
+        else if (a == "--tune") {  // RxTuning field=value, for exploring the receiver's constants
+            const std::string v = val();
+            const auto e = v.find('=');
+            if (e == std::string::npos) usage("--tune FIELD=VALUE");
+            const std::string k = v.substr(0, e);
+            const double x = atof(v.c_str() + e + 1);
+            m75::RxTuning& t = m75::default_tuning();
+            if (k == "window_ms") t.window_ms = x;
+            else if (k == "profile_alpha") t.profile_alpha = x;
+            else if (k == "weight_floor") t.weight_floor = x;
+            else if (k == "noise_beta") t.noise_beta = x;
+            else if (k == "soft_scale") t.soft_scale = x;
+            else if (k == "min_quality_db") t.min_quality_db = x;
+            else if (k == "min_block_quality_db") t.min_block_quality_db = x;
+            else if (k == "alt_profile_alpha") t.alt_profile_alpha = x;
+            else if (k == "alt_max_drift_ppm") t.alt_max_drift_ppm = x;
+            else if (k == "max_drift_ppm") t.max_drift_ppm = x;
+            else if (k == "alt_centre_alpha") t.alt_centre_alpha = x;
+            else if (k == "alt_window_ms") t.alt_window_ms = x;
+            else usage("--tune: unknown field");
+        }
         else if (a == "--save") {
             const std::string v = val();
             const auto c = v.find(':');
@@ -297,6 +319,11 @@ int main(int argc, char** argv) {
         api::DecodeResult r = api::decode(in, rc);
         std::cout.rdbuf(so);
         std::cerr.rdbuf(se);
+        if (o.verbose) {  // the receiver's own log lines
+            std::string line;
+            while (std::getline(sink, line))
+                if (line.find("[RX M75]") != std::string::npos) fprintf(stderr, "%s\n", line.c_str());
+        }
 
         long err = 0;
         for (size_t k = 0; k < data.size(); k++) {
