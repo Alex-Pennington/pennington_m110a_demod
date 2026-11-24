@@ -75,6 +75,9 @@ constexpr long MARGIN = static_cast<long>(0.04 * FS);  // audio before frame 1
 // A window with no power step at its end is decoded over its first FIRST_WINDOW before the
 // whole of it (Receiver::decode).
 constexpr long FIRST_WINDOW = static_cast<long>(30 * FS);
+// A decode of a split preamble that clears its block threshold by less than this needs other
+// chains to agree on its bytes (Receiver::process_messages).
+constexpr float CORROBORATE_DB = 0.75f;
 // Chains on one preamble's frame grid: within this of a whole number of frames apart.
 // Two Watterson paths 2 ms apart move the correlation peak by 4.8 symbols.
 constexpr long GRID_TOL = 10L * SPS_SCAN;
@@ -457,12 +460,31 @@ private:
                     bi = a;
             }
             size_t best = group[bi];
+            // Near the gate, one chain's word is not enough: when the preamble split into
+            // chains and the reported decode clears its block threshold by less than
+            // CORROBORATE_DB, a third of the chains with an EOM (at least 2) must have decoded
+            // the same bytes. A message with a single chain is judged by the gate alone.
+            Decoded out = pending_[best].out;
+            int eom_chains = 0;
+            for (size_t a = 0; a < group.size(); a++)
+                if (pending_[group[a]].out.ran && pending_[group[a]].out.eom) eom_chains++;
+            const int need = std::max(2, (eom_chains + 2) / 3);
+            if (out.r.success && group.size() > 1 &&
+                out.r.block_quality_min_db < out.r.block_quality_threshold_db + CORROBORATE_DB &&
+                votes[bi] < need) {
+                out.r.success = false;
+                char e[160];
+                snprintf(e, sizeof e, "Worst block %.1f dB within %.2f dB of the gate, and %d of %d chains with EOM "
+                         "decoded these bytes (%d needed); bytes not trusted",
+                         out.r.block_quality_min_db, CORROBORATE_DB, votes[bi], eom_chains, need);
+                out.r.error = Error(ErrorCode::RX_DECODE_FAILED, e);
+            }
             if (opt_.verbose && group.size() > 1)
                 fprintf(stderr, "m110a_rx: preamble at %.3f s: %zu chains, reporting the one at %.3f s\n",
                         m.first_frame * DECIM / FS, group.size(), pending_[best].first_frame * DECIM / FS);
             int hits = 0;
             for (size_t i : group) hits += pending_[i].hits;
-            report(m, pending_[best].out, hits, static_cast<int>(group.size()), std::max(1, votes[bi]));
+            report(m, out, hits, static_cast<int>(group.size()), std::max(1, votes[bi]));
             for (auto it = group.rbegin(); it != group.rend(); ++it)
                 pending_.erase(pending_.begin() + static_cast<long>(*it));
         }
