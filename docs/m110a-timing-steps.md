@@ -252,14 +252,19 @@ compared them.
 | The same, this branch's base receiver | whole | exact / wrong (1 to 9 bytes) | fit | real / NOT REAL | 7 / 11 |
 | The same, tail (EOM and padding only) | tail | exact | — | real | 9 |
 | Random-length messages with EOM, 10 modes, 12 and 20 dB | tail | exact | — | real | 58 |
-| RSP2 150L on air | whole | exact (as received) | fit | real | 4 |
-| Net 300L bursts 2, 3, 4 | whole | exact (as received) | fit | real | 34 |
+| RSP2 150L on air | whole | unknown: no sent payload; receiver output only | fit | real | 4 |
+| Net 300L bursts 2, 3, 4 | whole | unknown: no sent payload; receiver output only | fit | real | 34 |
 | Net 300L burst 1, blocks 2 and 9 | whole | wrong | do not fit | NOT REAL | 2 |
 | Net 300L burst 1, other blocks | whole | not known | fit | real | 9 |
 | RSP2 and bursts 1 to 4 | tail | not known | — | real | 5 |
 | 6a captures, keyed 2400S/1200S/600S under one block | tail | exact | — | real | 8 |
 | 6a capture 5 (no key for its session) | tail | not known | — | real | 3 |
 | 6a capture 11, 2400S, success=0 | whole | wrong (143 bytes) | do not fit | NOT REAL | 1 |
+
+> **Corrected 2026-11-24:** the RSP2 150L and net 300L bursts 2 to 4 rows read "exact (as
+> received)". That took the receiver's own output as the truth it was checked against, which is
+> circular: no sent payload is held for them. They are unknown, and the exact blocks in this
+> table are 467, not 505.
 
 No wrong block is called real, and no exact block is called anything else. Among exact
 blocks, the most far-off data symbols seen was 1. Every wrong block the old comparison passed
@@ -409,6 +414,17 @@ That block is now `NOT VERIFIABLE`, never real.
 of the time, so they are `NOT VERIFIABLE`: the check cannot tell one wrong byte there. RSP2 150L
 (`sep` 21 to 25) stays real.
 
+Measured on b2 by the independent review: wrong bytes injected into b2's blocks, the share the
+check catches (NOT REAL), by wrong bytes per block. The review found the power model right or
+slightly optimistic.
+
+| Wrong bytes per block | 1 | 2 | 4 | 8 |
+|---|---|---|---|---|
+| Caught (b2) | 12 % | 18 to 55 % | 79 to 97 % | 97 to 100 % |
+
+So on b2 one wrong byte goes unseen 7 times in 8, which is what `NOT VERIFIABLE` says, and several
+wrong bytes per block are mostly caught.
+
 Measured (verdict counts real / NOT VERIFIABLE / NOT REAL; 8a9b719 has no third verdict):
 
 Held-out validation (`build/scratch/validate.py`, new seeds, 20 messages per point; each gives
@@ -428,18 +444,19 @@ wrong blocks are those whose bytes differ):
 exact blocks NOT REAL; this check calls none of either.
 
 The review's truth table (its per-frame dumps; each version's own verdict code on the same
-counts): exact blocks 414 real, 91 NOT VERIFIABLE, 0 NOT REAL (8a9b719: 505 real); wrong blocks 0
+counts): exact blocks 410 real, 57 NOT VERIFIABLE, 0 NOT REAL (8a9b719: 467 real); wrong blocks 0
 real, 1 NOT VERIFIABLE (6a capture 11), 80 NOT REAL (8a9b719: 81 NOT REAL); blocks of unknown truth
-1 real, 16 NOT VERIFIABLE. The 34 wrong blocks the block lines call fit (case F, the 1200L fades
+5 real, 50 NOT VERIFIABLE (8a9b719: 55 real). RSP2 and net bursts 2 to 4 count as unknown: no sent
+payload is held for them, only the receiver's output. The 34 wrong blocks the block lines call fit (case F, the 1200L fades
 on both receivers, Watterson, the 600L review fades) stay NOT REAL.
 
 Real captures, run through this check (truth as the review's):
 
 | Capture | Block | Truth | 8a9b719 | Now | Blocks |
 |---|---|---|---|---|---|
-| RSP2 150L | whole | exact | real | real | 4 |
+| RSP2 150L | whole | unknown: no sent payload; receiver output only | real | real | 4 |
 | RSP2 150L | tail | not known | real | real | 1 |
-| net 300L b2, b3, b4 | whole | exact | real | NOT VERIFIABLE | 34 |
+| net 300L b2, b3, b4 | whole | unknown: no sent payload; receiver output only | real | NOT VERIFIABLE | 34 |
 | net 300L b1 | whole | wrong (blocks 2, 9) | NOT REAL | NOT REAL | 2 |
 | net 300L b1 | whole | not known | real | NOT VERIFIABLE | 9 |
 | net 300L b1 to b4 | tail | not known | real | NOT VERIFIABLE | 4 |
