@@ -204,9 +204,10 @@ not checked at all. When m110a_rx reports `eom=1`, the check now also compares b
 ceil((8 × bytes + 32 + 144) / data bits per block), counted in bits because 150S and 300S
 blocks hold 11.25 and 22.5 bytes. Each is printed as `tail block N (data end, EOM, flush,
 zero padding): ...`, a form gale-rx's block pattern does not match, followed by its window rows
-and window check. A message under one block keeps its `not checked (no whole block)` line, and
-an indented `  tail check (eom=1, ...)` line (no label, so no second head line) and the tail lines follow it. The random-bytes control is
-high in a tail (0.93 above) because the padding is the same for any bytes. Limits:
+and window check. A message under one block keeps its `not checked (no whole block)` line. An
+indented `  tail check (eom=1, ...)` line and the tail lines follow it. The tail check line
+carries no label, so gale-rx sees one head line per message. The random-bytes control is high
+in a tail (0.93 above) because the padding is the same for any bytes. Limits:
 
 - It assumes the sender pads with zeros after the flush, as ModemTX does. That is unverified
   for other senders, Harris among them. A sender that pads otherwise makes a right tail look
