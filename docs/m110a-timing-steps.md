@@ -149,6 +149,114 @@ repairs a step gives the same bytes at nearby positions.
 
 The payload is never printed, only its length and a sha256 prefix.
 
+### Fades inside a block: the window check
+
+The per-block comparison assumes the channel is even over the block. A fade inside a block
+lowers probe and data agreement together. Inside the fade, the wrong codeword the Viterbi
+decoder chose agrees with the received symbols as well as the right one would, so averaged
+over 4.8 s a few wrong bytes move data agreement by 0.001 to 0.01. An independent review found
+300L at 10 dB with a −15 dB, 3 s fade: 12 wrong bytes in block 1, probe 0.911 and data 0.898,
+"fit". 1200L with a −15 dB, 1 s fade gave 1 to 9 wrong bytes in a fitting block, on m110a_rx
+from 1af44e2 and from this branch's base alike.
+
+Counting hard disagreements per window does not close it. The interleaver spreads a wrong
+codeword's symbols over the block, so some of them land where the signal is clean, but one
+wrong byte leaves about 7 of them in 5760 data symbols. Hard counts cannot tell 7 from noise.
+A floor on window error share fails as well: real 300L blocks reach 0.36 in one window and
+decode exact.
+
+What separates them is the distance. Where the signal is clean, a wrong symbol is no near
+miss. The received symbol sits on the point that was sent, a whole constellation step from
+the re-encoded one, and that is tens of noise powers. So the check measures each symbol's
+distance from where the sent symbol should land, in units of the noise. The channel's gain
+and phase come from the 2 × k probes around the symbol: a frame's data lies between the
+previous frame's probes and its own. The noise power is the median of those probes'
+residuals divided by ln 2, so one crash does not move it. A symbol is **far off** when it is
+decided as another point than the one sent and lies more than `TAU` = 15 noise powers out.
+Right bytes put data symbols far off only as noise or a crash puts probes there. The expected
+count is `RHO` = 2 times the probes' rate in the block, plus the Gaussian tail e^−15 per
+symbol. The block is NOT REAL when its far-off data symbols are less likely than `ALPHA` = 1e−6
+under that (Poisson). The block's last 2 frames are left out, because their probes differ
+from the scrambler's: ModemTX gives 8 to 16 probe errors there on a clean signal.
+
+The new lines come after each block line. The block line itself is unchanged, and gale-rx
+parses it:
+
+```
+  block 1: probe agreement 0.911, data agreement 0.898, random-bytes control 0.498 (chance 0.500): the bytes fit the signal
+    block 1 window 1 frames 1-8: probes 1.000 (160/160 right), data 0.994 (159/160 agree), far off 0 probes, 1 data
+    ...
+  block 1 window check: far off (over 15 noise powers) 0/5720 probes, 35/5720 data, expected for right bytes 0.00, p 3.1e-137 (not real under 1e-06); verdict NOT REAL: data symbols far off where the probes are not (bit errors)
+  tail block 2 (data end, EOM, flush, zero padding): probe agreement 0.983, data agreement 0.987, random-bytes control 0.927 (chance 0.500): the bytes fit the signal
+    block 2 window 1 frames 289-296: ...
+  block 2 window check: far off (over 15 noise powers) 0/5720 probes, 0/5720 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
+```
+The verdict is `real`, `NOT REAL: data below the probes over the block (bit errors)` (the old
+comparison) or `NOT REAL: data symbols far off where the probes are not (bit errors)`.
+gale-rx works out its own "content ok" from the block line's two numbers, so it does not see
+this verdict until it reads the `window check` line.
+
+**The tail.** The block lines cover `len // block_bytes` whole blocks. A message with EOM ends
+with the data's last bytes, then EOM 4B65A5B2, 144 flush bits and zeros to the end of the
+interleaver block (`api/modem_tx.cpp`, `M110ACodec::encode_bits_with_probes`). m110a_rx cuts the
+payload at the EOM, so that last block was never compared, and a message under one block was
+not checked at all. When m110a_rx reports `eom=1`, the check now also compares blocks up to
+ceil((8 × bytes + 32 + 144) / data bits per block), counted in bits because 150S and 300S
+blocks hold 11.25 and 22.5 bytes. Each is printed as `tail block N (data end, EOM, flush,
+zero padding): ...`, a form gale-rx's block pattern does not match, followed by its window rows
+and window check. A message under one block keeps its `not checked (no whole block)` line. An
+indented `  tail check (eom=1, ...)` line and the tail lines follow it. The tail check line
+carries no label, so gale-rx sees one head line per message. The random-bytes control is high
+in a tail (0.93 above) because the padding is the same for any bytes. Limits:
+
+- It assumes the sender pads with zeros after the flush, as ModemTX does. That is unverified
+  for other senders, Harris among them. A sender that pads otherwise makes a right tail look
+  wrong.
+- It does nothing for `eom=0`. A message cut before its EOM has no known end, and its last
+  partial block stays unchecked.
+- It needs the signal to last to the end of the last block, and says `tail not checked`
+  otherwise.
+
+`--bytes FILE` checks the given bytes in place of the receiver's. `--frames-json FILE` writes
+the per-frame counts used for calibration. `ctest rx_reencode_window` covers the window check.
+
+Calibration, block by block: the old verdict against the new one, with the truth. Truth is
+the synthetic source or the keyed payload. Exact means every byte of the block is right;
+wrong means at least one is not. Tail blocks had no old verdict, because the old check never
+compared them.
+
+| Set | Block | Truth | Old | New | Blocks |
+|---|---|---|---|---|---|
+| ModemTX, AWGN, 10 modes, 2 to 30 dB | whole | exact | fit | real | 140 |
+| ModemTX, Watterson moderate and poor, 150L, 300L, 600L, 1200L (12 runs) | whole | exact | fit | real | 197 |
+| ModemTX, Watterson | whole | wrong (1 to 3 bytes) | fit | NOT REAL | 3 |
+| ModemTX, Watterson | whole | wrong | do not fit | NOT REAL | 12 |
+| Review's fades, 300L to 2400L, 10 and 15 dB, −10 to −20 dB | whole | exact | fit | real | 10 |
+| Review's fades | whole | wrong (78 bytes) | fit | NOT REAL | 1 |
+| Review's fades | whole | wrong | do not fit | NOT REAL | 22 |
+| Review's fades | tail | exact | — | real | 20 |
+| Review's fades | tail | wrong (21 to 156 bytes) | — | NOT REAL | 6 |
+| Review's gale-rx cases F and K (300L fades) | whole | exact | fit | real | 4 |
+| Review's F | whole | wrong (12 bytes) | fit | NOT REAL | 1 |
+| Review's F and K | tail | exact / wrong (31 bytes) | — | real / NOT REAL | 4 / 1 |
+| 1200L, 720 B, −15 dB 1 s fade, 10/15/20 dB, m110a_rx at 1af44e2 | whole | exact / wrong (1 to 8 bytes) | fit | real / NOT REAL | 8 / 10 |
+| The same, this branch's base receiver | whole | exact / wrong (1 to 9 bytes) | fit | real / NOT REAL | 7 / 11 |
+| The same, tail (EOM and padding only) | tail | exact | — | real | 9 |
+| Random-length messages with EOM, 10 modes, 12 and 20 dB | tail | exact | — | real | 58 |
+| RSP2 150L on air | whole | exact (as received) | fit | real | 4 |
+| Net 300L bursts 2, 3, 4 | whole | exact (as received) | fit | real | 34 |
+| Net 300L burst 1, blocks 2 and 9 | whole | wrong | do not fit | NOT REAL | 2 |
+| Net 300L burst 1, other blocks | whole | not known | fit | real | 9 |
+| RSP2 and bursts 1 to 4 | tail | not known | — | real | 5 |
+| 6a captures, keyed 2400S/1200S/600S under one block | tail | exact | — | real | 8 |
+| 6a capture 5 (no key for its session) | tail | not known | — | real | 3 |
+| 6a capture 11, 2400S, success=0 | whole | wrong (143 bytes) | do not fit | NOT REAL | 1 |
+
+No wrong block is called real, and no exact block is called anything else. Among exact
+blocks, the most far-off data symbols seen was 1. Every wrong block the old comparison passed
+had 3 or more, p 9e−10 or less. At `TAU` = 15 and with no far-off probes, a block needs 3
+far-off data symbols to be NOT REAL.
+
 ## Left open
 
 - **`signal_frames` on the hand-cut slice:** the base receiver reports 1 block (180 B).
