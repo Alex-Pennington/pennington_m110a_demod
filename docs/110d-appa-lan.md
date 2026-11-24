@@ -5,8 +5,9 @@ it over the TCP data socket (A.5.1) or over the UDP data socket (A.5.2). There i
 transmit audio goes to a WAV file or to stdout, and receive audio comes from a file or stdin.
 
 Source: `m110_lan/main.cpp` (the server) and `m110_lan/appa_proto.h` (packets, CRC, FEC).
-Tests: `test/lan/test_appa_proto.cpp` (ctest `test_appa_proto`) and `test/lan/appa_dte.py`
-(ctest `appa_lan_dte`).
+Tests: `test/lan/test_appa_proto.cpp` (ctest `test_appa_proto`), `test/lan/appa_dte.py`
+(ctest `appa_lan_dte`) and `test/lan/appa_rx_stream.py` (ctest `appa_rx_stream`, the receiver
+against real-time audio; it needs numpy and is skipped without it).
 
 The spec is `docs/standards/MIL-STD-188-110D.pdf`, Appendix A, PDF pages 46-83 (printed
 pages 41-78). Eighteen of those pages are scanned images, so `pdftotext` returns nothing for
@@ -30,12 +31,16 @@ build/bin/m110_lan --mode 600S --tx-out tx_%d.wav --rx-in -      # receive audio
 | `--mode M` | Transmit waveform: 150S 150L 300S 300L 600S 600L 1200S 1200L 2400S 2400L 4800S. The default is 600S. |
 | `--tx-out FILE\|-` | Transmit audio. A file gets one WAV per transmission (`%d` in the name numbers them, and without it each transmission overwrites the last). `-` writes raw s16le 48 kHz mono to stdout. |
 | `--tx-format wav\|raw` | The default is `wav` for a file and `raw` for stdout. |
-| `--rx-in FILE\|-` | Receive audio: a 16-bit mono 48 kHz WAV, or raw s16le 48 kHz. `-` reads stdin. Nothing is read until a DTE is connected. |
+| `--rx-in FILE\|-` | Receive audio: a 16-bit mono 48 kHz WAV, or raw s16le 48 kHz. `-` reads stdin. A regular file is read once a DTE is connected; a pipe or other stream is read from the start, and a burst that ends with no DTE is dropped. |
 | `--port P` | TCP data socket port. The default is 3000 (A.4.2). |
 | `--rci-port P` / `--udp-port P` | Control connection and UDP data socket ports. The defaults are 3001 and 3002. |
 | `--duplex full\|half-tx\|half-rx` | Full duplex, or half duplex as transmitter master or receiver master (A.5.1.2.7). |
 | `--rx-fast` | Deliver received data at once instead of at the over-the-air rate. |
-| `--rx-gap S`, `--rx-squelch X` | A burst ends after S seconds (default 0.5) below RMS X (default 0.02 of full scale). |
+| `--rx-gap S` | A burst ends after S seconds (default 0.5) below its own end level (see "The modem behind the interface"). |
+| `--rx-max S` | The longest burst, in seconds (default 120). |
+| `--rx-threshold X` | Preamble correlation metric, 0 to 1, that starts a burst (default 0.45). |
+| `--rx-low-quality` | Deliver the bytes of a burst the decoder scores below its quality gate (default off). See below. |
+| `--rx-squelch X` | Accepted and has no effect: bursts are found by their preamble, not by level. |
 | `--tx-lead S`, `--tx-tail S` | Silence before and after each transmission (default 0.5 s and 1.0 s). |
 | `--tx-queue BYTES` | Transmit queue size (default 1 MiB). |
 | `--min-latency MS`, `--max-latency MS` | The Initial Setup socket latency fields (default 100 and 5000). |
@@ -178,20 +183,47 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   no radio to pace it. So FIFO Critical Milliseconds and Critical Bytes are 0, which turns off
   the A.5.1.2.5 step 11 underrun mechanism, and the A.5.1.2.8 data-rate pacing obligation on
   the DTE has no effect.
-- **Receive.** The input is cut into bursts by level: a burst ends after `--rx-gap` of quiet,
-  or at the end of the input. Each burst is decoded once by the 110A receiver (`decode()`,
-  AUTO mode, DFE). On success, Carrier Detect goes up with the detected rate and blocking
-  factor, and the data is delivered one blocking factor at a time, at the over-the-air rate
-  (immediately with `--rx-fast`). Then Carrier Detect goes down.
-- **Inferred, and a difference from a live modem.** CARRIER DETECTED is reported after the
-  whole burst has been decoded, not when the preamble is read: the receiver here is a batch
-  decoder. A failed decode reports nothing.
-- **Measured.** The 110A AUTO receiver finds the preamble only near the start of its buffer.
-  On the 600S transmit WAV from this test, with digital silence before the signal, it decodes
-  with up to 9600 samples (0.2 s) of lead and fails with "Mode detection failed
-  (corr=0.000000)" from 9840 samples on. So `m110_lan` keeps 0.1 s of pre-roll. This was
-  measured with a one-off decode harness that is not committed. The behaviour is in
-  `api/modem_rx.cpp`, which this work did not change.
+- **Receive.** Three threads, so that nothing waits on a decode:
+  - The **reader** reads the input 10 ms at a time into a queue. It blocks only on the input,
+    so a decode never stops audio being read.
+  - The **scanner** mixes the audio to baseband at 9600 Hz (root raised cosine, 0.35) and
+    correlates it with the 110A common preamble (`PreambleCorrelator`, `src/sync/preamble_acq.h`),
+    so a burst is found by its preamble, not by its level. On a peak at or above
+    `--rx-threshold` it reads D1 and D2 from that frame: a coherent match of each 32-symbol block
+    against the eight Walsh patterns, after the correlator's carrier-offset estimate is taken
+    out, summed over up to three frames until one pattern leads the next by 2:1. The pair gives
+    the mode (MIL-STD-188-110 Table XI). CARRIER DETECTED then goes up with that mode's rate and
+    blocking factor (A.5.1.2.6 step 2). A peak whose mode cannot be read is ignored. The burst
+    ends when the mean level over `--rx-gap` falls below its end level, at a later preamble, at
+    `--rx-max`, or at the end of the input. The end level is the geometric mean of the burst's
+    level over its first preamble frame and the quietest 0.1 s of the second before it, measured
+    in the signal's band, and never above 1/30 of the burst's level.
+  - The **decoder** decodes each whole burst, from 0.25 s before the preamble found, with the
+    110A receiver (`decode()`, AUTO, DFE), one burst at a time.
+- **Carrier.** CARRIER DETECTED stays up from preamble sync through the decode and the delivery
+  (Table A-VI: "synchronized on a preamble or is processing data from the air"). The data goes
+  one blocking factor at a time, at the over-the-air rate from the end of the decode
+  (immediately with `--rx-fast`), and NO CARRIER follows the last packet. A failed decode sends
+  NO CARRIER with no data packets. One reception is reported at a time: a burst found while the
+  last is still being decoded or delivered gets its CARRIER DETECTED after that one's NO CARRIER.
+- **Measured** (`appa_rx_stream`): CARRIER DETECTED arrives 0.15 s after the preamble's first
+  sample goes into the input, and no audio is dropped during an 11 s decode of a 32 s 600S
+  burst. A 600S burst in noise band-limited to 300-3300 Hz is found at -2 dB SNR (carrier, then
+  NO CARRIER: the 110A receiver's own mode detection fails there, so nothing is decoded), and
+  found and decoded exact at 2 dB.
+- **Not done: data before the burst ends.** The decoder is the one-shot `decode()`. It returns
+  bytes only once it has the whole burst, so the first data comes a decode time after the
+  burst's end (11.5 s for a 32 s 600S burst, measured). `ModemRX::push_samples` buffers the
+  samples and runs the same one-shot decode, so it gives no earlier output.
+- **Below the quality gate** (`--rx-low-quality`). The decoder refuses bytes whose decode
+  quality is under the mode's threshold. With this option those bytes are delivered as any
+  others: CARRIER DETECTED, data, NO CARRIER. **Appendix A has no field to mark received data
+  as suspect.** The Data Transfer payload is order, packet ID and data (Figure A-3). The
+  Carrier State is NO CARRIER or CARRIER DETECTED only (Table A-VI). The UDP Error Vector,
+  Status Vector and Control Vector define no such bit, and their reserved bits "shall always be
+  0" (Tables A-XI to A-XV). So the bytes go unmarked on the wire, and only the modem's log line
+  ("BELOW THE QUALITY GATE, delivered", with the quality and the threshold) says what they are.
+  The DTE needs its own integrity check, such as STANAG 5066's D_PDU CRCs.
 - **Blocking factor** (Transmit Setup, Carrier Detect, status): the data rate times the 110A
   interleaver span, 0.6 s short and 4.8 s long. For 600S that is 360 bits, and 45 bytes per TCP
   data packet. Inferred: MIL-STD-188-110 gives the interleaver spans, and Appendix A says only
