@@ -36,6 +36,7 @@
 #include "m110a/brain_preamble.h"
 #include "m110a/m75_acq.h"
 #include "m110a/m75_codec.h"
+#include "m110a/m75_excise.h"
 #include "m110a/mode_config.h"
 
 #include <algorithm>
@@ -63,7 +64,25 @@ struct RxTuning {
     double min_quality_db = 11.25;  // success: quality_db = 10 log10((1 - p) / p) at least this
     double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
+    bool excise = true;             // narrowband interference excision (m75_excise.h) in front
+    double alt_profile_alpha = 0.01;  // a second decode with this profile update when the first
+                                      // is not clean; the better kept (0: none)
+    double max_drift_ppm = 0.0;     // window re-centring at most this clock error (0: no limit)
+    double alt_max_drift_ppm = 200.0;  // ... in the second decode: under slow fading the profile's
+                                       // centroid swings between the paths, which is not drift
+    double centre_alpha = 0.02;     // per-set update of the profile the window centres on
+    double alt_centre_alpha = 0.002;  // ... in the second decode (about 13 s: the mean profile)
+    double alt_window_ms = 16.0;    // the second decode's delay window, either side
+    bool per_tap_noise = false;     // tap weights over the losing words' energy at the tap
+    bool alt_per_tap_noise = true;  // ... in the second decode
 };
+
+/// The tuning ModemRX's 75 bps path uses. A test tool may change it (m75_ber --no-excise);
+/// ModemRX itself never does.
+inline RxTuning& default_tuning() {
+    static RxTuning t;
+    return t;
+}
 
 /// Success needs quality_db at or above this
 inline float quality_threshold_db(const RxTuning& t) { return static_cast<float>(t.min_quality_db); }
@@ -116,6 +135,7 @@ public:
             prof_[j] = n ? e / n : 0.0;
         }
         noise_ = nn ? noise / nn : 1e-12;
+        lose_.assign(ntaps_, noise_);
         for (int j = 0; j < ntaps_; j++) slow_[j] = std::max(0.0, prof_[j] - noise_);
         centre0_ = centroid();
     }
@@ -140,7 +160,14 @@ public:
         const bool ex = exceptional_set(k, per_block_);
         std::vector<double> wgt(ntaps_);
         double wsum = 0.0;
-        for (int j = 0; j < ntaps_; j++) { wgt[j] = std::max(0.0, prof_[j] - t_.weight_floor * noise_); wsum += wgt[j]; }
+        // the floor under a tap: the noise floor, or (per_tap_noise) the losing words' energy
+        // at that tap, which also holds any other Walsh-word signal there (a co-channel 75 bps
+        // signal whose scrambler lines up with ours at that delay)
+        for (int j = 0; j < ntaps_; j++) {
+            const double f = t_.per_tap_noise ? std::max(noise_, lose_[j]) : noise_;
+            wgt[j] = std::max(0.0, prof_[j] - t_.weight_floor * f);
+            wsum += wgt[j];
+        }
         if (wsum <= 0.0) {  // no profile above the floor: weigh every tap alike
             for (int j = 0; j < ntaps_; j++) wgt[j] = 1.0;
             wsum = ntaps_;
@@ -187,7 +214,13 @@ public:
             for (int v = 0; v < 4; v++) if (v != o.win) fl += e[v * ntaps_ + j];
         }
         noise_ += t_.noise_beta * (fl / (3.0 * ntaps_) - noise_);
-        for (int j = 0; j < ntaps_; j++) slow_[j] += 0.02 * (std::max(0.0, prof_[j] - noise_) - slow_[j]);
+        if (t_.per_tap_noise)
+            for (int j = 0; j < ntaps_; j++) {
+                double l = 0.0;
+                for (int v = 0; v < 4; v++) if (v != o.win) l += e[v * ntaps_ + j];
+                lose_[j] += t_.noise_beta * (l / 3.0 - lose_[j]);
+            }
+        for (int j = 0; j < ntaps_; j++) slow_[j] += t_.centre_alpha * (std::max(0.0, prof_[j] - noise_) - slow_[j]);
         recentre();
         return o;
     }
@@ -204,8 +237,10 @@ private:
     int step_ = 1, half_ = 0, ntaps_ = 1;
     std::vector<double> prof_, slow_;
     double noise_ = 1e-12;
+    std::vector<double> lose_;  // per tap: the losing words' mean energy
     double centre0_ = 0.0;
     long shift_ = 0;
+    long sets_ = 0, last_move_ = 0;
     std::complex<float> scr_[SCRAMBLER_PERIOD];
 
     long tap_offset(int j) const { return static_cast<long>(j - half_) * step_; }
@@ -220,11 +255,17 @@ private:
     // Move the window one tap when the slow profile's centroid has moved a tap or more
     // (clock drift); the profiles move with it, so the channel stays where it was.
     void recentre() {
+        sets_++;
         const double c = centroid();
         int d = 0;
         if (c - centre0_ >= 1.0) d = 1;
         else if (c - centre0_ <= -1.0) d = -1;
         if (d == 0) return;
+        // at most max_drift_ppm: one tap (step_ samples) per step_ / (ppm 1e-6 x 32 sps) sets
+        if (t_.max_drift_ppm > 0.0 &&
+            static_cast<double>(sets_ - last_move_) * t_.max_drift_ppm * 1e-6 * SET_SYMBOLS * sps_ < step_)
+            return;
+        last_move_ = sets_;
         shift_ += d * step_;
         auto mv = [&](std::vector<double>& p) {
             if (d > 0) { std::rotate(p.begin(), p.begin() + 1, p.end()); p.back() = 0.0; }
@@ -232,7 +273,9 @@ private:
         };
         mv(prof_);
         mv(slow_);
+        mv(lose_);
         prof_[d > 0 ? ntaps_ - 1 : 0] = noise_;
+        lose_[d > 0 ? ntaps_ - 1 : 0] = noise_;
     }
 };
 
@@ -270,6 +313,7 @@ struct RxOut {
     double p = 0.5;           // channel bit disagreement over the message
     double p_block = 0.5;     // the same over the worst interleaver block of it
     double snr_db = 0.0;      // estimated, 3 kHz noise bandwidth
+    long excised_frames = 0;  // excision frames hit (0: the input went in untouched)
     std::string error;
 };
 
@@ -307,6 +351,30 @@ inline Acquisition acquire_cached(const std::vector<float>& rf, float fs, float 
     return last;
 }
 
+/// rf with narrowband interference excised (m75_excise.h), or rf itself when the excision
+/// found none: then the receiver sees its input sample for sample. Cached like
+/// acquire_cached, since the AUTO pass and the decode look at the same audio. `hit` (if
+/// given) receives the excision's statistics.
+inline const std::vector<float>& excised(const std::vector<float>& rf, float fs, float carrier,
+                                         ExciseStats* hit = nullptr) {
+    using Key = std::array<double, 12>;
+    thread_local Key key{};
+    thread_local bool cut = false;
+    thread_local std::vector<float> out;
+    thread_local ExciseStats st;
+    Key k{};
+    k[0] = static_cast<double>(rf.size()); k[1] = fs; k[2] = carrier;
+    for (int i = 0; i < 9; i++) k[3 + i] = rf.empty() ? 0.0 : rf[(rf.size() - 1) * i / 8];
+    if (!(k == key)) {
+        st = ExciseStats();
+        cut = excise(rf, fs, carrier, out, &st);
+        if (!cut) { out.clear(); out.shrink_to_fit(); }
+        key = k;
+    }
+    if (hit) *hit = st;
+    return cut ? out : rf;
+}
+
 /// The audio ModemRX hands the 75 bps path: `cut` (its buffer from its first preamble cut
 /// on) with up to 5 s of `buffer` before it put back. At low SNR first_preamble_cut fires
 /// on whichever preamble frame first crosses its threshold, which can be inside a 75 bps
@@ -322,30 +390,11 @@ inline std::vector<float> lead_in(const std::vector<float>& buffer, const std::v
 /// wrong reading cannot pass the decode gate (a 150S read as 75S decodes to garbage).
 inline bool clear_d(const Acquisition& a, double ratio = 1.25) { return a.pair_ratio >= ratio; }
 
-/**
- * Receive one 75 bps message from rf (a real passband buffer holding its preamble within
- * its first 15 s). mode: the mode to decode as.
- */
-inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
-                     const RxTuning& t = RxTuning()) {
-    RxOut r;
-    r.acq = acquire_cached(rf, fs, carrier, frange);
-    if (!r.acq.found) {
-        char buf[120];
-        snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
-        r.error = buf;
-        return r;
-    }
-    r.preamble = true;
-    const int sps = static_cast<int>(std::lround(fs / 2400.0f));
-    const long data_start = r.acq.data_start;
-    const long lo = data_start - static_cast<long>(brain::P_FRAME_LENGTH + 64) * sps;
-    const auto y = matched_filter(rf, fs, carrier + r.acq.freq_offset_hz, sps, lo);
-
-    // the last preamble frame as sent (countdown 0)
-    auto pre_syms = BrainPreambleEncoder().encode(mode == ModeId::M75NS ? 0 : 1, mode == ModeId::M75NL);
-    std::vector<std::complex<float>> last(pre_syms.end() - brain::P_FRAME_LENGTH, pre_syms.end());
-
+/// Demodulate and decode the data after the preamble from matched-filter output y: fills
+/// r's sets, signal_sets, blocks, eom_bit, data, p, p_block and snr_db; returns the
+/// window shift the RAKE ended at.
+inline long demod_decode(const std::vector<std::complex<float>>& y, int sps, long data_start, ModeId mode,
+                         const std::vector<std::complex<float>>& last, const RxTuning& t, RxOut& r) {
     WalshRake rake(y, sps, data_start, mode, t);
     rake.init_from_preamble(last);
 
@@ -436,13 +485,101 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
         const double es_n0 = b > 0.0 && kp > 0.0 ? a / b / (SET_SYMBOLS * kp) : 1e4;
         r.snr_db = es_n0 > 0 ? std::min(40.0, 10.0 * std::log10(es_n0 * 2400.0 / 3000.0)) : -99.0;
     }
+    return rake.shift();
+}
+
+/// Demodulate and decode the data of a preamble r.acq found in `in`: fills r as
+/// demod_decode does, from the decode kept; alt: the second decode was kept. Returns the
+/// window shift.
+///
+/// Two profile time constants: the RAKE's weights follow the channel's power-delay
+/// profile, at t.profile_alpha per set and, when that decode is not clean, again at
+/// t.alt_profile_alpha (slower: under slow fading the fast profile chases each fade and
+/// decision errors in a fade pull the weights off the paths), with the window's
+/// re-centring limited to t.alt_max_drift_ppm and centred on a profile averaged over about
+/// 13 s, in a window of +/- t.alt_window_ms (the profile's centroid swings between the
+/// paths as they fade, which the first decode follows as drift: a path 10 ms off can
+/// leave its +/- 12 ms window), and each tap weighed over its own losing words' energy
+/// (a co-channel 75 bps signal lined up with our scrambler at some delay fills the losing
+/// words there, where a path of ours leaves them at the noise). The decode whose channel
+/// bits agree better with it (lower p) is kept; a tie keeps the first.
+inline long receive_data(const std::vector<float>& in, ModeId mode, float fs, float carrier, const RxTuning& t,
+                         RxOut& r, bool& alt) {
+    const int sps = static_cast<int>(std::lround(fs / 2400.0f));
+    const long data_start = r.acq.data_start;
+    const long lo = data_start - static_cast<long>(brain::P_FRAME_LENGTH + 64) * sps;
+    const auto y = matched_filter(in, fs, carrier + r.acq.freq_offset_hz, sps, lo);
+
+    // the last preamble frame as sent (countdown 0)
+    auto pre_syms = BrainPreambleEncoder().encode(mode == ModeId::M75NS ? 0 : 1, mode == ModeId::M75NL);
+    std::vector<std::complex<float>> last(pre_syms.end() - brain::P_FRAME_LENGTH, pre_syms.end());
+
+    long shift = demod_decode(y, sps, data_start, mode, last, t, r);
+    alt = false;
+    if (t.alt_profile_alpha > 0.0 && r.p > 0.0) {
+        RxTuning t2 = t;
+        t2.profile_alpha = t.alt_profile_alpha;
+        t2.max_drift_ppm = t.alt_max_drift_ppm;
+        t2.centre_alpha = t.alt_centre_alpha;
+        t2.window_ms = t.alt_window_ms;
+        t2.per_tap_noise = t.alt_per_tap_noise;
+        RxOut r2 = r;
+        const long shift2 = demod_decode(y, sps, data_start, mode, last, t2, r2);
+        if (r2.p < r.p) { r = r2; shift = shift2; alt = true; }
+    }
+    return shift;
+}
+
+/**
+ * Receive one 75 bps message from rf (a real passband buffer holding its preamble within
+ * its first 15 s). mode: the mode to decode as.
+ */
+inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
+                     const RxTuning& t = RxTuning()) {
+    RxOut r;
+    ExciseStats ex;
+    const std::vector<float>& in = t.excise ? excised(rf, fs, carrier, &ex) : rf;
+    r.excised_frames = ex.hit_frames;
+    r.acq = acquire_cached(in, fs, carrier, frange);
+    long shift = 0;
+    bool alt = false, cm = false;
+    if (r.acq.found) {
+        r.preamble = true;
+        shift = receive_data(in, mode, fs, carrier, t, r, alt);
+    }
+    // A strong constant-envelope interferer (FSK, CW, a swept CW) that the bin weighting
+    // found but could not clear: decode again after constant-modulus cancellation of the
+    // input (m75_excise.h cm_cancel), and keep the decode that agrees better (lower p).
+    std::vector<float> cmo;
+    if (t.excise && ex.hit_frames > 0 && (!r.preamble || r.p > 0.0) && cm_cancel(rf, fs, carrier, cmo)) {
+        RxOut r2;
+        r2.excised_frames = r.excised_frames;
+        r2.acq = acquire(cmo, fs, carrier, frange);
+        if (r2.acq.found) {
+            r2.preamble = true;
+            bool alt2 = false;
+            const long shift2 = receive_data(cmo, mode, fs, carrier, t, r2, alt2);
+            if (!r.preamble || r2.p < r.p) { r = r2; shift = shift2; alt = alt2; cm = true; }
+        }
+    }
+    if (!r.preamble) {
+        char buf[120];
+        snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
+        r.error = buf;
+        return r;
+    }
+    const long data_start = r.acq.data_start;
     char buf[320];
     snprintf(buf, sizeof buf,
              "[RX M75] acq z=%.1f frames=%d foff=%+.1f Hz D1,D2=%d,%d (pair ratio %.2f) data_start=%ld "
              "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f snr=%.1f dB shift=%ld",
              r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.snr_db,
-             rake.shift());
-    std::cout << buf << std::endl;
+             shift);
+    std::cout << buf;
+    if (alt) std::cout << " profile_alpha=" << t.alt_profile_alpha;
+    if (cm) std::cout << " cm_cancel=1";
+    if (r.excised_frames > 0) std::cout << " excised_frames=" << r.excised_frames << " cut=" << ex.cut_share;
+    std::cout << std::endl;
     return r;
 }
 
@@ -466,7 +603,8 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
 /// ModemRX's AUTO pass, when the shared acquisition found no preamble: is there a 75 bps
 /// one, found and with D1/D2 read clearly as 7,5 or 5,5? Its mode in `mode`.
 inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
-    const Acquisition a = acquire_cached(rf, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
+    const std::vector<float>& in = default_tuning().excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
+    const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
     if (!a.found || !a.is_75 || !clear_d(a, 1.1)) return false;
     mode = a.mode;
     return true;
@@ -477,10 +615,11 @@ inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg,
  * receive of `rf` in `mode`. forced: the mode was given, not read from the preamble.
  */
 inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId mode,
-                                api::DecodeResult res, bool forced, const RxTuning& t = RxTuning()) {
+                                api::DecodeResult res, bool forced, const RxTuning& t = default_tuning()) {
     // AUTO: the mode D1/D2 name, read over the whole preamble, when they name a 75 bps one
     if (!forced) {
-        const Acquisition a = acquire_cached(rf, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
+        const std::vector<float>& in = t.excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
+        const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
         if (a.found && a.is_75 && clear_d(a, 1.1)) mode = a.mode;
     }
     const RxOut r = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);

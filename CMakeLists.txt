@@ -164,6 +164,16 @@ set_tests_properties(test_m75 PROPERTIES LABELS "rx;tx;m75" TIMEOUT 1800)
 add_executable(m75_wav_rx test/m75/wav_rx.cpp)
 target_link_libraries(m75_wav_rx PRIVATE m110a_modem)
 set_target_properties(m75_wav_rx PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+# 75 bps BER in process: ModemTX -> Appendix E channel -> interference -> ModemRX
+# (test/m75/ber.cpp, test/m75/ber_sweep.py; docs/m110a-75bps.md, STANAG 4415 section)
+add_executable(m75_ber test/m75/ber.cpp)
+target_link_libraries(m75_ber PRIVATE m110a_modem)
+set_target_properties(m75_ber PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+# The Appendix E fading model at 0.5-50 Hz Doppler and the two-path, 10 ms channel built on it
+add_executable(m75_fading_check test/m75/fading_check.cpp)
+set_target_properties(m75_fading_check PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+add_test(NAME m75_fading_check COMMAND m75_fading_check --seconds 0.5)
+set_tests_properties(m75_fading_check PROPERTIES LABELS "fast;chansim;m75" TIMEOUT 900)
 
 # ---- I/Q receive path through m110a_rx ----
 # Synthetic RSP2 I/Q (test/rx/synth_iq.py: 2 MS/s cs16, dial at +100 kHz)
@@ -326,6 +336,31 @@ if(M110A_HAVE_SCIPY)
     add_test(NAME ${_name} COMMAND ${_m75} ${_args} --work ${CMAKE_BINARY_DIR}/rx_work/${_name})
     set_tests_properties(${_name} PROPERTIES LABELS "m75;tx;rx" TIMEOUT 3600)
   endforeach()
+
+  # STANAG 4415 points (secondary figures, docs/m110a-75bps.md), cheapest representative
+  # cases of the measured tables: m75_ber in process, 180-byte messages starting
+  # "DE AAM402", 2 seeds each; every case 0 bit errors (max_ber 1e-4 over 2880 bits) and no
+  # decode may succeed with wrong bits
+  set(_m75ber ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/m75/ber_sweep.py
+              --ber $<TARGET_FILE:m75_ber> --jobs 3 --seeds 1:2)
+  add_test(NAME m75_4415_awgn COMMAND ${_m75ber}
+           --case "75L-9|--mode 75L --bytes 180 --snr -9" --case "75S-9|--mode 75S --bytes 180 --snr -9"
+           --require "75L-9:max_ber=1e-4" --require "75S-9:max_ber=1e-4")
+  add_test(NAME m75_4415_doppler COMMAND ${_m75ber}
+           --case "d0.5|--mode 75L --bytes 180 --snr 0 --path 0:0:0.5 --path 10:0:0.5"
+           --case "d50|--mode 75L --bytes 180 --snr -1 --path 0:0:50 --path 10:0:50"
+           --require "d0.5:max_ber=1e-4" --require "d50:max_ber=1e-4"
+           --require "d0.5:min_sync=2" --require "d50:min_sync=2")
+  add_test(NAME m75_4415_interference COMMAND ${_m75ber}
+           --case "tones4|--mode 75L --bytes 180 --snr 10 --tone 813:-40 --tone 1327:-40 --tone 1871:-40 --tone 2459:-40"
+           --case "sweep|--mode 75L --bytes 180 --snr 10 --sweep -40"
+           --case "fsk|--mode 75L --bytes 180 --snr 10 --fsk -40"
+           --case "voice|--mode 75L --bytes 180 --snr 10 --voice -25"
+           --case "cochannel|--mode 75L --bytes 180 --snr 10 --cochannel -6"
+           --require "tones4:max_ber=1e-4" --require "sweep:max_ber=1e-4" --require "fsk:max_ber=1e-4"
+           --require "voice:max_ber=1e-4" --require "cochannel:max_ber=1e-4")
+  set_tests_properties(m75_4415_awgn m75_4415_doppler m75_4415_interference PROPERTIES
+                       LABELS "m75;rx;4415" TIMEOUT 1800)
 else()
   message(STATUS "python3 with numpy+scipy not found: I/Q receive tests skipped")
 endif()
