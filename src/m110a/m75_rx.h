@@ -488,24 +488,23 @@ inline long demod_decode(const std::vector<std::complex<float>>& y, int sps, lon
     return rake.shift();
 }
 
-/**
- * Receive one 75 bps message from rf (a real passband buffer holding its preamble within
- * its first 15 s). mode: the mode to decode as.
- */
-inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
-                     const RxTuning& t = RxTuning()) {
-    RxOut r;
-    ExciseStats ex;
-    const std::vector<float>& in = t.excise ? excised(rf, fs, carrier, &ex) : rf;
-    r.excised_frames = ex.hit_frames;
-    r.acq = acquire_cached(in, fs, carrier, frange);
-    if (!r.acq.found) {
-        char buf[120];
-        snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
-        r.error = buf;
-        return r;
-    }
-    r.preamble = true;
+/// Demodulate and decode the data of a preamble r.acq found in `in`: fills r as
+/// demod_decode does, from the decode kept; alt: the second decode was kept. Returns the
+/// window shift.
+///
+/// Two profile time constants: the RAKE's weights follow the channel's power-delay
+/// profile, at t.profile_alpha per set and, when that decode is not clean, again at
+/// t.alt_profile_alpha (slower: under slow fading the fast profile chases each fade and
+/// decision errors in a fade pull the weights off the paths), with the window's
+/// re-centring limited to t.alt_max_drift_ppm and centred on a profile averaged over about
+/// 13 s, in a window of +/- t.alt_window_ms (the profile's centroid swings between the
+/// paths as they fade, which the first decode follows as drift: a path 10 ms off can
+/// leave its +/- 12 ms window), and each tap weighed over its own losing words' energy
+/// (a co-channel 75 bps signal lined up with our scrambler at some delay fills the losing
+/// words there, where a path of ours leaves them at the noise). The decode whose channel
+/// bits agree better with it (lower p) is kept; a tie keeps the first.
+inline long receive_data(const std::vector<float>& in, ModeId mode, float fs, float carrier, const RxTuning& t,
+                         RxOut& r, bool& alt) {
     const int sps = static_cast<int>(std::lround(fs / 2400.0f));
     const long data_start = r.acq.data_start;
     const long lo = data_start - static_cast<long>(brain::P_FRAME_LENGTH + 64) * sps;
@@ -515,19 +514,8 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     auto pre_syms = BrainPreambleEncoder().encode(mode == ModeId::M75NS ? 0 : 1, mode == ModeId::M75NL);
     std::vector<std::complex<float>> last(pre_syms.end() - brain::P_FRAME_LENGTH, pre_syms.end());
 
-    // Two profile time constants: the RAKE's weights follow the channel's power-delay
-    // profile, at t.profile_alpha per set and, when that decode is not clean, again at
-    // t.alt_profile_alpha (slower: under slow fading the fast profile chases each fade and
-    // decision errors in a fade pull the weights off the paths), with the window's
-    // re-centring limited to t.alt_max_drift_ppm and centred on a profile averaged over about
-    // 13 s, in a window of +/- t.alt_window_ms (the profile's centroid swings between the
-    // paths as they fade, which the first decode follows as drift: a path 10 ms off can
-    // leave its +/- 12 ms window), and each tap weighed over its own losing words' energy
-    // (a co-channel 75 bps signal lined up with our scrambler at some delay fills the losing
-    // words there, where a path of ours leaves them at the noise). The decode whose channel
-    // bits agree better with it (lower p) is kept; a tie keeps the first.
     long shift = demod_decode(y, sps, data_start, mode, last, t, r);
-    bool alt = false;
+    alt = false;
     if (t.alt_profile_alpha > 0.0 && r.p > 0.0) {
         RxTuning t2 = t;
         t2.profile_alpha = t.alt_profile_alpha;
@@ -539,6 +527,48 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
         const long shift2 = demod_decode(y, sps, data_start, mode, last, t2, r2);
         if (r2.p < r.p) { r = r2; shift = shift2; alt = true; }
     }
+    return shift;
+}
+
+/**
+ * Receive one 75 bps message from rf (a real passband buffer holding its preamble within
+ * its first 15 s). mode: the mode to decode as.
+ */
+inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float carrier, float frange,
+                     const RxTuning& t = RxTuning()) {
+    RxOut r;
+    ExciseStats ex;
+    const std::vector<float>& in = t.excise ? excised(rf, fs, carrier, &ex) : rf;
+    r.excised_frames = ex.hit_frames;
+    r.acq = acquire_cached(in, fs, carrier, frange);
+    long shift = 0;
+    bool alt = false, cm = false;
+    if (r.acq.found) {
+        r.preamble = true;
+        shift = receive_data(in, mode, fs, carrier, t, r, alt);
+    }
+    // A strong constant-envelope interferer (FSK, CW, a swept CW) that the bin weighting
+    // found but could not clear: decode again after constant-modulus cancellation of the
+    // input (m75_excise.h cm_cancel), and keep the decode that agrees better (lower p).
+    std::vector<float> cmo;
+    if (t.excise && ex.hit_frames > 0 && (!r.preamble || r.p > 0.0) && cm_cancel(rf, fs, carrier, cmo)) {
+        RxOut r2;
+        r2.excised_frames = r.excised_frames;
+        r2.acq = acquire(cmo, fs, carrier, frange);
+        if (r2.acq.found) {
+            r2.preamble = true;
+            bool alt2 = false;
+            const long shift2 = receive_data(cmo, mode, fs, carrier, t, r2, alt2);
+            if (!r.preamble || r2.p < r.p) { r = r2; shift = shift2; alt = alt2; cm = true; }
+        }
+    }
+    if (!r.preamble) {
+        char buf[120];
+        snprintf(buf, sizeof buf, "75 bps: no preamble found (significance %.1f)", r.acq.z);
+        r.error = buf;
+        return r;
+    }
+    const long data_start = r.acq.data_start;
     char buf[320];
     snprintf(buf, sizeof buf,
              "[RX M75] acq z=%.1f frames=%d foff=%+.1f Hz D1,D2=%d,%d (pair ratio %.2f) data_start=%ld "
@@ -547,6 +577,7 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
              shift);
     std::cout << buf;
     if (alt) std::cout << " profile_alpha=" << t.alt_profile_alpha;
+    if (cm) std::cout << " cm_cancel=1";
     if (r.excised_frames > 0) std::cout << " excised_frames=" << r.excised_frames << " cut=" << ex.cut_share;
     std::cout << std::endl;
     return r;

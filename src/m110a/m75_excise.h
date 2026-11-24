@@ -181,6 +181,72 @@ inline bool excise(const std::vector<float>& rf, float fs, float carrier, std::v
     return true;
 }
 
+struct CmTuning {
+    double band_hz = 1650.0;   // the analytic signal is kept to carrier +/- this
+    double window_s = 0.5;     // envelope steadiness judged per window
+    double max_cov = 0.2;      // a window is constant-envelope when std / mean of |z| is below this
+    double min_share = 0.25;   // ... and the canceller runs when this share of windows is
+    double amp_s = 0.01;       // the interferer's amplitude: |z| averaged over this
+};
+
+/**
+ * Constant-modulus cancellation, for an interferer far stronger than the 75 bps signal
+ * whose envelope is constant (FSK, CW, a swept CW). On the analytic signal z = I + w kept
+ * to the signal's band, with I = A e^{j theta} and |w| << A, z - A z / |z| leaves
+ * e^{j theta} Re(w e^{-j theta}) = (w + e^{2 j theta} w*) / 2: half of the signal and of the
+ * noise, plus their conjugate image moved by twice the interferer's phase, which the
+ * scrambled Walsh demodulator sees as noise. The interferer itself is gone whatever its
+ * frequency does, where bin weighting leaves FSK's keying splatter across the band.
+ * A is |z| averaged over amp_s. Applied in the windows where |z| is steady (std / mean
+ * below max_cov; the 75 bps signal alone or noise give about 0.5); returns false and
+ * leaves `out` untouched when fewer than min_share of the windows are.
+ */
+inline bool cm_cancel(const std::vector<float>& rf, float fs, float carrier, std::vector<float>& out,
+                      double* share = nullptr, const CmTuning& t = CmTuning()) {
+    const size_t n = rf.size();
+    if (n < static_cast<size_t>(2 * t.window_s * fs)) return false;
+    size_t N = 1;
+    while (N < n) N <<= 1;
+    std::vector<std::complex<float>> z(N, std::complex<float>(0.0f, 0.0f));
+    for (size_t i = 0; i < n; i++) z[i] = rf[i];
+    detail::fft_inplace(z, false);
+    const double df = fs / static_cast<double>(N);
+    for (size_t k = 0; k < N; k++) {
+        const double f = k < N / 2 ? k * df : -1.0;
+        z[k] *= (f >= carrier - t.band_hz && f <= carrier + t.band_hz) ? 2.0f : 0.0f;
+    }
+    detail::fft_inplace(z, true);
+    z.resize(n);
+    std::vector<float> env(n);
+    for (size_t i = 0; i < n; i++) env[i] = std::abs(z[i]);
+    const size_t W = static_cast<size_t>(t.window_s * fs);
+    const size_t nw = n / W;
+    std::vector<char> cm(nw + 1, 0);
+    size_t ncm = 0;
+    for (size_t w = 0; w < nw; w++) {
+        double s = 0.0, s2 = 0.0;
+        for (size_t i = w * W; i < (w + 1) * W; i++) { s += env[i]; s2 += double(env[i]) * env[i]; }
+        const double m = s / W, v = std::max(0.0, s2 / W - m * m);
+        cm[w] = m > 0.0 && std::sqrt(v) / m < t.max_cov;
+        ncm += cm[w];
+    }
+    if (share) *share = nw ? static_cast<double>(ncm) / nw : 0.0;
+    if (nw == 0 || ncm < t.min_share * nw) return false;
+    cm[nw] = nw ? cm[nw - 1] : 0;  // the tail follows the last whole window
+    // A: running mean of |z| over amp_s, centred
+    const size_t L = std::max<size_t>(1, static_cast<size_t>(t.amp_s * fs));
+    std::vector<double> cs(n + 1, 0.0);
+    for (size_t i = 0; i < n; i++) cs[i + 1] = cs[i] + env[i];
+    out.assign(n, 0.0f);
+    for (size_t i = 0; i < n; i++) {
+        if (!cm[std::min(nw, i / W)] || env[i] <= 0.0f) { out[i] = z[i].real(); continue; }
+        const size_t a = i >= L / 2 ? i - L / 2 : 0, b = std::min(n, i + L / 2 + 1);
+        const double A = (cs[b] - cs[a]) / static_cast<double>(b - a);
+        out[i] = static_cast<float>(z[i].real() * (1.0 - A / env[i]));
+    }
+    return true;
+}
+
 }  // namespace m75
 }  // namespace m110a
 
