@@ -233,6 +233,50 @@ def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
             for i in range(blocks)]
 
 
+WIN = 8          # frames per window, as track() follows the grid
+CLEAN = 0.90     # a window is clean when its probe agreement, chance removed, reaches this
+RATIO = 2.0      # right bytes: data errors in clean windows at most RATIO times the probes' rate
+Z, C0 = 3.0, 3   # plus Z sigma of a Poisson count, plus C0 symbols
+
+
+def windows(n, win=WIN):
+    """Window edges over n frames; a last window under win/2 frames joins the one before."""
+    e = list(range(0, n, win)) + [n]
+    if len(e) > 2 and e[-1] - e[-2] < win // 2:
+        e.pop(-2)
+    return list(zip(e[:-1], e[1:]))
+
+
+def window_check(pok, dok, rate, u, k):
+    """The window check of one block from its per-frame counts.
+
+    A fade inside a block lowers probe and data agreement together, and there the wrong
+    codeword the Viterbi decoder chose agrees with the received symbols as well as the right
+    one would. Averaged over the block, the faded frames then hide the disagreement the wrong
+    bytes leave in the rest of the block: the interleaver spreads a wrong codeword's symbols
+    over the whole block, so some land where the signal is clean and the received symbols
+    are the sent ones. So the block is cut into WIN-frame windows; a window is clean when its
+    probe agreement, chance removed, is CLEAN or more; and over the clean windows the data
+    symbols may disagree with the re-encoded ones at most RATIO times as often as the probes
+    are decided wrong there, plus Z sigma of a Poisson count and C0 symbols.
+    Returns (rows, summary): rows per window (first frame, last frame, probes right, probes,
+    data agreeing, data symbols, clean); summary with the counts, the allowance and the verdict
+    'real', 'not real' or 'unverifiable' (no clean window)."""
+    c = CHANCE[rate]
+    rows = []
+    for a, z in windows(len(pok)):
+        pr, pn, dr, dn = int(pok[a:z].sum()), k * (z - a), int(dok[a:z].sum()), u * (z - a)
+        rows.append((a, z - 1, pr, pn, dr, dn, (pr / pn - c) / (1 - c) >= CLEAN))
+    cl = [r for r in rows if r[6]]
+    pr, pn = sum(r[2] for r in cl), sum(r[3] for r in cl)
+    dr, dn = sum(r[4] for r in cl), sum(r[5] for r in cl)
+    expected = RATIO * (pn - pr) / pn * dn if pn else 0.0
+    allowed = int(np.floor(expected + Z * np.sqrt(expected) + C0))
+    verdict = 'unverifiable' if not cl else ('real' if dn - dr <= allowed else 'not real')
+    return rows, dict(windows=len(rows), clean=len(cl), probes_right=pr, probes=pn, data_agree=dr, data=dn,
+                      data_errors=dn - dr, expected=expected, allowed=allowed, verdict=verdict)
+
+
 def check(a, x, sr, work):
     out, rx = decode(a.rx, x, sr, a.offset_hz, work, dump=True)
     bb = baseband(rx)
@@ -281,8 +325,8 @@ def check(a, x, sr, work):
         _, d, nf, off, rows = best
         tb, t0 = tbs['control']
         ctl = agreement(bb, d, tb, t0, rate, min(nf, (len(tb) - t0) // (p * SPS) - 1), blocks, off)
+        pok, dok = frame_agreement(bb, d, tbs['decoded'][0], tbs['decoded'][1], rate, nf, off)
         if a.frames_json:
-            pok, dok = frame_agreement(bb, d, tbs['decoded'][0], tbs['decoded'][1], rate, nf, off)
             dumps.append({'mode': mode, 'start_s': kv.get('start_s'), 'bytes': len(payload),
                           'sha256': hashlib.sha256(payload).hexdigest()[:12], 'blocks': blocks,
                           'frames_per_block': nframes // blocks, 'u': u, 'k': k,
@@ -295,6 +339,26 @@ def check(a, x, sr, work):
             verdict = 'fit the signal' if da >= pa - FIT else 'DO NOT FIT the signal (bit errors)'
             print(f'  block {b + 1}: probe agreement {pa:.3f}, data agreement {da:.3f}, random-bytes control '
                   f'{ca:.3f} (chance {CHANCE[rate]:.3f}): the bytes {verdict}')
+            # New lines (the block line above is unchanged): the window check of this block.
+            fpb = nf // blocks
+            f0 = b * fpb
+            wrows, s = window_check(pok[f0:f0 + fpb], dok[f0:f0 + fpb], rate, u, k)
+            for i, (w0, w1, pr, pn, dr, dn, cl) in enumerate(wrows):
+                print(f'    block {b + 1} window {i + 1} frames {f0 + w0 + 1}-{f0 + w1 + 1}: probes {pr / pn:.3f} '
+                      f'({pr}/{pn} right), data {dr / dn:.3f} ({dr}/{dn} agree)' + (', clean' if cl else ''))
+            if da < pa - FIT:
+                final = 'NOT REAL: data below the probes over the block (bit errors)'
+            elif s['verdict'] == 'not real':
+                final = 'NOT REAL: data disagree where the probes agree (bit errors)'
+            elif s['verdict'] == 'unverifiable':
+                final = 'UNVERIFIABLE: no clean window'
+            else:
+                final = 'real'
+            c = CHANCE[rate]
+            print(f"  block {b + 1} window check: clean windows {s['clean']} of {s['windows']} (probes "
+                  f"{c + CLEAN * (1 - c):.3f} or more right), clean probes {s['probes_right']}/{s['probes']} right, "
+                  f"clean data {s['data_errors']}/{s['data']} disagree, allowed {s['allowed']} "
+                  f"(expected {s['expected']:.1f}); verdict {final}")
     if not found:
         print(f'{a.capture}: no message')
     if a.frames_json:
