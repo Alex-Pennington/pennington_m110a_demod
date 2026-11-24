@@ -117,6 +117,13 @@ target_link_libraries(test_signal_end PRIVATE m110a_modem)
 add_test(NAME test_signal_end COMMAND test_signal_end)
 set_tests_properties(test_signal_end PROPERTIES LABELS "rx" TIMEOUT 3600)
 
+# success reads every interleaver block of the message, not only its first 1440 data
+# symbols (fix/m110a-quality-gate)
+add_executable(test_block_gate test/test_block_gate.cpp)
+target_link_libraries(test_block_gate PRIVATE m110a_modem)
+add_test(NAME test_block_gate COMMAND test_block_gate)
+set_tests_properties(test_block_gate PROPERTIES LABELS "rx" TIMEOUT 3600)
+
 # A 15 ms timing step mid-message (silence or replay inserted, or deleted): the data grid
 # follows it and the payload decodes exact (fix/m110a-onair-tracking)
 add_executable(test_grid_step test/test_grid_step.cpp)

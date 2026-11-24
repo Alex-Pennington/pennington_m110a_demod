@@ -58,8 +58,9 @@ struct DecodeResult {
     float quality_db = 0.0f;
     
     /// Minimum quality_db for the decoded mode. success is true only when the
-    /// decode produced bytes and quality_db >= quality_threshold_db; below it,
-    /// data still holds the bytes but they are not trusted.
+    /// decode produced bytes, quality_db >= quality_threshold_db and
+    /// block_quality_min_db >= block_quality_threshold_db; otherwise data still
+    /// holds the bytes but they are not trusted.
     ///
     /// 110A has no CRC, so success is a confidence threshold, not a proof. It
     /// rejects garbage (an untrained equalizer, a decoder off the signal). It
@@ -67,6 +68,29 @@ struct DecodeResult {
     /// out AWGN decodes of the MS-DMT reference recordings, 4 of 56 successes
     /// at the knee had 1-2 wrong bytes, and none had more.
     float quality_threshold_db = 0.0f;
+
+    /// Decode quality of each interleaver block the message occupies, in order,
+    /// in dB: the flat-channel SNR with the same expected coded-bit error rate as
+    /// the block. Each frame's probe SNR (as quality_db reads it) gives the error
+    /// rate of its symbols for the mode's modulation and repetition; the block's
+    /// mean of that is what the Viterbi decoder gets after deinterleaving. On a
+    /// flat channel it is about quality_db; a fade counts by the errors it causes.
+    /// The blocks are those up to the one holding the EOM, or without an EOM the
+    /// whole blocks the signal covers. Empty when the mode has no probes or no
+    /// block was decoded.
+    std::vector<float> block_quality_db;
+
+    /// Lowest of block_quality_db, or quality_db when it is empty.
+    float block_quality_min_db = 0.0f;
+
+    /// Minimum block_quality_min_db for the decoded mode. success also needs
+    /// block_quality_min_db >= block_quality_threshold_db: quality_db reads only
+    /// the first 1440 data symbols, and on a fading channel a later block can be
+    /// lost while the first scores well (docs/m110a-quality-gate.md). Like
+    /// quality_db it is a confidence threshold: a decode a few bytes wrong at the
+    /// knee can still clear it, and a decode that started a whole probe period
+    /// off (its probes still line up) scores as well as a right one.
+    float block_quality_threshold_db = 0.0f;
 
     /// Preamble as read in AUTO mode (-1 when not read): D1, D2 (0-7) and
     /// the countdown of the frame the receiver locked onto. countdown_raw is

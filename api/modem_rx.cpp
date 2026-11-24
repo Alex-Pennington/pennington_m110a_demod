@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <numeric>
 #include <array>
+#include <limits>
 
 namespace m110a {
 namespace api {
@@ -303,8 +304,19 @@ public:
                                                  block_frames_,
                                                  quality_span(mode_cfg, eom_bit));
                 result.quality_threshold_db = quality_threshold_db(mode_id);
+                {
+                    const size_t pat = static_cast<size_t>(mode_cfg.unknown_data_len + mode_cfg.known_data_len);
+                    fill_block_quality(result, phase_corrected, mode_cfg, mode_id,
+                                       eom_bit >= 0 ? message_symbols(mode_cfg, eom_bit) / pat
+                                                    : phase_corrected.size() / pat,
+                                       false);
+                }
                 result.success = result.quality_db >= result.quality_threshold_db;
                 if (!result.success) result.error = low_quality_error(result);
+                if (result.success && result.block_quality_min_db < result.block_quality_threshold_db) {
+                    result.success = false;
+                    result.error = low_block_quality_error(result);
+                }
                 result.data = turbo_decoded;
                 result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
                 result.freq_offset_hz = freq_offset_hz;
@@ -393,8 +405,17 @@ public:
                                              block_frames_, span);
         }
         result.quality_threshold_db = quality_threshold_db(mode_id);
+        // Every interleaver block the message occupies: up to the EOM's, or the whole
+        // blocks the signal covers.
+        const size_t msg_frames = eom_bit >= 0 ? message_symbols(mode_cfg, eom_bit) / pattern : whole;
+        fill_block_quality(result, equalized_symbols, mode_cfg, mode_id, msg_frames,
+                           config_.equalizer == Equalizer::DFE && dfe_err > 0.0);
         result.success = result.quality_db >= result.quality_threshold_db;
         if (!result.success) result.error = low_quality_error(result);
+        if (result.success && result.block_quality_min_db < result.block_quality_threshold_db) {
+            result.success = false;
+            result.error = low_block_quality_error(result);
+        }
         if (result.success && eom_bit < 0 && decoded.empty()) {
             result.success = false;
             result.error = Error(ErrorCode::RX_DECODE_FAILED,
@@ -604,8 +625,8 @@ private:
     RxConfig config_;
     RxState state_;
     
-    // Per frame within the quality span: the frame's end (symbols), and the probe
-    // error and reference power of the DFE's a-priori outputs (frame_dfe_equalize).
+    // Per frame of the data: the frame's end (symbols), and the probe error and
+    // reference power of the DFE's a-priori outputs (frame_dfe_equalize).
     std::vector<std::array<double, 3>> dfe_probe_frames_;
     
     /// Data symbols scored for decode quality: 0.6 s at 2400 baud, one short
@@ -690,13 +711,22 @@ private:
     static float probe_snr_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len,
                               int block_frames = 0, int span_symbols = QUALITY_SPAN_SYMBOLS) {
         if (unknown_len <= 0 || known_len <= 0) return -99.0f;
+        const int span = std::min<int>(span_symbols, static_cast<int>(symbols.size()));
+        return probe_snr_frames_db(symbols, unknown_len, known_len, block_frames, 0,
+                                   span / (unknown_len + known_len));
+    }
+
+    /// probe_snr_db over frames [f0, f1) only.
+    static float probe_snr_frames_db(const std::vector<complex_t>& symbols, int unknown_len, int known_len,
+                                     int block_frames, int f0, int f1) {
+        if (unknown_len <= 0 || known_len <= 0) return -99.0f;
         int pattern_len = unknown_len + known_len;
-        int span = std::min<int>(span_symbols, static_cast<int>(symbols.size()));
+        f1 = std::min<int>(f1, static_cast<int>(symbols.size()) / pattern_len);
         DataScramblerFixed scrambler;
         std::vector<complex_t> rx, ref;
-        for (int f = 0; (f + 1) * pattern_len <= span; f++) {
+        for (int f = 0; f < f1; f++) {
             for (int i = 0; i < unknown_len; i++) scrambler.next();
-            if (block_boundary_probe(f, block_frames)) {
+            if (f < f0 || block_boundary_probe(f, block_frames)) {
                 for (int i = 0; i < known_len; i++) scrambler.next();
                 continue;
             }
@@ -744,6 +774,124 @@ private:
         }
     }
     
+    /// Minimum block_quality_min_db per mode, in dB (see DecodeResult and
+    /// docs/m110a-quality-gate.md). Each is at most the worst block of any exact AWGN
+    /// decode that clears quality_db (156 cases, the AWGN set), so no flat-channel success
+    /// is lost; under that, the value with the fewest wrong-byte successes, then the fewest
+    /// rejected exact decodes, on CCIR moderate and poor (5 and 10 dB, seeds 1-5). 300L is
+    /// set where the net 300L bursts' blocks part as reencode_check parts them: the two that
+    /// do not fit score 2.0 and 2.3 dB, the lowest that fit 2.5 dB. 4800S is uncoded and
+    /// keeps its quality_db threshold.
+    static float block_quality_threshold_db(ModeId mode) {
+        switch (mode) {
+            case ModeId::M4800S:                      return 12.5f;
+            case ModeId::M150S:  case ModeId::M150L:  return 0.5f;
+            case ModeId::M300S:                       return 0.5f;
+            case ModeId::M300L:                       return 2.25f;
+            case ModeId::M600S:  case ModeId::M600H:  return 2.75f;
+            case ModeId::M600L:                       return 3.0f;
+            case ModeId::M1200S: case ModeId::M1200H: return 4.75f;
+            case ModeId::M1200L:                      return 4.5f;
+            case ModeId::M2400L:                      return 8.25f;
+            default:                                  return 8.0f;
+        }
+    }
+
+    /// fill_block_quality: the worst fraction of a block's frames set aside as erasures, and
+    /// the margin the rest must clear by to stand for the block (docs/m110a-quality-gate.md).
+    static constexpr double BLOCK_TRIM_FRACTION = 0.25;
+    static constexpr float BLOCK_TRIM_MARGIN_DB = 3.25f;
+
+    /// Expected coded-bit error rate of a symbol at probe SNR snr (linear) in mode m, as the
+    /// Viterbi decoder's input: 8PSK (Gray) 2/3 Q(sqrt(2 snr) sin(pi/8)), QPSK Q(sqrt(snr)),
+    /// BPSK with r-fold repetition Q(sqrt(2 r snr)).
+    static double coded_bit_error(const ModeConfig& m, double snr) {
+        auto q = [](double x) { return 0.5 * std::erfc(x / std::sqrt(2.0)); };
+        if (m.bits_per_symbol >= 3) return 2.0 / 3.0 * q(std::sqrt(2.0 * snr) * std::sin(PI / 8.0));
+        if (m.bits_per_symbol == 2) return q(std::sqrt(snr));
+        return q(std::sqrt(2.0 * snr * std::max(1, m.symbol_repetition)));
+    }
+
+    /// The SNR in dB at which coded_bit_error is pe: the flat channel with the same
+    /// expected error rate. Clamped to [-20, 40] dB.
+    static float flat_equivalent_db(const ModeConfig& m, double pe) {
+        double lo = -20.0, hi = 40.0;
+        if (pe >= coded_bit_error(m, std::pow(10.0, lo / 10.0))) return static_cast<float>(lo);
+        if (pe <= coded_bit_error(m, std::pow(10.0, hi / 10.0))) return static_cast<float>(hi);
+        for (int i = 0; i < 50; i++) {
+            const double mid = 0.5 * (lo + hi);
+            (coded_bit_error(m, std::pow(10.0, mid / 10.0)) > pe ? lo : hi) = mid;
+        }
+        return static_cast<float>(0.5 * (lo + hi));
+    }
+
+    /**
+     * Fill block_quality_db / block_quality_min_db / block_quality_threshold_db for the
+     * message's first msg_frames frames, one entry per interleaver block (one in all when
+     * the block size is unknown).
+     *
+     * A block's quality is the flat-channel SNR with the same expected coded-bit error rate:
+     * each frame's probe SNR (with the DFE its own a-priori probe error, dfe_probe_frames_;
+     * otherwise probe_snr over that frame of syms) gives the error rate of that frame's
+     * symbols (coded_bit_error); the block's mean of it is what the deinterleaver hands the
+     * Viterbi decoder, and flat_equivalent_db puts it back in dB. On a flat channel this is
+     * about quality_db. A fade inside the block counts by the errors it causes, not by its
+     * share of the power.
+     *
+     * Or, when higher, the same over the block's best (1 - BLOCK_TRIM_FRACTION) of frames,
+     * less BLOCK_TRIM_MARGIN_DB. A dropout (the signal gone for a second, the noise still
+     * there) reads about 0 dB on each of its frames, but its symbols reach the decoder near
+     * zero, as erasures, which cost it far less than errors: a 300L block 20 % of which was
+     * a dropout decoded exact at 1.8 dB by the mean alone. A block degraded throughout has no
+     * clean three quarters to fall back on (docs/m110a-quality-gate.md).
+     */
+    void fill_block_quality(DecodeResult& r, const std::vector<complex_t>& syms, const ModeConfig& m,
+                            ModeId mode_id, size_t msg_frames, bool from_dfe) const {
+        r.block_quality_db.clear();
+        const int pattern = m.unknown_data_len + m.known_data_len;
+        if (m.unknown_data_len > 0 && m.known_data_len > 0) {
+            msg_frames = std::min(msg_frames, syms.size() / static_cast<size_t>(pattern));
+            const size_t bf = block_frames_ > 0 ? static_cast<size_t>(block_frames_) : std::max<size_t>(msg_frames, 1);
+            const size_t nb = (msg_frames + bf - 1) / bf;
+            std::vector<double> snr(msg_frames, -1.0);  // linear, -1: no probe scored
+            if (from_dfe) {
+                for (const auto& f : dfe_probe_frames_) {
+                    const size_t fi = static_cast<size_t>(f[0]) / pattern - 1;
+                    if (fi < msg_frames) snr[fi] = f[1] > 0.0 ? f[2] / f[1] : 1e4;
+                }
+            } else {
+                for (size_t fi = 0; fi < msg_frames; fi++) {
+                    if (block_boundary_probe(static_cast<int>(fi), block_frames_)) continue;
+                    snr[fi] = std::pow(10.0, probe_snr_frames_db(syms, m.unknown_data_len, m.known_data_len,
+                                                                 block_frames_, static_cast<int>(fi),
+                                                                 static_cast<int>(fi) + 1) / 10.0);
+                }
+            }
+            for (size_t b = 0; b < nb; b++) {
+                std::vector<double> pe;
+                for (size_t fi = b * bf; fi < std::min(msg_frames, (b + 1) * bf); fi++)
+                    if (snr[fi] >= 0.0) pe.push_back(coded_bit_error(m, snr[fi]));
+                if (pe.empty()) continue;
+                std::sort(pe.begin(), pe.end());
+                const size_t keep = pe.size() - static_cast<size_t>(BLOCK_TRIM_FRACTION * pe.size());
+                const double all = std::accumulate(pe.begin(), pe.end(), 0.0) / pe.size();
+                const double best = std::accumulate(pe.begin(), pe.begin() + keep, 0.0) / keep;
+                r.block_quality_db.push_back(std::max(flat_equivalent_db(m, all),
+                                                      flat_equivalent_db(m, best) - BLOCK_TRIM_MARGIN_DB));
+            }
+        }
+        r.block_quality_min_db = r.block_quality_db.empty()
+            ? r.quality_db : *std::min_element(r.block_quality_db.begin(), r.block_quality_db.end());
+        r.block_quality_threshold_db = block_quality_threshold_db(mode_id);
+    }
+
+    static Error low_block_quality_error(const DecodeResult& r) {
+        char buf[160];
+        snprintf(buf, sizeof(buf), "Worst interleaver block quality %.1f dB below %.2f dB for this mode; bytes not trusted",
+                 r.block_quality_min_db, r.block_quality_threshold_db);
+        return Error(ErrorCode::RX_DECODE_FAILED, buf);
+    }
+
     static Error low_quality_error(const DecodeResult& r) {
         char buf[128];
         snprintf(buf, sizeof(buf), "Decode quality %.1f dB below %.1f dB for this mode; bytes not trusted",
@@ -1127,7 +1275,7 @@ private:
             const std::vector<complex_t>& pre_data_symbols = {}) {
         FrameDfeOutput r = frame_dfe_equalize(symbols, unknown_len, known_len, block_frames_,
                                               preamble_symbols, use_nlms, pre_data_symbols,
-                                              QUALITY_SPAN_SYMBOLS);
+                                              std::numeric_limits<int>::max());
         dfe_probe_frames_.insert(dfe_probe_frames_.end(), r.probe_frames.begin(), r.probe_frames.end());
         return std::move(r.symbols);
     }

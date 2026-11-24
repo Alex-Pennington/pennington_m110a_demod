@@ -4,8 +4,9 @@
  * Chain: I/Q -> shift dial to 0 Hz (offset + clock-error correction)
  *        -> IQSource decimation to 48 kHz -> USB 300-3300 Hz -> audio
  *        -> preamble scan over the whole stream (any start time, any carrier
- *           offset within +/-87 Hz) -> per message: find its end, normalise
- *           its level, decode with ModemRX -> cut at EOM -> print.
+ *           offset within +/-87 Hz) -> per preamble chain: find its end,
+ *           normalise its level, decode with ModemRX -> cut at EOM -> the chains
+ *           of one preamble merged (Receiver::process_messages) -> print one.
  *
  * A message's end, for the decode window: the power steps down and stays down
  * (see Receiver::find_step). Measured only from the message's own audio, so it is
@@ -71,6 +72,16 @@ constexpr double STEP_RATIO = 2.0;             // 3 dB
 constexpr long END_PAD = static_cast<long>(0.5 * FS);  // audio kept after the step
 constexpr float TARGET_RMS = 7000.0f / 32768.0f;  // MS-DMT reference level
 constexpr long MARGIN = static_cast<long>(0.04 * FS);  // audio before frame 1
+// A window with no power step at its end, longer than twice this, is decoded over its first
+// FIRST_WINDOW before the whole of it (Receiver::decode); a message that runs past it costs
+// at most half a decode more.
+constexpr long FIRST_WINDOW = static_cast<long>(30 * FS);
+// A decode of a split preamble that clears its block threshold by less than this needs other
+// chains to agree on its bytes (Receiver::process_messages).
+constexpr float CORROBORATE_DB = 0.75f;
+// Chains on one preamble's frame grid: within this of a whole number of frames apart.
+// Two Watterson paths 2 ms apart move the correlation peak by 4.8 symbols.
+constexpr long GRID_TOL = 10L * SPS_SCAN;
 
 struct Options {
     std::string input, mode_s = "AUTO", eq_s = "DFE", format, expect, dump_audio;
@@ -144,14 +155,27 @@ long find_eom(const std::vector<uint8_t>& d) {
 
 struct Hit { long t; float metric; float freq; };
 
+// One decode of a message window, before it is reported.
+struct Decoded {
+    DecodeResult r;
+    std::vector<uint8_t> d;  // the bytes, cut at the EOM
+    bool eom = false;
+    long a1 = 0;             // window end, absolute audio index
+    bool ran = false;        // false: the window was under 0.5 s, nothing decoded
+};
+
 struct Message {
     int id;
     long first_frame;     // scan index of the first preamble frame
+    long first_hit;       // scan index of the chain's first frame seen
     long preamble_end;    // scan index just after the last frame
     int hits;
     float metric, freq;   // mean over the hits
     long end_audio = -1;  // decided end, absolute audio index
+    bool end_at_step = false;  // end_audio is a power step
     std::vector<double> pw;  // 0.1 s block power from first_frame * DECIM on
+    bool done = false;    // decoded, result in out
+    Decoded out;
 };
 
 class Receiver {
@@ -273,6 +297,7 @@ private:
         // frame seen: the receiver reads the countdown of whichever frame it
         // locks onto, so any frame is a valid entry point.
         m.first_frame = nf > 0 ? last - (nf - 1) * FRAME_SCAN : chain_.front().t;
+        m.first_hit = chain_.front().t;
         m.preamble_end = last + FRAME_SCAN;
         m.hits = static_cast<int>(chain_.size());
         double ms = 0, fs = 0;
@@ -333,6 +358,7 @@ private:
         const long kmax = std::min<long>(static_cast<long>(m.pw.size()),
                                          (limit - a_first) / BLOCK);
         const long k = find_step(m.pw, k0, kmax);
+        m.end_at_step = k >= 0;
         if (k >= 0) m.end_audio = a_first + k * BLOCK + END_PAD;
         else if (next || audio_end_ >= limit) m.end_audio = limit;
         else if (eof) m.end_audio = audio_end_;
@@ -344,27 +370,159 @@ private:
         return audio_end_ >= m.end_audio || eof;
     }
 
+    static bool on_grid(long a, long b) {
+        long r = (b - a) % FRAME_SCAN;
+        if (r < 0) r += FRAME_SCAN;
+        return std::min(r, FRAME_SCAN - r) <= GRID_TOL;
+    }
+
+    // Preamble frames of a decoded mode; 24, the longest, when the mode was not read.
+    static int preamble_frames_of(const Decoded& o) {
+        const int n = preamble_frames(o.r.mode);
+        return n > 0 ? n : 24;
+    }
+
+    // a is a better decode of one message than b: success, then EOM, then the worst
+    // interleaver block's quality, then quality_db.
+    static bool better(const Decoded& a, const Decoded& b) {
+        if (a.ran != b.ran) return a.ran;
+        if (a.r.success != b.r.success) return a.r.success;
+        if (a.eom != b.eom) return a.eom;
+        if (a.r.block_quality_min_db != b.r.block_quality_min_db)
+            return a.r.block_quality_min_db > b.r.block_quality_min_db;
+        return a.r.quality_db > b.r.quality_db;
+    }
+
+    // One transmission, one message. A fade, or multipath moving the correlation peak by
+    // more than TOL_SCAN from frame to frame, splits one preamble into several chains (on
+    // Watterson moderate and poor, 14-16 for one 24-frame preamble), and each chain's window
+    // holds the whole message. The chains that start inside the front message's preamble, on
+    // its frame grid, are decoded each as before and reported as one message: the best
+    // decode (better()), with preamble_chains saying how many there were. Inside its
+    // preamble means at most P - 1 frames after the front chain's first frame, P the
+    // preamble length of the mode both decodes read (24 when either is unread), so a short
+    // message that follows within 24 frames stays a message of its own.
     void process_messages(bool eof) {
         while (!pending_.empty()) {
-            Message& m = pending_.front();
-            // A preamble that starts within 24 frames (the longest preamble) of m's first
-            // frame may be m's own: a fast fade splits a long preamble into several
-            // chains. Only a later one is a different message, and bounds m.
-            const Message* next = nullptr;
-            for (size_t i = 1; i < pending_.size() && !next; i++)
-                if (pending_[i].first_frame >= m.first_frame + 24 * FRAME_SCAN) next = &pending_[i];
-            if (!decide_end(m, next, eof)) break;
-            m.end_audio = std::min(m.end_audio, audio_end_);
-            decode(m);
-            pending_.pop_front();
+            const Message& m = pending_.front();
+            const long span_end = m.first_hit + 23 * FRAME_SCAN + GRID_TOL;
+            // every chain that can start inside the longest preamble is closed
+            if (!eof && (scan_t_ <= span_end + HOLD_SCAN + 1 || (have_chain_ && chain_.front().t <= span_end)))
+                break;
+            std::vector<size_t> cand;
+            for (size_t i = 0; i < pending_.size() && pending_[i].first_hit <= span_end; i++)
+                if (i == 0 || on_grid(m.first_hit, pending_[i].first_hit)) cand.push_back(i);
+            for (size_t i : cand) {
+                Message& c = pending_[i];
+                if (c.done) continue;
+                // A preamble that starts within 24 frames (the longest preamble) of c's first
+                // frame may be c's own: only a later one is a different message, and bounds c.
+                const Message* next = nullptr;
+                for (size_t j = i + 1; j < pending_.size() && !next; j++)
+                    if (pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN) next = &pending_[j];
+                if (!decide_end(c, next, eof)) return;
+                c.end_audio = std::min(c.end_audio, audio_end_);
+                c.out = decode(c);
+                c.done = true;
+            }
+            const int pm = preamble_frames_of(m.out);
+            std::vector<size_t> group;
+            for (size_t i : cand) {
+                const Message& c = pending_[i];
+                const int p = std::min(pm, preamble_frames_of(c.out));
+                if (i == 0 || c.first_hit <= m.first_hit + (p - 1) * FRAME_SCAN + GRID_TOL) group.push_back(i);
+            }
+            // Which bytes: the ones most chains with an EOM decoded. A chain decodes the whole
+            // transmission from its own entry point; right bytes come out the same from
+            // several, wrong ones differ from chain to chain. Ties go to bytes a chain with
+            // success carries, then to the better decode. Without an EOM on any chain, the
+            // better decode. Reported from the best decode carrying those bytes, so success
+            // means a chain with them cleared the gate.
+            std::vector<int> votes(group.size(), 0);
+            for (size_t a = 0; a < group.size(); a++) {
+                const Decoded& oa = pending_[group[a]].out;
+                if (!oa.ran || !oa.eom) continue;
+                for (size_t b = 0; b < group.size(); b++) {
+                    const Decoded& ob = pending_[group[b]].out;
+                    if (ob.ran && ob.eom && ob.d == oa.d) votes[a]++;
+                }
+            }
+            auto has_success = [&](size_t a) {
+                for (size_t b = 0; b < group.size(); b++)
+                    if (votes[b] > 0 && pending_[group[b]].out.d == pending_[group[a]].out.d &&
+                        pending_[group[b]].out.r.success) return true;
+                return false;
+            };
+            size_t bi = 0;
+            for (size_t a = 1; a < group.size(); a++) {
+                const bool sa = has_success(a), sb = has_success(bi);
+                if (votes[a] != votes[bi] ? votes[a] > votes[bi]
+                    : sa != sb ? sa : better(pending_[group[a]].out, pending_[group[bi]].out))
+                    bi = a;
+            }
+            size_t best = group[bi];
+            // Near the gate, one chain's word is not enough: when the preamble split into
+            // chains and the reported decode clears its block threshold by less than
+            // CORROBORATE_DB, a third of the chains with an EOM (at least 2) must have decoded
+            // the same bytes. A message with a single chain is judged by the gate alone.
+            Decoded out = pending_[best].out;
+            int eom_chains = 0;
+            for (size_t a = 0; a < group.size(); a++)
+                if (pending_[group[a]].out.ran && pending_[group[a]].out.eom) eom_chains++;
+            const int need = std::max(2, (eom_chains + 2) / 3);
+            if (out.r.success && group.size() > 1 &&
+                out.r.block_quality_min_db < out.r.block_quality_threshold_db + CORROBORATE_DB &&
+                votes[bi] < need) {
+                out.r.success = false;
+                char e[160];
+                snprintf(e, sizeof e, "Worst block %.1f dB within %.2f dB of the gate, and %d of %d chains with EOM "
+                         "decoded these bytes (%d needed); bytes not trusted",
+                         out.r.block_quality_min_db, CORROBORATE_DB, votes[bi], eom_chains, need);
+                out.r.error = Error(ErrorCode::RX_DECODE_FAILED, e);
+            }
+            if (opt_.verbose && group.size() > 1)
+                fprintf(stderr, "m110a_rx: preamble at %.3f s: %zu chains, reporting the one at %.3f s\n",
+                        m.first_frame * DECIM / FS, group.size(), pending_[best].first_frame * DECIM / FS);
+            int hits = 0;
+            for (size_t i : group) hits += pending_[i].hits;
+            report(m, out, hits, static_cast<int>(group.size()), std::max(1, votes[bi]));
+            for (auto it = group.rbegin(); it != group.rend(); ++it)
+                pending_.erase(pending_.begin() + static_cast<long>(*it));
         }
     }
 
-    void decode(const Message& m) {
+    // A window not ended by a power step (at about 0 dB SNR the end is a 3 dB step, which the
+    // step test can miss) runs to the next preamble, --max-secs or the end of the input. When
+    // it is longer than twice FIRST_WINDOW, decode its first FIRST_WINDOW first, and keep that
+    // decode when it found the EOM, read no mode, or its signal (the whole blocks the probes
+    // cover) ends at least two blocks before that window does: the rest is noise. Otherwise
+    // decode the whole window.
+    Decoded decode(const Message& m) {
+        const long a_first = m.first_frame * DECIM;
+        if (!m.end_at_step && m.end_audio - a_first > 2 * FIRST_WINDOW) {
+            const long a1 = a_first + FIRST_WINDOW;
+            Decoded o = decode_window(m, a1);
+            if (!o.ran) return o;
+            const int pf = preamble_frames(o.r.mode);
+            const double block_s = pf == 24 ? 4.8 : 0.6;
+            const double covered = pf * 0.2 + static_cast<double>(o.r.block_quality_db.size()) * block_s;
+            const bool ended = covered + 2 * block_s <= static_cast<double>(a1 - a_first) / FS;
+            if (opt_.verbose)
+                fprintf(stderr, "m110a_rx: msg at %.3f s: first %.0f s decoded, eom=%d, signal %.1f s: %s\n",
+                        a_first / FS, FIRST_WINDOW / FS, o.eom ? 1 : 0, covered,
+                        o.eom || pf == 0 || ended ? "kept" : "decoding the whole window");
+            if (o.eom || pf == 0 || ended) return o;
+        }
+        return decode_window(m, m.end_audio);
+    }
+
+    Decoded decode_window(const Message& m, long a1) {
+        Decoded o;
         const long a_first = m.first_frame * DECIM;
         const long a0 = std::max(a_first - MARGIN, audio_base_);
-        const long a1 = m.end_audio;
-        if (a1 - a0 < static_cast<long>(0.5 * FS)) return;
+        o.a1 = a1;
+        if (a1 - a0 < static_cast<long>(0.5 * FS)) return o;
+        o.ran = true;
         Samples s(static_cast<size_t>(a1 - a0));
         double p = 0;
         for (long n = a0; n < a1; n++) {
@@ -386,15 +544,28 @@ private:
         std::streambuf* old_err = std::cerr.rdbuf();
         std::cout.rdbuf(opt_.verbose ? old_err : sink.rdbuf());
         if (!opt_.verbose) std::cerr.rdbuf(sink.rdbuf());
-        DecodeResult r = m110a::api::decode(s, cfg);
+        o.r = m110a::api::decode(s, cfg);
         std::cout.rdbuf(old_out);
         std::cerr.rdbuf(old_err);
 
-        std::vector<uint8_t> d = r.data;
+        o.d = o.r.data;
         // ModemRX cuts the data at the EOM itself and says so in eom_sequence
-        long eom_bit = find_eom(d);
-        if (eom_bit >= 0) d.resize(static_cast<size_t>(eom_bit / 8));
-        const bool eom = eom_bit >= 0 || r.eom_sequence;
+        long eom_bit = find_eom(o.d);
+        if (eom_bit >= 0) o.d.resize(static_cast<size_t>(eom_bit / 8));
+        o.eom = eom_bit >= 0 || o.r.eom_sequence;
+        return o;
+    }
+
+    // first: the message's first preamble chain (its start); o: the decode reported.
+    // hits: preamble frames seen over all its chains.
+    // agreeing: chains of it that decoded these same bytes, with an EOM (1 when none had one).
+    void report(const Message& first, const Decoded& o, int hits, int chains, int agreeing) {
+        const DecodeResult& r = o.r;
+        const std::vector<uint8_t>& d = o.d;
+        if (!o.ran) return;  // no chain of it had a window of 0.5 s
+        const long a_first = first.first_frame * DECIM;
+        const long a1 = o.a1;
+        const bool eom = o.eom;
         std::string text, hex;
         char hx[4];
         for (uint8_t c : d) {
@@ -402,12 +573,24 @@ private:
             snprintf(hx, sizeof hx, "%02x", c);
             hex += hx;
         }
+        std::string bq;
+        for (float q : r.block_quality_db) {
+            snprintf(hx, sizeof hx, "%s", bq.empty() ? "" : ",");
+            bq += hx;
+            char qb[16];
+            snprintf(qb, sizeof qb, "%.1f", q);
+            bq += qb;
+        }
         printf("msg=%d start_s=%.3f end_s=%.3f mode=%s preamble_hits=%d acq_metric=%.2f "
                "acq_foff_hz=%+.2f success=%d quality_db=%.1f quality_threshold_db=%.1f eom=%d "
-               "bytes=%zu snr_db=%.1f d1=%d d2=%d countdown=%d err=\"%s\"\n",
-               m.id, a_first / FS, a1 / FS, mode_name(r.mode).c_str(), m.hits, m.metric,
-               m.freq, r.success ? 1 : 0, r.quality_db, r.quality_threshold_db,
+               "bytes=%zu snr_db=%.1f d1=%d d2=%d countdown=%d blocks=%zu block_quality_db=%s "
+               "block_quality_min_db=%.1f block_quality_threshold_db=%.2f preamble_chains=%d chains_agreeing=%d "
+               "err=\"%s\"\n",
+               ++reported_, a_first / FS, a1 / FS, mode_name(r.mode).c_str(), hits, first.metric,
+               first.freq, r.success ? 1 : 0, r.quality_db, r.quality_threshold_db,
                eom ? 1 : 0, d.size(), r.snr_db, r.d1, r.d2, r.countdown,
+               r.block_quality_db.size(), bq.empty() ? "-" : bq.c_str(),
+               r.block_quality_min_db, r.block_quality_threshold_db, chains, agreeing,
                r.error ? r.error->message.c_str() : "");
         printf("  text=\"%s\"\n  hex=%s\n", text.c_str(), hex.c_str());
         fflush(stdout);
@@ -437,6 +620,7 @@ private:
     std::vector<Hit> chain_;
     std::deque<Message> pending_;
     int next_id_ = 1;
+    int reported_ = 0;
     int decoded_ok_ = 0;
     bool expect_met_ = false;
 };

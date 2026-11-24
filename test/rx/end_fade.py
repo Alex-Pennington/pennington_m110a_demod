@@ -13,11 +13,17 @@ SNR of the unfaded signal -> I/Q (test/harris/modem.py) -> m110a_rx (AUTO).
            noise: success, a whole-block prefix of the payload, nothing after it.
   two      two messages 1 s apart: both exact with EOM.
   split    two 0.5 s dropouts inside the 24-frame preamble, which split it into three
-           preamble chains: the first message is exact with EOM, and no message
-           reports success with other bytes.
+           preamble chains: one message, exact with EOM, preamble_chains=3.
+  paths    two paths 2 ms (4.8 symbols) apart whose gains swap every preamble frame, so
+           the correlation peak moves 4.8 symbols from frame to frame and every frame is a
+           chain of its own: one message, exact with EOM, from at least 12 chains.
+  lowsnr   the message at 0 dB, then 70 s of noise: the end is a 3 dB step the step test
+           misses, so the window would run to the end of the input; its first 30 s are
+           decoded first and kept, since the signal ends inside them: one message, exact
+           with EOM, the window ending at most 31 s after the start.
 
 Usage: python3 -I -B test/rx/end_fade.py --tool MODEM_TX_WAV --rx M110A_RX --work DIR
-           [--snr 18] [--seed 1] [--cases fade,leadin,end,cut,two,split]
+           [--snr 18] [--seed 1] [--cases fade,leadin,end,cut,two,split,paths,lowsnr]
 The payload text starts "DE AAM402".
 """
 import argparse
@@ -187,12 +193,41 @@ def case_split(a):
     x = np.concatenate([np.zeros(int(1.0 * sr)), s * g, np.zeros(int(6 * sr))])
     x = x + noise(sr, len(x) / sr, sigma, a.seed + 600)
     msgs = rx(a, x, sr, "split")
-    false_ok = [m for m in msgs if m.get("success") == "1" and m["data"] != data]
-    ok = len(msgs) >= 1 and exact(msgs[0], data) and not false_ok
-    return show("split", msgs, ok, f"preamble chains {len(msgs)}, success with other bytes {len(false_ok)}")
+    ok = len(msgs) == 1 and exact(msgs[0], data) and msgs[0].get("preamble_chains") == "3"
+    return show("split", msgs, ok, f"preamble chains {msgs[0].get('preamble_chains') if msgs else None}")
 
 
-CASES = {"fade": case_fade, "leadin": case_leadin, "end": case_end, "cut": case_cut, "two": case_two, "split": case_split}
+def case_paths(a):
+    data = payload(300, a.seed)
+    sr, s = tx(a, data, "paths")
+    sigma = sigma_for(s, sr, a.snr)
+    d = int(round(0.002 * sr))
+    late = np.concatenate([np.zeros(d), s[:-d]])
+    t = np.arange(len(s)) / sr
+    g = np.where((t // 0.2) % 2 == 0, 1.0, 0.3)      # frame k: path 1 at 1 or 0.3, path 2 the other
+    y = g * s + (1.3 - g) * late
+    x = np.concatenate([np.zeros(int(1.0 * sr)), y, np.zeros(int(6 * sr))])
+    x = x + noise(sr, len(x) / sr, sigma, a.seed + 700)
+    msgs = rx(a, x, sr, "paths")
+    ch = int(msgs[0].get("preamble_chains", 0)) if msgs else 0
+    ok = len(msgs) == 1 and exact(msgs[0], data) and ch >= 12
+    return show("paths", msgs, ok, f"preamble chains {ch}")
+
+
+def case_lowsnr(a):
+    data = payload(300, a.seed)
+    sr, s = tx(a, data, "lowsnr")
+    sigma = sigma_for(s, sr, 0.0)
+    x = np.concatenate([np.zeros(int(1.0 * sr)), s, np.zeros(int(70 * sr))])
+    x = x + noise(sr, len(x) / sr, sigma, a.seed + 800)
+    msgs = rx(a, x, sr, "lowsnr")
+    win = float(msgs[0]["end_s"]) - float(msgs[0]["start_s"]) if msgs else float("inf")
+    ok = len(msgs) == 1 and exact(msgs[0], data) and win <= 31.0
+    return show("lowsnr", msgs, ok, f"window {win:.1f} s")
+
+
+CASES = {"fade": case_fade, "leadin": case_leadin, "end": case_end, "cut": case_cut, "two": case_two, "split": case_split,
+         "paths": case_paths, "lowsnr": case_lowsnr}
 
 
 def main():
