@@ -9,8 +9,8 @@
  *   - 2400 digital voice, D1,D2 = 7,7: own TX -> Mode::AUTO must report 2400V
  *     and return the exact payload; so must 2400S given explicitly (2400V is
  *     2400S's waveform)
- *   - 75 bps short 7,5 and long 5,5: own TX preamble (the 75 bps data path is not
- *     implemented) -> Mode::AUTO must read the D1/D2 and report 75S / 75L
+ *   - 75 bps short 7,5 and long 5,5: own TX preamble alone -> Mode::AUTO must read the
+ *     D1/D2 and report 75S / 75L (whole 75 bps messages: test/test_m75.cpp)
  * Harris application-specific codes (Table XI reserves 5,6 and 5,7 and does not
  * define them; docs/harris-melpe.md):
  *   - 5,7 = 600 bps short, 5,6 = 1200 bps short: own TX -> Mode::AUTO must report
