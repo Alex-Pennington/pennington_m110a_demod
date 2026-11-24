@@ -17,6 +17,15 @@ let wrong bytes pass, and the existing output lines keep their form.
   short    ModemTX 2400S, 40 bytes with EOM, at 15 dB: under one block, so the block lines say
            'not checked (no whole block)'; the tail check calls it real, and with one wrong bit
            NOT REAL.
+  tails    300S and 150S (22.5 and 11.25 bytes per block), eom=1, at 15 dB, 300S 1277 B and random
+           lengths: every block has a verdict, real for the sent bytes, and the output ends in tail
+           block lines or in one 'tail check' line saying the block lines cover the data end, EOM
+           and flush, never in silence.
+  whole2400  2400S, 540 B (exactly 3 blocks; the tail block is EOM, flush and padding only) at 8, 14
+           and 20 dB: the sent bytes real in all 4 blocks; at 20 dB one wrong bit is NOT REAL.
+  sweep    (not in the default; --cases sweep) random-length eom=1 messages in the ten probe modes at
+           each --sweep-snr: the receiver's bytes, the sent bytes and one flipped bit. Passes when no
+           exact block is NOT REAL and every block has a verdict; flipped bits are counted, not required.
   format   gale-rx's parse of the output (its BLOCK_RE and HEAD_RE) finds exactly one block line
            per block and the same numbers as the block lines, and no window line matches them.
 
@@ -215,7 +224,9 @@ def case_whole2400(a):
     is NOT REAL."""
     data = (b'DE AAM402 whole blocks ' + random.Random('reencode_window/whole2400').randbytes(540))[:540]
     ok = True
-    for snr, seed in ((8.0, 1), (8.0, 2), (14.0, 1), (14.0, 2), (20.0, 1)):
+    # noise seeds where the check before this case read right bytes NOT REAL: 8 dB 1 and 2 (seed 2 in whole
+    # blocks 1 and 3 too), 14 dB 10 and 15 (tail probe 0.965, data 0.929 / 0.927)
+    for snr, seed in ((8.0, 1), (8.0, 2), (14.0, 10), (14.0, 15), (20.0, 1)):
         wav = audio(a, data, snr, None, seed, f'whole2400_{snr:g}_{seed}', mode='2400S')
         out = run_check(a, wav, data)
         v = verdicts(out)
