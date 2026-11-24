@@ -204,6 +204,22 @@ inline long find_eom(const std::vector<uint8_t>& info) {
     return -1;
 }
 
+/// The EOM taken with bit errors (a fade over it), recognised by the 144 flush bits after
+/// it: up to 3 errors in the EOM with at most 8 ones in the flush, or up to 6 with at most
+/// 4. The first such bit position, or -1. A payload is very unlikely to imitate EOM plus
+/// flush by chance: a run of 176 zero bits is 16 bits from the EOM.
+inline long find_eom_tolerant(const std::vector<uint8_t>& info) {
+    for (size_t p = 0; p + 32 + FLUSH_BITS <= info.size(); p++) {
+        int err = 0;
+        for (int i = 0; i < 32 && err <= 6; i++) err += info[p + i] != ((EOM_WORD >> (31 - i)) & 1);
+        if (err > 6) continue;
+        int ones = 0;
+        for (int i = 0; i < FLUSH_BITS && ones <= 8; i++) ones += info[p + 32 + i] & 1;
+        if ((err <= 3 && ones <= 8) || ones <= 4) return static_cast<long>(p);
+    }
+    return -1;
+}
+
 /// Whole bytes, least significant bit first, from the first n bits
 inline std::vector<uint8_t> bits_to_bytes(const std::vector<uint8_t>& bits, size_t n) {
     std::vector<uint8_t> out;

@@ -383,6 +383,7 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     std::vector<uint8_t> info = decode_soft(std::vector<soft_bit_t>(soft.begin(), soft.begin() + blocks * S * 2),
                                             mode, &code);
     r.eom_bit = find_eom(info);
+    if (r.eom_bit < 0) r.eom_bit = find_eom_tolerant(info);
     size_t info_end;  // information bits the message is scored over
     if (r.eom_bit >= 0) {
         r.data = bits_to_bytes(info, static_cast<size_t>(r.eom_bit));
