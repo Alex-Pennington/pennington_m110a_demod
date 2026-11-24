@@ -319,6 +319,10 @@ z = 4.75, the normal tail at `ALPHA` = 1e−6 (`fits()`). For 300L and the other
 small and `FIT` decides as before. For a 2400S block at 8 dB the allowance is about 0.08. The
 largest right-bytes gap in those 140 readings was 0.059.
 
+> **Superseded 2026-11-24:** the "real" verdicts at 8 dB in the table above and in "What it costs"
+> below. A block that passes but where one wrong byte would not show is now `NOT VERIFIABLE`, not
+> real; see "NOT VERIFIABLE" below. The 14 dB tails stay real.
+
 **What it costs.** One block in this sweep that the old comparison called NOT REAL is now real.
 It was one flipped bit in a 2400S message under one block at 8 dB: the old check read 0.823 /
 0.786 over all frames, the new one reads 0.879 / 0.843 over the window frames, with one far-off
@@ -362,6 +366,108 @@ blocks; the first sweep run labelled them by the byte's first bit, and both stra
 were rerun alone, NOT REAL in their block under both checks. The old lines (head, block and
 `not checked` lines, the 609cc4b form) came out byte-identical between the check at 609cc4b
 and this one, in 20 runs (one message per mode at 8 and 20 dB, 33 old lines).
+
+### NOT VERIFIABLE (2026-11-24)
+
+Held-out messages showed what the fit alone could not settle. At 2400S 6 and 8 dB, two wrong
+bytes moved the window gap by 0.001 to 0.008, inside the spread right bytes show, with no
+far-off symbols. 8a9b719 called those blocks NOT REAL, but it called the same blocks NOT REAL with
+the exact bytes too. The fit's allowance calls both real. Neither says what the signal shows. So
+a third verdict, on the same window check line:
+
+```
+  block 1 window check: far off (over 15 noise powers) 0/5720 probes, 0/5720 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
+  block 1 window check: far off (over 15 noise powers) 0/448 probes, 0/896 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict NOT REAL: data below the probes over the block (bit errors)
+  block 1 window check: far off (over 15 noise powers) 0/448 probes, 0/896 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict NOT VERIFIABLE: a one-byte error would not show at this block's SNR (10 data symbols moved, far-off power 0.01 with 2 more far off needed, gap shift 0.009 against 0.100)
+```
+
+NOT REAL is unchanged. A block that passes is `real` only where one wrong byte would have shown,
+and that power is measured on the block (`one_byte_power()`):
+
+- One wrong data bit changes 10 coded bits. 110A's K=7 code has generators 133 and 171 (octal),
+  of weight 5 each. Each coded bit is one data symbol, or 2 at 300 bps and 4 at 150 bps, so one
+  wrong byte moves at least d = 10 × repetition data symbols of the re-encoded reference, each to
+  the nearest other point.
+- **Far-off power.** A moved symbol sits on the sent point, `sep` noise powers from the
+  re-encoded one, where `sep` is the frame's measured distance to the nearest other point. It is
+  far off when |s + n|² > `TAU` with unit noise: a non-central χ² with 2 degrees of freedom.
+  The test fires when the far-off count reaches what makes p < `ALPHA` for right bytes. The
+  power is the chance that d moved symbols bring that many, averaged over the window frames.
+- **Gap power.** The d symbols lower data agreement by d (p − c (1 − p)) / data symbols, with c
+  the share of wrong decisions that land on the re-encoded point: 1 for BPSK, ½ for QPSK and
+  8PSK. That is compared against the fit's allowance, max(`FIT`, 4.75 × se).
+- `real` needs power 0.99 or more by either (`POWER`); otherwise `NOT VERIFIABLE`. The gap never
+  carries it in practice: one byte moves 0.003 (300L) to 0.011 (2400S) of the data, under
+  `FIT`. The far-off test does, where the nearest other point lies well beyond `TAU`.
+
+The 0.07 cap on the allowance (one commit, the same day) is gone. It kept 6a capture 11's
+garbage decode NOT REAL with margins of 0.011 and 0.014, chosen on the cases it was judged on.
+That block is now `NOT VERIFIABLE`, never real.
+
+**What it means on air.** The net 300L bursts b2 to b4 sit at `sep` of about 6.5 noise powers
+(BPSK, about 2 dB per symbol). There one wrong byte moves 20 data symbols, each far off about 5 %
+of the time, so they are `NOT VERIFIABLE`: the check cannot tell one wrong byte there. RSP2 150L
+(`sep` 21 to 25) stays real.
+
+Measured (verdict counts real / NOT VERIFIABLE / NOT REAL; 8a9b719 has no third verdict):
+
+Held-out validation (`build/scratch/validate.py`, new seeds, 20 messages per point; each gives
+the sent bytes and a wrong copy: the receiver's when it decoded wrong, else 1 to 3 bytes changed;
+wrong blocks are those whose bytes differ):
+
+| Mode | SNR | Wrong copies natural, changed | Exact blocks, 8a9b719 real/NOT REAL | Exact blocks, now | Wrong blocks, 8a9b719 real/NOT REAL | Wrong blocks, now |
+|---|---|---|---|---|---|---|
+| 2400S | 6 | 14, 6 | 38/5 | 0/43/0 | 19/13 | 0/25/7 |
+| 2400S | 8 | 0, 20 | 42/6 | 0/48/0 | 4/28 | 0/4/28 |
+| 2400S | 10 | 0, 20 | 40/0 | 0/40/0 | 0/23 | 0/0/23 |
+| 2400L | 6 | 19, 1 | 23/1 | 0/24/0 | 18/3 | 0/20/1 |
+| 2400L | 8 | 1, 19 | 27/0 | 0/27/0 | 3/19 | 0/3/19 |
+| 2400L | 10 | 0, 20 | 23/0 | 0/23/0 | 3/19 | 0/3/19 |
+
+8a9b719 called 47 wrong blocks real here (19 of 32 at 2400S 6 dB, 18 of 21 at 2400L 6 dB) and 12
+exact blocks NOT REAL; this check calls none of either.
+
+The review's truth table (its per-frame dumps; each version's own verdict code on the same
+counts): exact blocks 414 real, 91 NOT VERIFIABLE, 0 NOT REAL (8a9b719: 505 real); wrong blocks 0
+real, 1 NOT VERIFIABLE (6a capture 11), 80 NOT REAL (8a9b719: 81 NOT REAL); blocks of unknown truth
+1 real, 16 NOT VERIFIABLE. The 34 wrong blocks the block lines call fit (case F, the 1200L fades
+on both receivers, Watterson, the 600L review fades) stay NOT REAL.
+
+Real captures, run through this check (truth as the review's):
+
+| Capture | Block | Truth | 8a9b719 | Now | Blocks |
+|---|---|---|---|---|---|
+| RSP2 150L | whole | exact | real | real | 4 |
+| RSP2 150L | tail | not known | real | real | 1 |
+| net 300L b2, b3, b4 | whole | exact | real | NOT VERIFIABLE | 34 |
+| net 300L b1 | whole | wrong (blocks 2, 9) | NOT REAL | NOT REAL | 2 |
+| net 300L b1 | whole | not known | real | NOT VERIFIABLE | 9 |
+| net 300L b1 to b4 | tail | not known | real | NOT VERIFIABLE | 4 |
+| 6a, 2400S/1200S/600S under one block | tail | exact | real | NOT VERIFIABLE | 8 |
+| 6a | tail | not known | real | NOT VERIFIABLE | 3 |
+| 6a capture 11, success=0 | whole | wrong (143 bytes) | NOT REAL | NOT VERIFIABLE | 1 |
+
+8 dB sweep on new seeds (`reencode_window.py --cases sweep --sweep-snr 8 --sweep-tag sweep-nv`, 4
+random-length eom=1 messages per mode, half the 150S and 300S ones 900 to 1400 B; every decode
+exact and eom=1):
+
+| Mode | Exact blocks, receiver's bytes | Sent bytes | One flipped bit (its block) |
+|---|---|---|---|
+| 150S | 214/0/0 | 214/0/0 | 0/0/4 |
+| 150L | 8/0/0 | 8/0/0 | 0/0/4 |
+| 300S | 118/0/0 | 118/0/0 | 0/0/4 |
+| 300L | 6/0/0 | 6/0/0 | 0/0/4 |
+| 600S | 10/0/0 | 10/0/0 | 0/0/4 |
+| 600L | 5/0/0 | 5/0/0 | 0/0/4 |
+| 1200S | 11/0/0 | 11/0/0 | 0/0/4 |
+| 1200L | 2/4/0 | 2/4/0 | 0/0/4 |
+| 2400S | 0/13/0 | 0/13/0 | 0/1/3 |
+| 2400L | 0/7/0 | 0/7/0 | 0/1/3 |
+
+`POWER` = 0.99 is a choice, not a measurement: it lets a block be called real when one wrong
+bit would escape the far-off test at most 1 time in 100. No wrong block came out real in any of
+the sets above (the review's 81, the held-out 152, the sweep's 40 flipped bits, the real
+captures' 3).
 
 ## Left open
 
