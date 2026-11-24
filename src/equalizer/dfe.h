@@ -9,6 +9,7 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <complex>
 
 namespace m110a {
 
@@ -37,6 +38,7 @@ public:
         float leak;           // Leaky LMS coefficient (0 = no leak)
         bool use_nlms;        // Use Normalized LMS (power-normalized step)
         float nlms_delta;     // NLMS regularization (prevents div-by-zero)
+        int lookahead;        // Decision delay: process() takes x[n+lookahead], returns y[n]
         
         Config()
             : ff_taps(11)      // Center tap + 5 on each side
@@ -45,7 +47,8 @@ public:
             , mu_fb(0.005f)    // Smaller for feedback
             , leak(0.0001f)    // Small leak for stability
             , use_nlms(false)  // Default: standard LMS
-            , nlms_delta(0.001f) {} // NLMS regularization
+            , nlms_delta(0.001f) // NLMS regularization
+            , lookahead(0) {}    // Causal: the newest input is the current symbol
     };
     
     explicit DFE(const Config& config = Config{})
@@ -67,8 +70,48 @@ public:
     /// Change the LMS step sizes, e.g. a larger step for preamble pretraining.
     void set_step(float mu_ff, float mu_fb) { config_.mu_ff = mu_ff; config_.mu_fb = mu_fb; }
 
-    /// Shift an input into the feed-forward delay line: no output, no adaptation.
+    /// Shift an input into the feed-forward delay line: no output, no adaptation,
+    /// and the feedback line is left as it is. Use it only for the lookahead inputs
+    /// before the first output, when no earlier symbol is known (clear_lines()).
     void push(complex_t input) { ff_delay_[ff_idx_] = input; ff_idx_ = (ff_idx_ + 1) % config_.ff_taps; }
+
+    /// Shift an input into the feed-forward line and a known decision into the
+    /// feedback line: no output, no adaptation. With lookahead L the decision is for
+    /// the symbol L before the input. Fills the lines from known symbols before the
+    /// first output, so that output sees a past as full as every later one does.
+    void prime(complex_t input, complex_t decision) {
+        push(input);
+        fb_delay_[fb_idx_] = decision;
+        fb_idx_ = (fb_idx_ + 1) % config_.fb_taps;
+    }
+
+    /// Zero both delay lines and keep the taps: a stream starts with no past.
+    void clear_lines() {
+        std::fill(ff_delay_.begin(), ff_delay_.end(), complex_t(0.0f, 0.0f));
+        std::fill(fb_delay_.begin(), fb_delay_.end(), complex_t(0.0f, 0.0f));
+        ff_idx_ = 0;
+        fb_idx_ = 0;
+    }
+
+    /**
+     * Process one symbol known to be +ref or -ref, without adapting: the feedback
+     * line gets whichever of the two the output is nearer. A 110A probe at an
+     * interleaver block boundary is the zero probe or a D1/D2 Walsh pattern, so
+     * each of its symbols is the zero-probe symbol rotated by 0 or 180 degrees.
+     * @param input Received symbol x[n+lookahead]
+     * @param ref The zero-probe symbol for n
+     * @return Equalized symbol y[n]
+     */
+    complex_t process_antipodal(complex_t input, complex_t ref) {
+        ff_delay_[ff_idx_] = input;
+        complex_t output = filter_output();
+        complex_t decision = (std::real(output * std::conj(ref)) >= 0.0f) ? ref : -ref;
+        fb_delay_[fb_idx_] = decision;
+        fb_idx_ = (fb_idx_ + 1) % config_.fb_taps;
+        ff_idx_ = (ff_idx_ + 1) % config_.ff_taps;
+        symbol_count_++;
+        return output;
+    }
     
     void reset() {
         std::fill(ff_taps_.begin(), ff_taps_.end(), complex_t(0.0f, 0.0f));
@@ -88,41 +131,16 @@ public:
     
     /**
      * Process one symbol with optional training
-     * @param input Received symbol (after timing/carrier recovery)
+     * @param input Received symbol x[n+lookahead] (after timing/carrier recovery)
      * @param training_symbol Known symbol for training (ignored if training=false)
      * @param training If true, use training_symbol for adaptation
-     * @return Equalized symbol
+     * @return Equalized symbol y[n]
      */
     complex_t process(complex_t input, complex_t training_symbol = complex_t(0,0), 
                       bool training = false) {
         // Push input into feedforward delay line at current position
         ff_delay_[ff_idx_] = input;
-        
-        // Compute feedforward output
-        // The center tap (ff_taps/2) should multiply the current input
-        // Tap 0 multiplies oldest, Tap N-1 multiplies newest
-        complex_t ff_out(0.0f, 0.0f);
-        int center = config_.ff_taps / 2;
-        
-        for (int i = 0; i < config_.ff_taps; i++) {
-            // For tap i, we need to read the sample at delay (center - i)
-            // delay 0 = current input at ff_idx_
-            // delay 1 = previous at ff_idx_-1
-            int delay = center - i;
-            int idx = (ff_idx_ - delay + config_.ff_taps) % config_.ff_taps;
-            ff_out += ff_taps_[i] * ff_delay_[idx];
-        }
-        
-        // Compute feedback output (using past decisions)
-        complex_t fb_out(0.0f, 0.0f);
-        for (int i = 0; i < config_.fb_taps; i++) {
-            // Feedback tap i multiplies decision at delay (i+1)
-            int idx = (fb_idx_ - i - 1 + config_.fb_taps) % config_.fb_taps;
-            fb_out += fb_taps_[i] * fb_delay_[idx];
-        }
-        
-        // Equalizer output
-        complex_t output = ff_out + fb_out;
+        complex_t output = filter_output();
         
         // Make decision
         complex_t decision = training ? training_symbol : hard_decision(output);
@@ -131,7 +149,7 @@ public:
         complex_t error = decision - output;
         
         // LMS adaptation
-        adapt(error, center);
+        adapt(error);
         
         // Update feedback delay with decision
         fb_delay_[fb_idx_] = decision;
@@ -183,6 +201,62 @@ public:
     }
     
     /**
+     * Set the taps to the least-squares fit over a known stretch: minimise
+     * sum |ref[n] - y[n]|^2 for n in [first, end), where y[n] reads x[n - center]
+     * to x[n + center] through the feed-forward taps (x indexed like ref, not fed
+     * ahead) and ref[n-1] to ref[n-fb_taps] through the feedback taps. Inputs
+     * outside x and references before ref[0] count as 0. delta adds
+     * delta * trace / taps to the diagonal (ridge), so a short or flat stretch
+     * still gives a well-posed fit. The delay lines are left as they are.
+     *
+     * The LMS gets to the same taps only with a large step, and leaves them
+     * carrying that step's noise into the data: excess error that a flat
+     * low-SNR channel shows as lower decode quality.
+     * @return false when the fit is singular (taps unchanged)
+     */
+    bool fit_least_squares(const std::vector<complex_t>& x, const std::vector<complex_t>& ref,
+                           int first, int end, float delta = 1e-3f) {
+        const int nf = config_.ff_taps, nb = config_.fb_taps, m = nf + nb;
+        end = std::min(end, static_cast<int>(ref.size()));
+        if (first < 0 || end - first < m) return false;
+        std::vector<std::complex<double>> R(m * m), b(m), u(m);
+        for (int n = first; n < end; n++) {
+            for (int i = 0; i < nf; i++) {
+                const long k = static_cast<long>(n) + config_.lookahead - tap_delay(i);
+                u[i] = (k >= 0 && k < static_cast<long>(x.size())) ? std::complex<double>(x[k]) : 0.0;
+            }
+            for (int i = 0; i < nb; i++) u[nf + i] = n - 1 - i >= 0 ? std::complex<double>(ref[n - 1 - i]) : 0.0;
+            for (int r = 0; r < m; r++) {
+                for (int c = 0; c < m; c++) R[r * m + c] += std::conj(u[r]) * u[c];
+                b[r] += std::conj(u[r]) * std::complex<double>(ref[n]);
+            }
+        }
+        double tr = 0.0;
+        for (int r = 0; r < m; r++) tr += R[r * m + r].real();
+        for (int r = 0; r < m; r++) R[r * m + r] += delta * tr / m;
+        // Gaussian elimination with partial pivoting
+        for (int c = 0; c < m; c++) {
+            int p = c;
+            for (int r = c + 1; r < m; r++) if (std::abs(R[r * m + c]) > std::abs(R[p * m + c])) p = r;
+            if (std::abs(R[p * m + c]) < 1e-12) return false;
+            if (p != c) { for (int k = 0; k < m; k++) std::swap(R[c * m + k], R[p * m + k]); std::swap(b[c], b[p]); }
+            for (int r = c + 1; r < m; r++) {
+                const std::complex<double> f = R[r * m + c] / R[c * m + c];
+                for (int k = c; k < m; k++) R[r * m + k] -= f * R[c * m + k];
+                b[r] -= f * b[c];
+            }
+        }
+        for (int c = m - 1; c >= 0; c--) {
+            std::complex<double> acc = b[c];
+            for (int k = c + 1; k < m; k++) acc -= R[c * m + k] * b[k];
+            b[c] = acc / R[c * m + c];
+        }
+        for (int i = 0; i < nf; i++) ff_taps_[i] = complex_t(b[i]);
+        for (int i = 0; i < nb; i++) fb_taps_[i] = complex_t(b[nf + i]);
+        return true;
+    }
+
+    /**
      * Get current feedforward taps
      */
     const std::vector<complex_t>& ff_taps() const { return ff_taps_; }
@@ -204,7 +278,8 @@ public:
     }
     
     /**
-     * Check if equalizer is converged (based on center tap dominance)
+     * Check if equalizer is converged (based on center tap dominance). The center
+     * tap multiplies the current symbol x[n] (see tap_delay()).
      */
     bool is_converged() const {
         int center = config_.ff_taps / 2;
@@ -241,6 +316,37 @@ private:
     int symbol_count_;
     
     /**
+     * Delay-line age of the input feed-forward tap i multiplies. The newest input,
+     * at age 0, is x[n+lookahead], so tap i multiplies x[n + i - center]: the center
+     * tap multiplies the current symbol x[n], and with lookahead = ff_taps / 2 the
+     * taps span x[n-center] to x[n+center]. With lookahead 0 the taps after the
+     * center wrap to the oldest inputs (ages ff_taps-1 down to center+1), the
+     * original causal arrangement.
+     */
+    int tap_delay(int i) const {
+        const int center = config_.ff_taps / 2;
+        return ((config_.lookahead + center - i) % config_.ff_taps + config_.ff_taps) % config_.ff_taps;
+    }
+
+    /// Ring index of the input feed-forward tap i multiplies.
+    int ff_tap_index(int i) const {
+        return (ff_idx_ - tap_delay(i) + config_.ff_taps) % config_.ff_taps;
+    }
+
+    /// Feed-forward plus feedback output for the input now at ff_idx_.
+    complex_t filter_output() const {
+        complex_t ff_out(0.0f, 0.0f);
+        for (int i = 0; i < config_.ff_taps; i++) ff_out += ff_taps_[i] * ff_delay_[ff_tap_index(i)];
+        complex_t fb_out(0.0f, 0.0f);
+        for (int i = 0; i < config_.fb_taps; i++) {
+            // Feedback tap i multiplies decision at delay (i+1)
+            int idx = (fb_idx_ - i - 1 + config_.fb_taps) % config_.fb_taps;
+            fb_out += fb_taps_[i] * fb_delay_[idx];
+        }
+        return ff_out + fb_out;
+    }
+
+    /**
      * 8-PSK hard decision
      */
     complex_t hard_decision(complex_t symbol) const {
@@ -263,7 +369,7 @@ private:
      * NLMS normalizes by input power, giving faster convergence
      * on time-varying channels and better stability.
      */
-    void adapt(complex_t error, int center) {
+    void adapt(complex_t error) {
         float mu_ff_eff = config_.mu_ff;
         float mu_fb_eff = config_.mu_fb;
         
@@ -285,9 +391,7 @@ private:
         
         // Feedforward adaptation: w[k] += mu_eff * error * conj(x[delay])
         for (int i = 0; i < config_.ff_taps; i++) {
-            int delay = center - i;
-            int idx = (ff_idx_ - delay + config_.ff_taps) % config_.ff_taps;
-            ff_taps_[i] += mu_ff_eff * error * std::conj(ff_delay_[idx]);
+            ff_taps_[i] += mu_ff_eff * error * std::conj(ff_delay_[ff_tap_index(i)]);
             ff_taps_[i] *= (1.0f - config_.leak);  // Leaky LMS
         }
         

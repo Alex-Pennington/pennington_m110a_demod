@@ -13,6 +13,7 @@
 #include "modem/m110a_codec.h"
 #include "m110a/mode_config.h"
 #include "equalizer/dfe.h"
+#include "equalizer/frame_dfe.h"
 #include "dsp/mlse_equalizer.h"
 #include "dsp/mlse_adaptive.h"
 #include "dsp/turbo_equalizer.h"
@@ -218,7 +219,8 @@ public:
                 mode_cfg.unknown_data_len,
                 mode_cfg.known_data_len,
                 brain_result.preamble_symbols,  // Use preamble for pretraining
-                config_.use_nlms                 // Use NLMS if enabled
+                config_.use_nlms,                // Use NLMS if enabled
+                brain_result.pre_data_symbols    // Delay-line context at the data start
             );
         } else if ((config_.equalizer == Equalizer::MLSE_L2 || 
                     config_.equalizer == Equalizer::MLSE_L3) &&
@@ -591,7 +593,7 @@ private:
     RxState state_;
     
     // Per frame within the quality span: the frame's end (symbols), and the probe
-    // error and reference power of the DFE's a-priori outputs (accumulate_probe_quality).
+    // error and reference power of the DFE's a-priori outputs (frame_dfe_equalize).
     std::vector<std::array<double, 3>> dfe_probe_frames_;
     
     /// Data symbols scored for decode quality: 0.6 s at 2400 baud, one short
@@ -646,21 +648,8 @@ private:
         if (rms <= 0.0) return;
         float g = static_cast<float>(NOMINAL_SYMBOL_RMS / rms);
         for (auto& x : r.preamble_symbols) x *= g;
+        for (auto& x : r.pre_data_symbols) x *= g;
         for (auto& x : r.data_symbols) x *= g;
-    }
-    
-    /// Run a DFE training pass over one frame's probes and, while the frame
-    /// lies inside the quality span, accumulate the error of the DFE's output
-    /// on each probe before it adapts to that probe.
-    void accumulate_probe_quality(DFE& dfe, const std::vector<complex_t>& probe_in,
-                                  const std::vector<complex_t>& probe_ref, size_t frame_end) {
-        float mse = dfe.train(probe_in, probe_ref);
-        if (frame_end <= static_cast<size_t>(QUALITY_SPAN_SYMBOLS) && !probe_ref.empty()) {
-            double ref_pow = 0.0;
-            for (const auto& r : probe_ref) ref_pow += std::norm(r);
-            dfe_probe_frames_.push_back({static_cast<double>(frame_end),
-                                         static_cast<double>(mse) * probe_ref.size(), ref_pow});
-        }
     }
     
     /// Frames (data + probe patterns) per interleaver block, or 0 when unknown.
@@ -674,15 +663,10 @@ private:
         return bits % per_frame == 0 ? bits / per_frame : 0;
     }
 
-    /// True for the probe of the last two frames of an interleaver block.
-    /// MIL-STD-188-110C 5.3.2.3.7.1.2: the two known-symbol patterns before
-    /// each new interleaver block carry D1 and D2 (Walsh patterns) instead of
-    /// zeros. A transmitter that follows it (the Harris RT-1694D does) sends
-    /// them; this modem's TX sends zeros. These probes are left out of probe
-    /// training and of the quality figure, so either kind of transmitter is
-    /// read the same way.
+    /// True for the probe of the last two frames of an interleaver block
+    /// (m110a::block_boundary_probe, src/equalizer/frame_dfe.h).
     static bool block_boundary_probe(int frame, int block_frames) {
-        return block_frames > 2 && (frame % block_frames) >= block_frames - 2;
+        return m110a::block_boundary_probe(frame, block_frames);
     }
 
     /// Frames per interleaver block of the mode being decoded (see above).
@@ -1124,195 +1108,19 @@ private:
         return std::vector<uint8_t>(decoded.begin(), decoded.begin() + last_nonzero);
     }
     
-    /**
-     * Apply probe-aided channel equalization using existing DFE
-     * 
-     * Frame structure: [32 data][16 probes]
-     * Strategy: 
-     * 1. Pretrain DFE on preamble (known sequence)
-     * 2. Use previous frame's probes to equalize current frame's data
-     * 3. Update estimate with current frame's probes
-     */
+    /// Probe-aided DFE over the data (frame_dfe_equalize, src/equalizer/frame_dfe.h);
+    /// keeps the per-frame probe error for the decode quality (dfe_probe_frames_).
     std::vector<complex_t> apply_dfe_equalization(
             const std::vector<complex_t>& symbols,
             int unknown_len, int known_len,
             const std::vector<complex_t>& preamble_symbols = {},
-            bool use_nlms = false) {
-        
-        // 8-PSK constellation
-        static const std::array<complex_t, 8> PSK8 = {{
-            complex_t( 1.000f,  0.000f),
-            complex_t( 0.707f,  0.707f),
-            complex_t( 0.000f,  1.000f),
-            complex_t(-0.707f,  0.707f),
-            complex_t(-1.000f,  0.000f),
-            complex_t(-0.707f, -0.707f),
-            complex_t( 0.000f, -1.000f),
-            complex_t( 0.707f, -0.707f)
-        }};
-        
-        // Probes are tribit 0 -> MGD3[0] = 0
-        static const int PROBE_GRAY = 0;
-        
-        // Preamble scrambling sequence
-        static const std::array<uint8_t, 32> pscramble = {
-            7, 4, 3, 0, 5, 1, 5, 0, 2, 2, 1, 1, 5, 7, 4, 3,
-            5, 0, 2, 6, 2, 1, 6, 2, 0, 0, 5, 0, 5, 2, 6, 6
-        };
-        
-        // Common preamble pattern (D values)
-        static const std::array<uint8_t, 9> p_c_seq = {0, 1, 3, 0, 1, 3, 1, 2, 0};
-        
-        // PSK symbol patterns
-        static const std::array<std::array<uint8_t, 8>, 8> psymbol = {{
-            {0, 0, 0, 0, 0, 0, 0, 0},
-            {0, 4, 0, 4, 0, 4, 0, 4},
-            {0, 0, 4, 4, 0, 0, 4, 4},
-            {0, 4, 4, 0, 0, 4, 4, 0},
-            {0, 0, 0, 0, 4, 4, 4, 4},
-            {0, 4, 0, 4, 4, 0, 4, 0},
-            {0, 0, 4, 4, 4, 4, 0, 0},
-            {0, 4, 4, 0, 4, 0, 0, 4}
-        }};
-        
-        // Configure DFE
-        DFE::Config dfe_cfg;
-        dfe_cfg.ff_taps = 11;
-        dfe_cfg.fb_taps = 5;
-        dfe_cfg.use_nlms = use_nlms;
-        
-        if (use_nlms) {
-            // NLMS: mu gets normalized by input power, so use larger values
-            // Typical NLMS mu range: 0.1 to 1.0
-            dfe_cfg.mu_ff = 0.3f;    // Aggressive, but normalized
-            dfe_cfg.mu_fb = 0.15f;   
-            dfe_cfg.nlms_delta = 0.01f;  // Regularization to prevent div-by-zero
-        } else {
-            // Standard LMS: conservative fixed step sizes
-            dfe_cfg.mu_ff = 0.005f;  
-            dfe_cfg.mu_fb = 0.002f;
-        }
-        dfe_cfg.leak = 0.0001f;
-        
-        DFE dfe(dfe_cfg);
-
-        // The DFE's feed-forward taps span the 11 inputs up to the current one, so on
-        // their own they see no later symbol and cannot cancel precursor ISI. Feed the
-        // input AHEAD symbols early, so the taps span the symbol -5 to +5. An FT-897D
-        // SSB filter (top of the 2400-baud band cut from 2300 Hz, 0.8-1.8 ms of edge
-        // delay) gave a 0.40 precursor, and 2400S decoded at 6 dB with wrong bytes.
-        const size_t AHEAD = dfe_cfg.ff_taps / 2;
-        auto ahead = [AHEAD](const std::vector<complex_t>& v, size_t i, size_t n) {
-            std::vector<complex_t> w(n, complex_t(0.0f, 0.0f));
-            for (size_t k = 0; k < n && i + AHEAD + k < v.size(); k++) w[k] = v[i + AHEAD + k];
-            return w;
-        };
-        
-        // ========================================
-        // Preamble Pretraining
-        // ========================================
-        if (!preamble_symbols.empty()) {
-            // Generate expected common preamble (first 288 symbols)
-            // This is the most reliable part for channel estimation
-            int pretrain_len = std::min(288, static_cast<int>(preamble_symbols.size()));
-            
-            std::vector<complex_t> preamble_ref;
-            preamble_ref.reserve(pretrain_len);
-            
-            int scram_idx = 0;
-            for (int i = 0; i < 9 && static_cast<int>(preamble_ref.size()) < pretrain_len; i++) {
-                uint8_t d_val = p_c_seq[i];
-                for (int j = 0; j < 32 && static_cast<int>(preamble_ref.size()) < pretrain_len; j++) {
-                    uint8_t base = psymbol[d_val][j % 8];
-                    uint8_t scrambled = (base + pscramble[scram_idx % 32]) % 8;
-                    preamble_ref.push_back(PSK8[scrambled]);
-                    scram_idx++;
-                }
-            }
-            
-            // Train DFE on preamble in chunks
-            // Use multiple passes for better convergence
-            // A 20x LMS step here, so the taps converge on the preamble; the data keeps
-            // the tracking step.
-            int chunk_size = 32;
-            if (!use_nlms) dfe.set_step(0.1f, 0.05f);
-            for (int pass = 0; pass < 2; pass++) {
-                for (int i = 0; i + chunk_size <= pretrain_len; i += chunk_size) {
-                    std::vector<complex_t> rx_chunk = ahead(preamble_symbols, i, chunk_size);
-                    std::vector<complex_t> ref_chunk(
-                        preamble_ref.begin() + i,
-                        preamble_ref.begin() + i + chunk_size);
-                    
-                    dfe.train(rx_chunk, ref_chunk);
-                }
-            }
-            if (!use_nlms) dfe.set_step(dfe_cfg.mu_ff, dfe_cfg.mu_fb);
-        }
-        
-        // ========================================
-        // Data Frame Processing
-        // ========================================
-        DataScramblerFixed scrambler;
-        
-        int pattern_len = unknown_len + known_len;
-        std::vector<complex_t> output;
-        output.reserve(symbols.size());
-        
-        size_t idx = 0;
-        int frame = 0;
-        // The first AHEAD data symbols go into the delay line before the first output.
-        for (size_t k = 0; k < AHEAD && k < symbols.size(); k++) dfe.push(symbols[k]);
-
-        while (idx + pattern_len <= symbols.size()) {
-            // Get current frame data and probes
-            std::vector<complex_t> data_in = ahead(symbols, idx, unknown_len);
-            
-            std::vector<complex_t> probe_in(
-                symbols.begin() + idx + unknown_len,
-                symbols.begin() + idx + pattern_len);
-            const std::vector<complex_t> probe_eq = ahead(symbols, idx + unknown_len, known_len);
-            
-            // Generate probe reference using synchronized scrambler
-            scrambler.reset();
-            int scr_pos = frame * pattern_len + unknown_len;
-            for (int i = 0; i < scr_pos; i++) scrambler.next();
-            
-            std::vector<complex_t> probe_ref(known_len);
-            for (int i = 0; i < known_len; i++) {
-                int scr = scrambler.next();
-                int sym_idx = (PROBE_GRAY + scr) & 7;
-                probe_ref[i] = PSK8[sym_idx];
-            }
-            
-            // With preamble pretraining, DFE is already initialized
-            // So we can equalize immediately on first frame
-            if (frame == 0 && preamble_symbols.empty()) {
-                // No preamble: train first, then equalize (old behavior)
-                dfe.train(probe_eq, probe_ref);
-                dfe.equalize(data_in, output);
-            } else {
-                // With preamble or subsequent frames: equalize first, then update
-                // (not on a block-boundary probe, which may carry D1/D2)
-                dfe.equalize(data_in, output);
-                if (!block_boundary_probe(frame, block_frames_))
-                    accumulate_probe_quality(dfe, probe_eq, probe_ref, idx + pattern_len);
-                else
-                    for (const auto& x : probe_eq) dfe.push(x);  // keep the input stream whole
-            }
-            
-            // Pass through original probes
-            output.insert(output.end(), probe_in.begin(), probe_in.end());
-            
-            idx += pattern_len;
-            frame++;
-        }
-        
-        // Remaining symbols - pass through
-        if (idx < symbols.size()) {
-            output.insert(output.end(), symbols.begin() + idx, symbols.end());
-        }
-        
-        return output;
+            bool use_nlms = false,
+            const std::vector<complex_t>& pre_data_symbols = {}) {
+        FrameDfeOutput r = frame_dfe_equalize(symbols, unknown_len, known_len, block_frames_,
+                                              preamble_symbols, use_nlms, pre_data_symbols,
+                                              QUALITY_SPAN_SYMBOLS);
+        dfe_probe_frames_.insert(dfe_probe_frames_.end(), r.probe_frames.begin(), r.probe_frames.end());
+        return std::move(r.symbols);
     }
     
     /**
