@@ -2196,9 +2196,11 @@ private:
         return probe_snr_db(syms, m.unknown_data_len, m.known_data_len, block_frames, span);
     }
 
-    /// Block record b: its bytes of `bytes` (the last record takes the rest), its quality
+    /// Block record b: its bytes of `bytes` (the last record takes the rest), its quality over
+    /// its frames before msg_frames (the message's end, when known: with the interleaver
+    /// bypassed, 4800S, a message ends at a frame, not at a block)
     BlockRecord stream_record(size_t b, const std::vector<uint8_t>& bytes, bool last, float q_span,
-                              bool from_dfe) const {
+                              bool from_dfe, size_t msg_frames = std::numeric_limits<size_t>::max()) const {
         const StreamState& S = *st_;
         BlockRecord r;
         r.index = b;
@@ -2209,7 +2211,8 @@ private:
         r.quality_threshold_db = quality_threshold_db(S.mode_id);
         r.block_quality_threshold_db = block_quality_threshold_db(S.mode_id);
         const auto& E = S.eqv();
-        const size_t fb0 = b * S.bf, fb1 = std::min((b + 1) * static_cast<size_t>(S.bf), E.size() / S.p);
+        const size_t fb0 = b * S.bf,
+                     fb1 = std::min({(b + 1) * static_cast<size_t>(S.bf), E.size() / S.p, msg_frames});
         float q = 0.0f;
         bool scored = fb1 > fb0 &&
             block_quality(S.mcfg, frame_snr(E, S.mcfg, fb1, from_dfe, S.bf, S.eq.probe_frames, fb0), fb0, fb1, q);
@@ -2248,8 +2251,9 @@ private:
             if (S.emitted < nrec) {
                 const std::vector<uint8_t> bytes = M110ACodec::bits_to_bytes(
                     std::vector<uint8_t>(S.bits.begin(), S.bits.begin() + static_cast<long>(8 * msg_bytes)));
+                const size_t msg_frames = message_symbols(S.mcfg, S.eom_bit) / static_cast<size_t>(S.p);
                 for (size_t e = S.emitted; e < nrec; e++) {
-                    BlockRecord r = stream_record(e, bytes, e + 1 == nrec, q_span, from_dfe);
+                    BlockRecord r = stream_record(e, bytes, e + 1 == nrec, q_span, from_dfe, msg_frames);
                     r.eom = r.last;
                     S.ready.push_back(std::move(r));
                 }
@@ -2340,7 +2344,7 @@ private:
                      std::min<int>(quality_span(S.mcfg, eom_bit),
                                    static_cast<int>(eom_bit < 0 ? sig * pattern : E.size())), from_dfe);
         for (size_t b = S.emitted; b < nb; b++) {
-            BlockRecord r = stream_record(b, result.data, b + 1 == nb, result.quality_db, from_dfe);
+            BlockRecord r = stream_record(b, result.data, b + 1 == nb, result.quality_db, from_dfe, msg_frames);
             if (!result.success && !quality_fail) { r.passes = false; r.below_quality = false; }
             r.eom = r.last && result.eom_detected;
             S.ready.push_back(std::move(r));

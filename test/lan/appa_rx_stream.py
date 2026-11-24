@@ -10,7 +10,9 @@ Phases
   stream   a 32 s 600S burst, then a short burst while the first is still being decoded:
            no audio dropped; CARRIER DETECTED within a stated time of the preamble's start and
            before the burst's signal ends (A.5.1.2.6 step 2, Table A-VI); both messages exact;
-           NO CARRIER after each
+           NO CARRIER after each; the data delivered block by block as the burst is received
+           (the first packet before its signal ends), each packet timed against the end of
+           its interleaver block on the air
   noise    600S bursts in band-limited noise (300-3300 Hz; SNR over that band, the way
            greybeard-ale's audio relay sets it): no carrier on noise alone, the burst found by
            its preamble at -2 dB, found and decoded exact at 2 dB
@@ -184,6 +186,7 @@ def phase_stream(a):
         s1 = len(parts[0])
         s2 = s1 + len(w1) + len(parts[2])
         marks = {"pre1": s1 + int(LEAD_S * FS), "end1": s1 + len(w1) - FS,  # the 1 s tail is silence
+                 "data1": s1 + int((LEAD_S + 0.6) * FS),  # after the 3-frame 600S preamble
                  "pre2": s2 + int(LEAD_S * FS), "end2": s2 + len(w2) - FS}
         col = Collector(d)
         fd = Feeder(srv.p, to_pcm(x), marks)
@@ -212,6 +215,20 @@ def phase_stream(a):
             A.check(t_nc is not None and orders[:1] == [1] and orders[-1:] == [4], "A.5.1.2.6 steps 3-7",
                     f"FIRST_ONLY ... LAST, then NO CARRIER ({len(orders)} packets); first data "
                     f"{(t_d or 0) - fd.at['end1']:.2f} s after the signal ended")
+            # Each data packet against the end of its interleaver block on the air (0.6 s
+            # blocks from the end of the preamble): a block is decoded once the next block is
+            # in (the Viterbi traceback reaches into it, and it is deinterleaved whole)
+            pk = [t for t, k, f in col.events() if k == "data" and t_cd <= t <= (t_nc or 1e18)]
+            if pk and "data1" in fd.at:
+                delay = [t - (fd.at["data1"] + 0.6 * (i + 1)) for i, t in enumerate(pk)]
+                ds = sorted(delay)
+                print(f"INFO  600S 32 s burst: first data {pk[0] - fd.at['end1']:+.2f} s, last data "
+                      f"{pk[-1] - fd.at['end1']:+.2f} s, NO CARRIER {(t_nc or 0) - fd.at['end1']:+.2f} s against the "
+                      f"end of the signal; packet after its block's end: min {ds[0]:.2f} s, median "
+                      f"{ds[len(ds) // 2]:.2f} s, max {ds[-1]:.2f} s ({len(pk)} packets)")
+                A.check(pk[0] < fd.at["end1"], "A.5.1.2.6 steps 3-5",
+                        f"data delivered while the burst is on the air: the first packet "
+                        f"{fd.at['end1'] - pk[0]:.1f} s before the signal ends")
         if len(rx) > 1:
             t_cd, rb, data, orders, t_nc, t_d = rx[1]
             A.check(data == short_msg and t_nc is not None, "brief: gap 3",
