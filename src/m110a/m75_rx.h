@@ -625,6 +625,20 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     return r;
 }
 
+/// The success gate on a receive in `mode` (docs/m110a-75bps.md, "Success"): message
+/// quality, worst interleaver block, the decoded path clear of its runner-ups, and some
+/// bytes or an EOM. quality_db and q_block (if given) receive the two qualities.
+inline bool gate_passes(const RxOut& r, ModeId mode, const RxTuning& t, double* quality_db = nullptr,
+                        double* q_block = nullptr) {
+    const double q = 10.0 * std::log10((1.0 - r.p) / std::max(r.p, 1e-4));
+    const double qb = 10.0 * std::log10((1.0 - r.p_block) / std::max(r.p_block, 1e-4));
+    if (quality_db) *quality_db = q;
+    if (q_block) *q_block = qb;
+    const double min_block = mode == ModeId::M75NS ? t.min_block_quality_db_75s : t.min_block_quality_db;
+    return r.preamble && static_cast<float>(q) >= quality_threshold_db(t) && qb >= min_block &&
+           r.unreliable <= t.max_unreliable && (r.eom_bit >= 0 || r.blocks > 0);
+}
+
 /// In a forced mode, the Table XI data mode a clearly read D1/D2 names instead, or ""
 /// (as ModemRXImpl::preamble_contradicts does for the other modes)
 inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
@@ -645,12 +659,12 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
 /// ModemRX's AUTO pass, when the shared acquisition found no preamble: is there a 75 bps
 /// one, found and with D1/D2 read clearly as 7,5 or 5,5? Its mode in `mode`.
 ///
-/// Below the shared acquisition's reach only 75 bps decodes, so D2 need not read: a 3-frame
-/// countdown with D1 read clearly as 7 is taken as 75S, a 24-frame one with D1 5 as 75L
-/// (the other codes with those D1 are 150S/L, 4800S and Harris modes, none of which decode
-/// there; the decode gate refuses what is not 75 bps). D2's three 75S segments misread at
-/// -9 dB while D1 read clearly: measured 2 of 48, D2 read 6 and 7, D1 at 6 and 2.5 times
-/// its runner-up.
+/// When D2 does not read 5 but D1 reads clearly as 7 with a 3-frame countdown (or as 5 with
+/// 24 frames), the audio is received as 75S (75L), and taken as that only when the decode
+/// passes the success gate: D2's three 75S segments misread at -9 dB while D1 read clearly
+/// (measured 2 of 48: D2 read 6 and 7, D1 at 6 and 2.5 times its runner-up). Otherwise the
+/// answer is no, as before, so a 150S or 4800S preamble below the shared acquisition still
+/// reads "Mode detection failed".
 inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
     const std::vector<float>& in = default_tuning().excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
     const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
@@ -659,9 +673,14 @@ inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg,
         return true;
     }
     if (!a.found || a.d1_e < 2.0 * a.d1_e2) return false;
-    if (a.frames == 3 && a.d1_top == 7) { mode = ModeId::M75NS; return true; }
-    if (a.frames == 24 && a.d1_top == 5) { mode = ModeId::M75NL; return true; }
-    return false;
+    ModeId m;
+    if (a.frames == 3 && a.d1_top == 7) m = ModeId::M75NS;
+    else if (a.frames == 24 && a.d1_top == 5) m = ModeId::M75NL;
+    else return false;
+    const RxTuning& t = default_tuning();
+    if (!gate_passes(receive(rf, m, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t), m, t)) return false;
+    mode = m;
+    return true;
 }
 
 /**
@@ -694,8 +713,9 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     res.freq_offset_hz = r.acq.freq_offset_hz;
     res.snr_db = static_cast<float>(r.snr_db);
     res.ber_estimate = static_cast<float>(r.p);
-    res.quality_db = static_cast<float>(10.0 * std::log10((1.0 - r.p) / std::max(r.p, 1e-4)));
-    const double q_block = 10.0 * std::log10((1.0 - r.p_block) / std::max(r.p_block, 1e-4));
+    double quality = 0.0, q_block = 0.0;
+    const bool pass = gate_passes(r, mode, t, &quality, &q_block);
+    res.quality_db = static_cast<float>(quality);
     res.quality_threshold_db = quality_threshold_db(t);
     for (double pb : r.p_blocks)
         res.block_quality_db.push_back(static_cast<float>(10.0 * std::log10((1.0 - pb) / std::max(pb, 1e-4))));
@@ -704,8 +724,7 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
                                    : *std::min_element(res.block_quality_db.begin(), res.block_quality_db.end());
     const double min_block = mode == ModeId::M75NS ? t.min_block_quality_db_75s : t.min_block_quality_db;
     res.block_quality_threshold_db = static_cast<float>(min_block);
-    res.success = res.quality_db >= res.quality_threshold_db && q_block >= min_block &&
-                  r.unreliable <= t.max_unreliable && (r.eom_bit >= 0 || r.blocks > 0);
+    res.success = pass;
     if (!res.success) {
         char buf[200];
         if (r.eom_bit < 0 && r.blocks == 0)
