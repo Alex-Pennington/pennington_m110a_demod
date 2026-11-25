@@ -55,6 +55,16 @@ struct BrainDecoderConfig {
     int unknown_data_len = 32;  // Data symbols per mini-frame
     int known_data_len = 16;    // Probe symbols per mini-frame
     int preamble_symbols = 1440; // Preamble length in symbols (3 frames Ã— 480)
+
+    // Multipath acquisition (find_preamble_multipath): when the single-path correlation
+    // misses its 0.70 gate, look for the common segment through a channel of up to
+    // MP_LAGS symbols either side of the start and take the preamble when that channel
+    // explains at least multipath_threshold of the received energy.
+    bool multipath_acq = true;
+    float multipath_threshold = 0.40f;
+    // The caller forces the mode: take the best multipath start even under the threshold
+    // (result.gate_bypassed); the caller verifies it by D1/D2 and the data probes.
+    bool forced_mode = false;
 };
 
 /**
@@ -93,7 +103,18 @@ struct BrainDecodeResult {
     float count_corr[3] = {0.0f, 0.0f, 0.0f};
     float count_corr2[3] = {0.0f, 0.0f, 0.0f};
     std::string mode_name = "UNKNOWN";
-    
+
+    // Found by find_preamble_multipath: the share of the received energy over the common
+    // segment that the channel estimate explains (about 0.1 on noise, 1 on a clean
+    // preamble through any channel within +/-MP_LAGS symbols), and that estimate, lag
+    // -MP_LAGS first, from the found frame's last two common blocks. D1/D2, the countdown
+    // and the carrier line are then read through it (rake combining).
+    bool multipath = false;
+    float mp_metric = 0.0f;
+    std::vector<complex_t> mp_taps;
+    // A forced mode took the best multipath start under the threshold
+    bool gate_bypassed = false;
+
     // Extracted symbols
     std::vector<complex_t> preamble_symbols;
     std::vector<complex_t> data_symbols;
@@ -667,8 +688,144 @@ private:
             
             result.accuracy = 100.0f * matches / 288.0f;
         }
+        if (!result.preamble_found && config_.multipath_acq) find_preamble_multipath(filtered, result);
     }
-    
+
+public:
+    /// Lags either side of the start the multipath search and the rake read (+-1.25 ms)
+    static constexpr int MP_LAGS = 3;
+private:
+    /// Common-segment pieces the multipath search adds up without their phase, so a
+    /// channel that changes over the 120 ms segment still counts in full
+    static constexpr int MP_SEG = 72;
+
+    /**
+     * The preamble through a frequency-selective channel. Under multipath the common segment
+     * arrives as several delayed copies, and the single-path correlation of find_preamble
+     * sees only one of them: on air, a 600L burst with 1.5 ms of spread scored 0.64 and a 300L
+     * one 0.43, under the 0.70 gate, while 99 % and 66 % of their energy matched the preamble
+     * through a short channel. Here each start t is scored by
+     *
+     *   m(t) = sum over lags k in [-MP_LAGS, MP_LAGS] and 72-symbol pieces b of
+     *          |sum_i x[t + (72 b + i + k) sps] conj(c[72 b + i])|^2  /  (72 sum_i |x[t + i sps]|^2)
+     *
+     * the share of the received energy a channel of 2 MP_LAGS + 1 symbol-spaced taps,
+     * constant over each 72-symbol piece, explains. A clean preamble scores about 1 through
+     * any such channel, noise (2 MP_LAGS + 1) 4 / 288 = 0.1 on average (0.19 at most over
+     * 20 s of band-limited noise, every sample a start). The start is the t with the highest
+     * m: the window of lags centred on the channel's energy, so the DFE's feed-forward taps
+     * (+-5) cover it. Taken when m reaches multipath_threshold, or always for a forced mode
+     * (gate_bypassed; the caller checks D1/D2 and the probes). correlation is then sqrt(m).
+     */
+    void find_preamble_multipath(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        const long sps = sps_;
+        const long n = static_cast<long>(filtered.size());
+        const long max_search = std::min<long>(n - 288 * sps, static_cast<long>(config_.max_search_symbols) * sps);
+        if (max_search <= 0) return;
+        // E[u]: the summed piece energies with the pieces starting at u - MP_LAGS sps
+        const long u0 = -MP_LAGS * sps;
+        const long nu = max_search + 2 * MP_LAGS * sps;
+        std::vector<double> E(static_cast<size_t>(nu), 0.0);
+        for (long j = 0; j < nu; j++) {
+            const long u = u0 + j;
+            double s = 0.0;
+            for (int b = 0; b < 288 / MP_SEG; b++) {
+                complex_t c(0, 0);
+                for (int i = 0; i < MP_SEG; i++) {
+                    const long idx = u + static_cast<long>(b * MP_SEG + i) * sps;
+                    if (idx < 0 || idx >= n) continue;
+                    const uint8_t p = common_pattern_[b * MP_SEG + i];
+                    c += filtered[idx] * complex_t(brain::psk8_i[p], -brain::psk8_q[p]);
+                }
+                s += std::norm(c);
+            }
+            E[static_cast<size_t>(j)] = s;
+        }
+        // energy over the 288 symbols from each start, by a running sum per sample phase
+        double best = -1.0;
+        long best_t = 0;
+        for (long t = 0; t < max_search; t++) {
+            double e = 0.0;
+            for (int i = 0; i < 288; i++) e += std::norm(filtered[t + i * sps]);
+            double m = 0.0;
+            for (int k = -MP_LAGS; k <= MP_LAGS; k++) m += E[static_cast<size_t>(t + k * sps - u0)];
+            m = e > 0.0 ? m / (MP_SEG * e) : 0.0;
+            if (m > best) { best = m; best_t = t; }
+        }
+        if (best < 0.0) return;
+        const bool pass = best >= config_.multipath_threshold;
+        if (!pass && !config_.forced_mode) {
+            result.mp_metric = static_cast<float>(best);
+            return;
+        }
+        result.multipath = true;
+        result.gate_bypassed = !pass;
+        result.mp_metric = static_cast<float>(best);
+        result.correlation = static_cast<float>(std::sqrt(best));
+        result.start_sample = static_cast<int>(best_t);
+        result.preamble_found = true;
+        // channel estimate from the last two common blocks, nearest D1/D2
+        result.mp_taps.assign(2 * MP_LAGS + 1, complex_t(0, 0));
+        for (int k = -MP_LAGS; k <= MP_LAGS; k++) {
+            complex_t c(0, 0);
+            for (int i = 224; i < 288; i++) {
+                const long idx = best_t + static_cast<long>(i + k) * sps;
+                if (idx < 0 || idx >= n) continue;
+                const uint8_t p = common_pattern_[i];
+                c += filtered[idx] * complex_t(brain::psk8_i[p], -brain::psk8_q[p]);
+            }
+            result.mp_taps[static_cast<size_t>(k + MP_LAGS)] = c / 64.0f;
+        }
+        // carrier phase at the start: the rake-combined common segment
+        const complex_t c = rake_corr(filtered, result, best_t, common_pattern_.data(), 288);
+        result.phase_offset = -std::arg(c);
+        complex_t rot(std::cos(result.phase_offset), std::sin(result.phase_offset));
+        int matches = 0;
+        for (int i = 0; i < 288; i++) {
+            const long idx = best_t + static_cast<long>(i) * sps;
+            complex_t sym(0, 0);
+            for (int k = -MP_LAGS; k <= MP_LAGS; k++) {
+                const long j = idx + static_cast<long>(k) * sps;
+                if (j >= 0 && j < n) sym += std::conj(result.mp_taps[static_cast<size_t>(k + MP_LAGS)]) * filtered[j];
+            }
+            sym *= rot;
+            const int rcv = (static_cast<int>(std::round(std::atan2(sym.imag(), sym.real()) * 4.0f / PI)) + 8) % 8;
+            if (rcv == common_pattern_[i]) matches++;
+        }
+        result.accuracy = 100.0f * matches / 288.0f;
+    }
+
+    /**
+     * Correlation of the n symbols from filtered sample first with the 8PSK pattern pat:
+     * sum_i x[first + i sps] conj(ref(pat[i])), or, when the preamble was found through a
+     * channel (r.multipath), the same summed over the lags with the channel estimate's
+     * conjugate weights and divided by its norm (maximal-ratio combining of the paths).
+     * Either way |result| / sqrt(32 sum |x|^2)-style normalisations read about 1 when clean.
+     * Samples outside filtered count as 0.
+     */
+    complex_t rake_corr(const std::vector<complex_t>& filtered, const BrainDecodeResult& r, long first,
+                        const uint8_t* pat, int n) const {
+        const long size = static_cast<long>(filtered.size());
+        auto at = [&](long lag) {
+            complex_t c(0, 0);
+            for (int i = 0; i < n; i++) {
+                const long idx = first + (static_cast<long>(i) + lag) * sps_;
+                if (idx < 0 || idx >= size) continue;
+                c += filtered[idx] * complex_t(brain::psk8_i[pat[i]], -brain::psk8_q[pat[i]]);
+            }
+            return c;
+        };
+        if (!r.multipath || r.mp_taps.empty()) return at(0);
+        complex_t c(0, 0);
+        double hn = 0.0;
+        for (int k = -MP_LAGS; k <= MP_LAGS; k++) {
+            const complex_t h = r.mp_taps[static_cast<size_t>(k + MP_LAGS)];
+            c += std::conj(h) * at(k);
+            hn += std::norm(h);
+        }
+        return hn > 0.0 ? c / static_cast<float>(std::sqrt(hn)) : c;
+    }
+
     /// Derotation for symbol n after the start of the frame found:
     /// exp(j (phase_offset - phase_rate * n)). phase_rate is 0 until
     /// refine_carrier() has measured it.
@@ -694,6 +851,7 @@ private:
      * strongest are left out. With fewer than 4 blocks nothing changes.
      */
     void refine_carrier(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        if (result.multipath) { refine_carrier_multipath(filtered, result); return; }
         const int frames = result.countdown >= 0 ? result.countdown + 1 : 1;
         struct Blk { double t; complex_t c; };
         std::vector<Blk> blk;
@@ -741,6 +899,90 @@ private:
     }
 
     /**
+     * refine_carrier for a preamble found through a channel (find_preamble_multipath). The
+     * channel changes over a long preamble (24 frames, 4.8 s), so one estimate cannot combine
+     * every frame's paths: each frame from the one found to the last gets its own estimate
+     * from its common segment, its nine 32-symbol blocks are rake-combined with it, and a
+     * least-squares line through their unwrapped phases gives the frame's phase slope. The
+     * residual frequency (phase_rate) is the slopes' mean weighted by each frame's combined
+     * energy, so a faded frame counts little. phase_offset puts the found frame's blocks,
+     * combined with the found estimate (mp_taps), on that slope at symbol 0. Frames with an
+     * estimate under a tenth of the strongest are left out; with none, nothing changes.
+     */
+    void refine_carrier_multipath(const std::vector<complex_t>& filtered, BrainDecodeResult& result) {
+        const int frames = result.countdown >= 0 ? result.countdown + 1 : 1;
+        const long size = static_cast<long>(filtered.size());
+        const int L = 2 * MP_LAGS + 1;
+        struct Fr { double slope, w; };
+        std::vector<Fr> fr;
+        double wmax = 0.0;
+        // blocks of frame f combined with taps h: (time, combined correlation)
+        auto blocks = [&](int f, const std::vector<complex_t>& h, std::vector<std::pair<double, complex_t>>& out) {
+            BrainDecodeResult r;
+            r.multipath = true;
+            r.mp_taps = h;
+            out.clear();
+            for (int b = 0; b < 9; b++) {
+                const long first = result.start_sample + (static_cast<long>(f) * brain::P_FRAME_LENGTH + b * 32) * sps_;
+                if (first + (31 + MP_LAGS) * sps_ >= size) return false;
+                out.emplace_back(static_cast<double>(f) * brain::P_FRAME_LENGTH + b * 32 + 15.5,
+                                 rake_corr(filtered, r, first, common_pattern_.data() + b * 32, 32));
+            }
+            return true;
+        };
+        auto line = [](const std::vector<std::pair<double, complex_t>>& v, double& slope, double& icpt) {
+            std::vector<double> ph(v.size());
+            ph[0] = std::arg(v[0].second);
+            for (size_t i = 1; i < v.size(); i++) {
+                double d = std::arg(v[i].second) - std::arg(v[i - 1].second);
+                while (d > PI) d -= 2 * PI;
+                while (d < -PI) d += 2 * PI;
+                ph[i] = ph[i - 1] + d;
+            }
+            double st = 0, sp = 0, stt = 0, stp = 0;
+            const double n = static_cast<double>(v.size());
+            for (size_t i = 0; i < v.size(); i++) {
+                st += v[i].first; sp += ph[i]; stt += v[i].first * v[i].first; stp += v[i].first * ph[i];
+            }
+            const double den = n * stt - st * st;
+            if (den <= 0) return false;
+            slope = (n * stp - st * sp) / den;
+            icpt = (sp - slope * st) / n;
+            return true;
+        };
+        std::vector<std::pair<double, complex_t>> v;
+        for (int f = 0; f < frames; f++) {
+            std::vector<complex_t> h(static_cast<size_t>(L));
+            const long f0 = result.start_sample + static_cast<long>(f) * brain::P_FRAME_LENGTH * sps_;
+            BrainDecodeResult one;  // single-lag correlations at each lag
+            for (int k = -MP_LAGS; k <= MP_LAGS; k++)
+                h[static_cast<size_t>(k + MP_LAGS)] =
+                    rake_corr(filtered, one, f0 + static_cast<long>(k) * sps_, common_pattern_.data(), 288) / 288.0f;
+            if (!blocks(f, h, v)) break;
+            double w = 0.0;
+            for (const auto& b : v) w += std::norm(b.second);
+            double slope, icpt;
+            if (!line(v, slope, icpt)) continue;
+            fr.push_back({slope, w});
+            wmax = std::max(wmax, w);
+        }
+        double sw = 0.0, ss = 0.0;
+        for (const auto& f : fr) if (f.w >= 0.1 * wmax) { sw += f.w; ss += f.w * f.slope; }
+        if (sw <= 0.0) return;
+        const double rate = ss / sw;
+        if (!blocks(0, result.mp_taps, v)) return;
+        // phase of the found frame's blocks on the common slope
+        complex_t acc(0, 0);
+        for (const auto& b : v) {
+            const double a = std::arg(b.second) - rate * b.first;
+            acc += std::abs(b.second) * complex_t(static_cast<float>(std::cos(a)), static_cast<float>(std::sin(a)));
+        }
+        result.phase_rate = static_cast<float>(rate);
+        result.phase_offset = static_cast<float>(-std::arg(acc));
+        result.freq_offset_hz += static_cast<float>(rate * config_.baud_rate / (2 * PI));
+    }
+
+    /**
      * Extract preamble symbols for further processing
      */
     void extract_preamble_symbols(const std::vector<complex_t>& filtered,
@@ -773,6 +1015,7 @@ private:
         int d1_second = -1, d2_second = -1;
 
         for (int d = 0; d < 8; d++) {
+            complex_t corr2_mp(0, 0);  // D2 through the channel (multipath)
             // D1 correlation
             complex_t corr1(0, 0);
             float pow1 = 0;
@@ -784,6 +1027,13 @@ private:
                 complex_t ref(brain::psk8_i[pattern], brain::psk8_q[pattern]);
                 corr1 += sym * std::conj(ref);
                 pow1 += std::norm(filtered[idx]);
+            }
+            if (result.multipath) {
+                // through the channel estimate; |.| leaves the carrier phase out
+                uint8_t pat[32];
+                for (int i = 0; i < 32; i++) pat[i] = (brain::psymbol[d][i % 8] + brain::pscramble[i % 32]) % 8;
+                corr1 = rake_corr(filtered, result, d1_start, pat, 32);
+                corr2_mp = rake_corr(filtered, result, d2_start, pat, 32);
             }
             float c1 = std::abs(corr1) / std::sqrt(pow1 * 32 + 0.0001f);
             if (c1 > best_d1_corr) {
@@ -805,6 +1055,7 @@ private:
                 corr2 += sym * std::conj(ref);
                 pow2 += std::norm(filtered[idx]);
             }
+            if (result.multipath) corr2 = corr2_mp;
             float c2 = std::abs(corr2) / std::sqrt(pow2 * 32 + 0.0001f);
             if (c2 > best_d2_corr) {
                 second_d2_corr = best_d2_corr; d2_second = d2;
@@ -862,6 +1113,11 @@ private:
                     uint8_t pattern = (brain::psymbol[d][i % 8] + brain::pscramble[i]) % 8;
                     corr += filtered[idx] *
                             std::conj(complex_t(brain::psk8_i[pattern], brain::psk8_q[pattern]));
+                }
+                if (result.multipath) {
+                    uint8_t pat[32];
+                    for (int i = 0; i < 32; i++) pat[i] = (brain::psymbol[d][i % 8] + brain::pscramble[i]) % 8;
+                    corr = rake_corr(filtered, result, count_start + seg * 32 * sps_, pat, 32);
                 }
                 float mag = std::abs(corr);
                 if (mag > best) { second = best; best = mag; best_d = d; }

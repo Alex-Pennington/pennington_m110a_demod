@@ -170,7 +170,8 @@ public:
         decode_cfg.use_fft_coarse_afc = config_.use_fft_coarse_afc;
         decode_cfg.coarse_search_range = config_.coarse_search_range;
         decode_cfg.fine_search_range = config_.fine_search_range;
-        
+        decode_cfg.forced_mode = config_.mode != Mode::AUTO;
+
         BrainDecoder decoder(decode_cfg);
         auto brain_result = decoder.decode(samples);
         
@@ -370,7 +371,7 @@ public:
         // Decode only those blocks and keep the bytes they carry.
         const size_t pattern = static_cast<size_t>(mode_cfg.unknown_data_len + mode_cfg.known_data_len);
         const size_t sig = signal_frames(phase_corrected, mode_cfg.unknown_data_len,
-                                         mode_cfg.known_data_len, block_frames_);
+                                         mode_cfg.known_data_len, block_frames_, brain_result.multipath);
         const size_t bf = static_cast<size_t>(block_frames_);
         const size_t whole = bf > 0 ? (sig + 4) / bf * bf : sig;
         const size_t blocks_seen = bf > 0 ? (phase_corrected.size() / pattern + bf - 1) / bf : 0;
@@ -383,8 +384,10 @@ public:
             eom_bit = cut_at_eom(decoded);
         }
         const std::string other = config_.mode == Mode::AUTO ? "" : preamble_contradicts(brain_result, mode_id);
+        // The DFE and the adaptive MLSE report their own a-priori probe error per frame
+        const bool eq_probes = config_.equalizer == Equalizer::DFE || config_.equalizer == Equalizer::MLSE_ADAPTIVE;
         judge(result, decoded, eom_bit, mode_cfg, mode_id, block_frames_, sig, whole, blocks_seen,
-              equalized_symbols, dfe_probe_frames_, config_.equalizer == Equalizer::DFE, other);
+              equalized_symbols, dfe_probe_frames_, eq_probes, other);
         result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
         result.freq_offset_hz = freq_offset_hz;
 
@@ -642,7 +645,7 @@ private:
     /// theirs, and the mode they map to.
     static void record_preamble(const BrainDecodeResult& d, DecodeResult& r) {
         if (!d.preamble_found) {
-            std::cout << "[RX PREAMBLE] not found corr=" << d.correlation << std::endl;
+            std::cout << "[RX PREAMBLE] not found corr=" << d.correlation << " multipath=" << d.mp_metric << std::endl;
             return;
         }
         r.d1 = d.d1;
@@ -665,7 +668,10 @@ private:
                  d.count_d[0], d.count_d[1], d.count_d[2],
                  d.count_corr[0], d.count_corr2[0], d.count_corr[1], d.count_corr2[1],
                  d.count_corr[2], d.count_corr2[2], raw, d.countdown, d.mode_name.c_str());
-        std::cout << buf << std::endl;
+        std::cout << buf;
+        if (d.multipath)
+            std::cout << " multipath=" << d.mp_metric << (d.gate_bypassed ? " (under the gate, forced mode)" : "");
+        std::cout << std::endl;
     }
 
     /// Scale preamble and data symbols so the common preamble has the nominal RMS.
@@ -932,8 +938,9 @@ private:
      *
      * decoded: the bytes, cut at the EOM (eom_bit, -1 for none) or to the whole blocks the
      * signal covers (whole frames; sig the signal frames, blocks_seen the blocks begun).
-     * equalized_symbols and probe_frames: what the codec read and the DFE's per-frame probe
-     * error (dfe: the DFE ran). other: the mode a forced decode's preamble names instead, or "".
+     * equalized_symbols and probe_frames: what the codec read and the equalizer's per-frame
+     * a-priori probe error (dfe: the DFE or the adaptive MLSE ran and reported it). other: the
+     * mode a forced decode's preamble names instead, or "".
      */
     static void judge(DecodeResult& result, std::vector<uint8_t> decoded, long eom_bit,
                       const ModeConfig& mode_cfg, ModeId mode_id, int block_frames,
@@ -1152,12 +1159,12 @@ private:
      * uncounted frames right after the last signal frame (a block's last two) are kept.
      */
     static size_t signal_frames(const std::vector<complex_t>& s, int unknown_len, int known_len,
-                                int block_frames) {
+                                int block_frames, bool multipath = false) {
         const int pattern_len = unknown_len + known_len;
         if (unknown_len <= 0 || known_len <= 0) return s.size() / std::max(1, pattern_len);
         const size_t nf = s.size() / pattern_len;
         std::vector<float> rho;
-        frame_coherence(s, unknown_len, known_len, block_frames, rho);
+        frame_coherence(s, unknown_len, known_len, block_frames, rho, multipath, true);
         for (size_t f = nf; f-- > 0;) {
             if (!signal_frame(rho, f)) continue;
             while (f + 1 < nf && rho[f + 1] < 0.0f) f++;  // the block's uncounted last frames
@@ -1167,9 +1174,16 @@ private:
     }
 
     /// Append to rho the probe coherence of each whole frame of s past those it holds
-    /// (-1 for a block-boundary probe's frame), as signal_frames() reads it
+    /// (-1 for a block-boundary probe's frame), as signal_frames() reads it. With multipath
+    /// (the preamble was found through a channel), frame_coherence_multipath's figure.
+    /// final: s will not grow (a multipath frame waits for the symbols after it until then).
     static void frame_coherence(const std::vector<complex_t>& s, int unknown_len, int known_len,
-                                int block_frames, std::vector<float>& rho) {
+                                int block_frames, std::vector<float>& rho, bool multipath = false,
+                                bool final = true) {
+        if (multipath) {
+            frame_coherence_multipath(s, unknown_len, known_len, block_frames, rho, final);
+            return;
+        }
         const int pattern_len = unknown_len + known_len;
         const size_t nf = s.size() / pattern_len;
         DataScramblerFixed scrambler;
@@ -1187,6 +1201,71 @@ private:
             rho.push_back(-1.0f);
             if (!block_boundary_probe(static_cast<int>(f), block_frames))
                 rho[f] = pw > 0.0 ? static_cast<float>(std::norm(num) / (pw * known_len)) : 0.0f;
+        }
+    }
+
+    /// Lags either side of a symbol that frame_coherence_multipath combines (BrainDecoder's)
+    static constexpr int MP_LAGS = BrainDecoder::MP_LAGS;
+
+    /**
+     * frame_coherence through a frequency-selective channel. The single-symbol coherence reads
+     * only the share of the signal on the sampled path: on air a 600L burst whose strongest
+     * path held a quarter of its energy never reached 0.5 on a frame, so no frame counted as
+     * signal and nothing was decoded. Here frame f's probes are first combined over the lags
+     * -MP_LAGS..MP_LAGS with the conjugate of a channel estimate (maximal-ratio), and the
+     * coherence is taken of that: s / (1 + s) at the combined probe SNR s, as before. The
+     * estimate is the lagged probe correlation over the counted frames among the 4 before f,
+     * not f itself, so on noise f still reads about 1/K; frame 0 (no frame before it) uses
+     * itself. A frame is scored once the MP_LAGS symbols after it are in s, or when final.
+     */
+    static void frame_coherence_multipath(const std::vector<complex_t>& s, int unknown_len, int known_len,
+                                          int block_frames, std::vector<float>& rho, bool final) {
+        const long p = unknown_len + known_len;
+        const long size = static_cast<long>(s.size());
+        const size_t nf = s.size() / static_cast<size_t>(p);
+        static const std::array<complex_t, 160> ref = [] {
+            std::array<complex_t, 160> r{};
+            DataScramblerFixed sc;
+            for (int i = 0; i < 160; i++) {
+                const float ph = sc.next() * static_cast<float>(PI) / 4.0f;
+                r[i] = complex_t(std::cos(ph), -std::sin(ph));  // conjugated
+            }
+            return r;
+        }();
+        auto lagged = [&](long g, int lag) {  // sum over frame g's probes of s[n + lag] conj(ref[n])
+            complex_t c(0, 0);
+            for (long i = 0; i < known_len; i++) {
+                const long n = g * p + unknown_len + i, j = n + lag;
+                if (j >= 0 && j < size) c += s[static_cast<size_t>(j)] * ref[static_cast<size_t>(n % 160)];
+            }
+            return c;
+        };
+        for (size_t f = rho.size(); f < nf; f++) {
+            if (!final && static_cast<long>(f + 1) * p + MP_LAGS > size) return;
+            rho.push_back(-1.0f);
+            if (block_boundary_probe(static_cast<int>(f), block_frames)) continue;
+            std::array<complex_t, 2 * MP_LAGS + 1> h{};
+            int used = 0;
+            for (long g = static_cast<long>(f) - 1; g >= 0 && g >= static_cast<long>(f) - 4; g--) {
+                if (block_boundary_probe(static_cast<int>(g), block_frames)) continue;
+                for (int l = -MP_LAGS; l <= MP_LAGS; l++) h[static_cast<size_t>(l + MP_LAGS)] += lagged(g, l);
+                used++;
+            }
+            if (used == 0)
+                for (int l = -MP_LAGS; l <= MP_LAGS; l++) h[static_cast<size_t>(l + MP_LAGS)] = lagged(static_cast<long>(f), l);
+            complex_t num(0, 0);
+            double pw = 0.0;
+            for (long i = 0; i < known_len; i++) {
+                const long n = static_cast<long>(f) * p + unknown_len + i;
+                complex_t y(0, 0);
+                for (int l = -MP_LAGS; l <= MP_LAGS; l++) {
+                    const long j = n + l;
+                    if (j >= 0 && j < size) y += std::conj(h[static_cast<size_t>(l + MP_LAGS)]) * s[static_cast<size_t>(j)];
+                }
+                num += y * ref[static_cast<size_t>(n % 160)];
+                pw += std::norm(y);
+            }
+            rho[f] = pw > 0.0 ? static_cast<float>(std::norm(num) / (pw * known_len)) : 0.0f;
         }
     }
 
@@ -1208,6 +1287,11 @@ private:
      * and the 2400V, Harris and reserved codes never refuse.
      */
     static std::string preamble_contradicts(const BrainDecodeResult& b, ModeId forced) {
+        // A preamble taken under the acquisition gate because the mode was forced
+        // (gate_bypassed) stands only when its D1/D2 read the forced mode itself.
+        if (b.gate_bypassed && b.mode_name != ModeDatabase::get(forced).name)
+            return b.mode_name != "UNKNOWN" ? b.mode_name.substr(1)
+                                            : "D1=" + std::to_string(b.d1) + " D2=" + std::to_string(b.d2);
         if (forced == ModeId::M600H || forced == ModeId::M1200H || forced == ModeId::M2400V) return "";
         static const char* const STANDARD[] = {"M150S", "M150L", "M300S", "M300L", "M600S", "M600L",
                                                "M1200S", "M1200L", "M2400S", "M2400L", "M4800S"};
@@ -1550,8 +1634,16 @@ private:
             mlse.estimate_channel(preamble_rx, preamble_ref);
         }
         
-        // Process entire sequence continuously (key to performance)
-        auto result = mlse.equalize_with_tracking(symbols, unknown_len, known_len);
+        // Process entire sequence continuously (key to performance). Its a-priori probe
+        // error per frame stands for the decode quality, as the DFE's does: the output's
+        // probes are the known symbols themselves, so scoring them read about 80 dB on any
+        // input, noise included, and every block at the 40 dB clamp.
+        std::vector<std::array<double, 3>> pf;
+        auto result = mlse.equalize_with_tracking(symbols, unknown_len, known_len, &pf);
+        const int pattern = unknown_len + known_len;
+        for (const auto& f : pf)
+            if (!block_boundary_probe(static_cast<int>(f[0]) / pattern - 1, block_frames_))
+                dfe_probe_frames_.push_back(f);
         
         // Convert symbol indices to complex symbols
         std::vector<complex_t> output;
@@ -2073,6 +2165,7 @@ private:
             dc.unknown_data_len = mode_cfg.unknown_data_len;
             dc.known_data_len = mode_cfg.known_data_len;
             dc.preamble_symbols = mode_cfg.preamble_symbols();  // Critical for LONG modes!
+            dc.forced_mode = !automode;
             S.dec = std::make_unique<BrainDecoder>(dc);
         }
         BrainDecodeResult r;
@@ -2134,7 +2227,7 @@ private:
             if (S.dfe) S.dfe->advance(S.pcv(), S.eof, S.eq);
         }
         const size_t f0 = S.rho.size();
-        frame_coherence(S.pcv(), S.u, S.k, S.bf, S.rho);
+        frame_coherence(S.pcv(), S.u, S.k, S.bf, S.rho, S.br.multipath, S.eof);
         for (size_t f = f0; f < S.rho.size(); f++) if (signal_frame(S.rho, f)) S.last_sig = static_cast<long>(f);
         const auto& E = S.eqv();
         const size_t eframes = E.size() / static_cast<size_t>(S.p);
@@ -2292,7 +2385,7 @@ private:
         StreamState& S = *st_;
         const auto& PC = S.pcv();
         const auto& E = S.eqv();
-        const size_t sig = signal_frames(PC, S.u, S.k, S.bf);
+        const size_t sig = signal_frames(PC, S.u, S.k, S.bf, S.br.multipath);
         const size_t bf = static_cast<size_t>(S.bf);
         const size_t whole = (sig + 4) / bf * bf;
         const size_t blocks_seen = (PC.size() / S.p + bf - 1) / bf;
