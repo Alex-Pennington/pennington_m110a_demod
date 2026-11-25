@@ -331,9 +331,13 @@ private:
      * (0.55 RMS) the earlier LMS steps (0.005, 0.002) make an effective step of about 0.0015 at
      * unit power, too slow for HF fading: on the 2026-11-25 net's 300L burst (01:04:15Z) it
      * decided 81 % and then 66 % of the data symbols right in blocks 1 and 2, where an RLS DFE
-     * decides 87 % in both. With the mode's own decisions and this factor it decides 87 %.
+     * decides 87 % in both. With the mode's own decisions and 6 times the step it decides 87 %.
+     * 4 is the factor taken: on CCIR moderate and poor (seeds 1-5, the modes this DFE runs) it
+     * decoded 88 transmissions exact where 6 decoded 89 and 3 decoded 86, none with wrong bytes,
+     * and on the AWGN set it gave up 1 exact decode where 6 gave up 6 (its step noise lowers a
+     * flat channel's quality figure) (docs/m110a-acq-fading.md).
      */
-    static constexpr float TRACKING = 6.0f;
+    static constexpr float TRACKING = 4.0f;
 
     // Equalize one frame's data: the mode's own points (data_step_) around each symbol's
     // scrambler value, or with the earlier DFE free 8PSK decisions
