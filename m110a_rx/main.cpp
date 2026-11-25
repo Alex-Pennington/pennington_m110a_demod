@@ -422,11 +422,18 @@ private:
     }
 
     // A 75 bps message ending its preamble at ds, unless one already ends within a frame of it
+    // or one that starts a frame or more inside a message of another mode already reported
     void m75_add(Mode mode, int frames, long ds, float foff, double z) {
         for (const auto& p : m75_pre_)
             if (std::labs(p.second - ds) <= M75_SAME) return;
         m75_floor_ = std::max(m75_floor_, ds);
         const long pre0 = ds - static_cast<long>(frames) * M75_FRAME;
+        for (const auto& w : corr_win_)
+            if (pre0 > w.first && pre0 + M75_FRAME < w.second) {
+                if (opt_.verbose)
+                    fprintf(stderr, "m110a_rx: 75 bps preamble at %.3f s is inside the message before it\n", pre0 / FS);
+                return;
+            }
         m75_pre_.push_back({pre0, ds});
         if (m75_pre_.size() > 64) m75_pre_.erase(m75_pre_.begin());
         Message m;
@@ -611,15 +618,19 @@ private:
             }
             std::vector<size_t> cand;
             for (size_t i = 0; i < pending_.size() && pending_[i].first_hit <= span_end; i++)
-                if (i == 0 || on_grid(m.first_hit, pending_[i].first_hit)) cand.push_back(i);
+                if (i == 0 || (!pending_[i].m75 && on_grid(m.first_hit, pending_[i].first_hit))) cand.push_back(i);
             for (size_t i : cand) {
                 Message& c = pending_[i];
                 if (c.done) continue;
                 // A preamble that starts within 24 frames (the longest preamble) of c's first
                 // frame may be c's own: only a later one is a different message, and bounds c.
+                // A 75 bps preamble the 75 bps acquisition found does not: inside another mode's
+                // data it can be a false one (measured on a net 300L burst, z 13.8 and 17.4); a
+                // real one also has its correlator chain here at the SNR c was found at.
                 const Message* next = nullptr;
                 for (size_t j = i + 1; j < pending_.size() && !next; j++)
-                    if (pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN) next = &pending_[j];
+                    if (!pending_[j].m75 && pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN)
+                        next = &pending_[j];
                 if (!decide_end(c, next, eof)) return;
                 c.end_audio = std::min(c.end_audio, audio_end_);
                 c.out = decode(c);
@@ -686,8 +697,32 @@ private:
             int hits = 0;
             for (size_t i : group) hits += pending_[i].hits;
             report(m, out, hits, static_cast<int>(group.size()), std::max(1, votes[bi]));
+            // a message of another mode: its decode read a mode, not 75 bps
+            const bool other = out.ran && out.r.mode != Mode::AUTO && out.r.mode != Mode::M75_SHORT &&
+                               out.r.mode != Mode::M75_LONG;
+            long end = 0;  // the latest decode window of the message
+            if (other)
+                for (size_t i : group) end = std::max(end, pending_[i].out.a1);
+            const long first = m.first_frame;
+            if (other) {
+                corr_win_.push_back({first * DECIM, end});
+                if (corr_win_.size() > 64) corr_win_.erase(corr_win_.begin());
+            }
             for (auto it = group.rbegin(); it != group.rend(); ++it)
                 pending_.erase(pending_.begin() + static_cast<long>(*it));
+            // 75 bps preambles found starting a frame or more before that window ends are inside
+            // the message just reported (a 75 bps transmission's own chain ends it first)
+            for (auto it = pending_.begin(); it != pending_.end();) {
+                if (it->m75 && it->first_frame > first && it->first_frame * DECIM + M75_FRAME < end) {
+                    if (opt_.verbose)
+                        fprintf(stderr, "m110a_rx: 75 bps preamble at %.3f s is inside the message before it\n",
+                                it->first_frame * DECIM / FS);
+                    claimed_++;
+                    it = pending_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
     }
 
@@ -838,6 +873,7 @@ private:
     int m75_cand_frames_ = 0;
     long m75_confirm_at_ = 0;
     std::vector<std::pair<long, long>> m75_pre_;  // 75 bps preambles taken: first frame, end (audio)
+    std::vector<std::pair<long, long>> corr_win_;  // other modes' messages reported: first frame, window end (audio)
     int claimed_ = 0;     // correlator chains inside a 75 bps preamble, not reported
     int reported_ = 0;
     int decoded_ok_ = 0;
