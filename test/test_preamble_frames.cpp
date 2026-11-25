@@ -9,7 +9,9 @@
  * and BrainDecoder searches only the first frame after that cut. Before the later-frame search,
  * each case below failed with "Mode detection failed" (no preamble taken), although the 24-frame
  * preamble's later frames are clean. Each case must decode with success, the payload exactly
- * and the EOM.
+ * and the EOM. In the ramp case the preamble rises from -9 dB to full level over its first 8
+ * frames: the first later frame to read a mode is weak, and taking it lost the message (base and
+ * first-frame search: success=0); the best-correlating frame decodes it.
  *
  * Run: test_preamble_frames                 (exit 0 when every case passes)
  *      test_preamble_frames --sweep MODE    (prints a grid of fades and SNRs; no verdict)
@@ -123,6 +125,8 @@ int main(int argc, char** argv) {
     check("300L, first 12 frames -12 dB, 0 dB SNR", Mode::M300_LONG, 12, 0.25f, 0.0f, 1);
     check("600L, first 4 frames -6 dB, 3 dB SNR", Mode::M600_LONG, 4, 0.5f, 3.0f, 2);
     check("600L, first 8 frames -9 dB, 6 dB SNR", Mode::M600_LONG, 8, 0.35f, 6.0f, 2);
+    // the frame taken matters: the first later frame to read a mode is a weak one
+    check("300L, first 8 frames ramp up from -9 dB, -2 dB SNR", Mode::M300_LONG, 8, 0.35f, -2.0f, 1, true);
     check("300L, unfaded, 0 dB SNR", Mode::M300_LONG, 0, 1.0f, 0.0f, 3);
     std::printf("Passed: %d  Failed: %d\n", passed, failed);
     return failed == 0 ? 0 : 1;
