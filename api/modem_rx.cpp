@@ -89,8 +89,8 @@ public:
         BrainDecoderConfig scan_cfg;
         scan_cfg.sample_rate = config_.sample_rate;
         scan_cfg.carrier_freq = config_.carrier_freq;
-        const Samples samples(buffer.begin() + BrainDecoder(scan_cfg).first_preamble_cut(buffer),
-                              buffer.end());
+        const size_t cut = BrainDecoder(scan_cfg).first_preamble_cut(buffer);
+        Samples samples(buffer.begin() + cut, buffer.end());
 
         ModeId mode_id;
         float detected_freq_offset = 0.0f;
@@ -125,6 +125,38 @@ public:
                 m75::find_low_snr(m75::lead_in(buffer, samples, config_.sample_rate), config_, low_snr_mode)) {
                 detect_result.mode_name = ModeDatabase::get(low_snr_mode).name;
                 detect_result.correlation = 1.0f;
+            }
+
+            // A later preamble frame. The search above reads only the frame at the cut, and
+            // the cut is where the preamble finder first crossed its threshold: when that
+            // frame is faded, its multipath metric can miss the 0.50 gate (0.48 on the 1151Z
+            // net's 11:52Z 300L burst) while the 23 frames after it are clean. Every frame
+            // carries the common segment, D1/D2 and its countdown, so try each later frame of
+            // the longest preamble in turn and take the first that reads a mode; the decode
+            // pass then places the data from that frame's countdown (BrainDecoder::data_start).
+            // MS-DMT hunts the same way: it tests every 0.2 s block, one frame, and takes the
+            // preamble at any frame whose mode agrees with the frame before and whose count is
+            // one less (MS-DMT modem core, rxm110a.cpp:2428-2452, Cm110s::process_receive_block).
+            // Written here from that description; no MS-DMT code.
+            if (detect_result.mode_name == "UNKNOWN" || detect_result.correlation < 0.5f) {
+                const size_t frame = static_cast<size_t>(std::lround(0.2 * config_.sample_rate));
+                const size_t need = static_cast<size_t>(std::lround(0.5 * config_.sample_rate));
+                for (int j = 1; j < LATER_FRAMES_MAX; j++) {
+                    const size_t at = cut + static_cast<size_t>(j) * frame;
+                    if (at + need > buffer.size()) break;
+                    Samples later(buffer.begin() + static_cast<long>(at), buffer.end());
+                    BrainDecoder d(detect_cfg);
+                    auto r = d.decode(later);
+                    if (r.mode_name == "UNKNOWN" || r.correlation < 0.5f) continue;
+                    // 75 bps has no probes and its own acquisition (above); a 75 bps reading
+                    // here is not taken
+                    if (m75::is_m75(string_to_mode_id(r.mode_name))) continue;
+                    samples = std::move(later);
+                    detect_result = r;
+                    record_preamble(detect_result, result);
+                    std::cout << "[RX PREAMBLE] taken at preamble frame " << j << " after the cut" << std::endl;
+                    break;
+                }
             }
 
             // Check mode detection
@@ -719,6 +751,10 @@ private:
 
     /// Frames per interleaver block of the mode being decoded (see above).
     int block_frames_ = 0;
+
+    /// Preamble frames the AUTO detection tries after the cut's, when the cut's frame reads no
+    /// mode: the rest of the longest preamble (24 frames, 4.8 s)
+    static constexpr int LATER_FRAMES_MAX = 24;
 
     /// The DFE's data decisions for mode m (FrameDfe's data_step): the mode's own points around
     /// each symbol's scrambler value, as an 8PSK index step, 4 for the BPSK of 150-600 bps and 2
