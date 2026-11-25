@@ -25,8 +25,12 @@
 //    without it at the last interleaver block the signal covers.
 //  - success: the decoded bits, coded again, agree with the hard channel decisions on
 //    all but a fraction p of the message's coded bits, quality_db = 10 log10((1-p)/p) at
-//    least 11.25 dB, and on the worst interleaver block at least 6.5 dB (a fade longer than
-//    the 0.6 s interleaver decodes wrong while the message as a whole still agrees well).
+//    least 11.75 dB; on the worst interleaver block at least 6.5 dB (75L) or 8.0 dB (75S)
+//    (a fade longer than the 0.6 s interleaver decodes wrong while the message as a whole
+//    still agrees well); and the decoded path clear of its runner-ups: the sum over the
+//    message's bits of exp(-|L| / 8), L the max-log reliability (m75::bit_reliability), at
+//    most 0.3. That sum grows with the message's length, so a long message needs more
+//    margin than a short one, which p alone does not ask (docs/m110a-75bps.md, "Success").
 
 #ifndef M110A_M75_RX_H
 #define M110A_M75_RX_H
@@ -640,12 +644,24 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
 
 /// ModemRX's AUTO pass, when the shared acquisition found no preamble: is there a 75 bps
 /// one, found and with D1/D2 read clearly as 7,5 or 5,5? Its mode in `mode`.
+///
+/// Below the shared acquisition's reach only 75 bps decodes, so D2 need not read: a 3-frame
+/// countdown with D1 read clearly as 7 is taken as 75S, a 24-frame one with D1 5 as 75L
+/// (the other codes with those D1 are 150S/L, 4800S and Harris modes, none of which decode
+/// there; the decode gate refuses what is not 75 bps). D2's three 75S segments misread at
+/// -9 dB while D1 read clearly: measured 2 of 48, D2 read 6 and 7, D1 at 6 and 2.5 times
+/// its runner-up.
 inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
     const std::vector<float>& in = default_tuning().excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
     const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
-    if (!takes_75(a)) return false;
-    mode = a.mode;
-    return true;
+    if (takes_75(a)) {
+        mode = a.mode;
+        return true;
+    }
+    if (!a.found || a.d1_e < 2.0 * a.d1_e2) return false;
+    if (a.frames == 3 && a.d1_top == 7) { mode = ModeId::M75NS; return true; }
+    if (a.frames == 24 && a.d1_top == 5) { mode = ModeId::M75NL; return true; }
+    return false;
 }
 
 /**

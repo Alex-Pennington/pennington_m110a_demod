@@ -55,6 +55,7 @@ struct Acquisition {
     int d1 = -1, d2 = -1;    // the defined D1,D2 code read best over the frames found
     double pair_ratio = 0;   // its energy over the runner-up code's
     double d1_e = 0, d1_e2 = 0, d2_e = 0, d2_e2 = 0;  // per digit: best and runner-up energies
+    int d1_top = -1, d2_top = -1;  // per digit: the channel symbol with the best energy
     ModeId mode = ModeId::M2400S;  // from D1/D2 when they are 7,5 or 5,5
     bool is_75 = false;
 };
@@ -272,9 +273,8 @@ inline Acquisition acquire(const std::vector<float>& rf, float fs, float carrier
         b2 = 0.0;
         for (int q = 0; q < 8; q++) if (q != arg) b2 = std::max(b2, e[q]);
     };
-    int arg;
-    top2(e1, arg, a.d1_e, a.d1_e2);
-    top2(e2, arg, a.d2_e, a.d2_e2);
+    top2(e1, a.d1_top, a.d1_e, a.d1_e2);
+    top2(e2, a.d2_top, a.d2_e, a.d2_e2);
     static const int CODES[][2] = {{7, 5}, {5, 5}, {7, 4}, {5, 4}, {6, 7}, {4, 7}, {6, 6}, {4, 6}, {6, 5},
                                    {4, 5}, {6, 4}, {4, 4}, {7, 6}, {7, 7}, {5, 6}, {5, 7}};
     double b1 = -1.0, b2 = -1.0;
