@@ -29,7 +29,7 @@
 //    (a fade longer than the 0.6 s interleaver decodes wrong while the message as a whole
 //    still agrees well); and the decoded path clear of its runner-ups: the sum over the
 //    message's bits of exp(-|L| / 8), L the max-log reliability (m75::bit_reliability), at
-//    most 0.2. That sum grows with the message's length, so a long message needs more
+//    most 0.1. That sum grows with the message's length, so a long message needs more
 //    margin than a short one, which p alone does not ask (docs/m110a-75bps.md, "Success").
 
 #ifndef M110A_M75_RX_H
@@ -69,7 +69,7 @@ struct RxTuning {
     double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block (75L)
     double min_block_quality_db_75s = 7.0;  // ... (75S: a 90-bit block of 14-18% channel errors
                                             //  is where a 75S decode goes wrong unseen)
-    double max_unreliable = 0.2;    // ... and sum over the message's bits of exp(-|L| / reliability_scale)
+    double max_unreliable = 0.1;    // ... and sum over the message's bits of exp(-|L| / reliability_scale)
     double reliability_scale = 8.0; //     at most this (|L|: max-log reliability, m75::bit_reliability)
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
     bool excise = true;             // narrowband interference excision (m75_excise.h) in front
