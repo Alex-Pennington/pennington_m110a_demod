@@ -486,6 +486,117 @@ bit would escape the far-off test at most 1 time in 100. No wrong block came out
 the sets above (the review's 81, the held-out 152, the sweep's 40 flipped bits, the real
 captures' 3).
 
+### Multipath: probes phased from other frames (2026-11-25)
+
+A review of master 548cc27 ran gale-rx over a scratch store of Watterson recordings (three
+messages each, with gaps) and found right bytes NOT REAL in two messages, both by "data below the
+probes":
+
+```
+  block 1: probe agreement 0.845, data agreement 0.808, random-bytes control 0.247 (chance 0.250): the bytes DO NOT FIT the signal (bit errors)
+  block 1 window check: far off (over 15 noise powers) 0/5720 probes, 0/5720 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict NOT REAL: data below the probes over the block (bit errors)
+```
+
+**The cause.** Each frame's symbols were decided against a gain measured on its own frame's probes
+and the next frame's. The scrambler repeats every 160 symbols, so each frame's 16 or 20 probes are a
+fixed pattern. On a two-path channel, each received probe carries an echo of the probes a few
+symbols before it, and over a frame that echo correlates with the pattern. A gain measured on those
+probes takes part of the echo in, and so decides the same probes better than it decides the data,
+whose echo is random. Probe agreement read 0.02 to 0.05 above the data of right bytes, past `FIT`.
+Phasing the data from the probes that bracket them (the frame before and their own) changed nothing
+(0.809 against 0.808); leaving the probes' own frame out did.
+
+**The fix.** A frame's probes are decided against the gain of the frames either side of them, never
+their own. Its data are decided against the probes around them: the frame before and its own. A
+block's last two frames carry D1/D2 probes, not the scrambler, so they are no frame's reference;
+where one side has no reference frame, the other side alone is used. The far-off test's gain and
+noise power are unchanged. (Measuring the probe residuals against the other frames' gain as well
+was tried and backed out. No reproduced case needs it, and it cost a NOT REAL: one flipped bit at
+1200S 6 dB, 2 far-off data symbols at 15 noise powers, dropped to 1.)
+
+The two messages regenerate bit for bit with this build: ModemTX, `hfchansim --preset poor`, the
+review's seeds. They were cut to the message and resampled 48 to 8 kHz as gale-rx does:
+
+| Message | Block | Before: probe / data, verdict | After: probe / data, verdict |
+|---|---|---|---|
+| 1200L 800 B, poor, 6 dB, seed 3 | 1 | 0.845 / 0.808, NOT REAL | 0.822 / 0.809, NOT VERIFIABLE |
+| the same | tail 2 | 0.847 / 0.805, NOT REAL | 0.816 / 0.795, NOT VERIFIABLE |
+| 150S 100 B, poor, 18 dB, seed 2 | 5 | 0.938 / 0.903, NOT REAL | 0.889 / 0.900, real |
+| the same recording, 2400L (decoded wrong) | 1, 2 | 0.688 / 0.620, 0.423 / 0.229, NOT REAL | 0.675 / 0.645, 0.385 / 0.224, NOT REAL |
+
+The same review read a keyed 6a dummy-load message NOT REAL with its bytes exact (6a capture 5,
+1200S, 38 B, under one block, so the tail check alone covers it). Its run did not survive and does
+not reproduce here. The check calls that message NOT VERIFIABLE on both the 548cc27 and this
+receiver, at 8 kHz and after 8 to 48 to 8 kHz, with six different cuts, before and after this change:
+probe 0.934, data 0.918 against an allowance of 0.064, and no symbol decided wrong further than 6
+noise powers out. The capture's own record ends the message at 61.4 s; the review's run ended it at
+60.85 s, so its receiver or its cut differed from every one tried here.
+
+`ctest rx_reencode_window` carries the two messages (`net`: the sent bytes never NOT REAL, and one
+flipped bit never real) and a 1200S 38 B stand-in for the 6a message at 4 and 6 dB, read at 8 kHz
+and after 8 to 48 to 8 kHz (`sixa`).
+
+Measured, before and after on the same audio. The counts are real / NOT VERIFIABLE / NOT REAL;
+wrong blocks are blocks whose bytes differ from the sent ones.
+
+| Set | Exact blocks, before | Exact blocks, after | Wrong blocks, before | Wrong blocks, after |
+|---|---|---|---|---|
+| AWGN, every mode, 30 dB down to its knee (64 messages) | 216/12/0 | 216/12/0 | — | — |
+| eom=1, random lengths, every mode, 12 and 20 dB (40) | 93/7/0 | 93/7/0 | — | — |
+| Review's fades, 300L to 2400L (48) | 25/5/0 | 25/5/0 | 0/0/29 | 0/0/29 |
+| 1200L, −15 dB 1 s fade (18) | 25/0/0 | 25/0/0 | 0/0/11 | 0/0/11 |
+| Watterson moderate and poor, 7 modes (28) | 29/34/0 | 29/34/0 | 0/2/14 | 0/3/13 |
+| Fades inside block 1, case F and K files (9) | 19/0/0 | 19/0/0 | 0/0/3 | 0/0/3 |
+| Held-out 2400S and 2400L, 6, 8 and 10 dB (120) | 0/205/0 | 0/205/0 | 0/55/97 | 0/56/96 |
+| Real captures: RSP2, net 300L b1 to b4, 6a 0, 5, 8 and 11 | 66 verdicts | the same 66 | b1 blocks 2 and 9 NOT REAL | the same |
+
+On the Watterson set the largest gap of an exact block (probe minus data) falls from 0.051 to 0.022;
+on AWGN from 0.021 to 0.006.
+
+**What it costs.** Two wrong blocks that the gap alone called NOT REAL are now NOT VERIFIABLE. Neither
+is real:
+
+| Block | Wrong bytes | Before: probe / data, verdict | After: probe / data, verdict |
+|---|---|---|---|
+| 1200L, Watterson poor, seed 2, block 1 (`success=0`) | 2 of 720 | 0.860 / 0.824, NOT REAL | 0.842 / 0.835, NOT VERIFIABLE |
+| Held-out 2400S, 6 dB, message 7, block 2 | most | 0.767 / 0.671, NOT REAL | 0.752 / 0.698, NOT VERIFIABLE |
+
+**Why no gap rule separates them.** A gap rule calls a block NOT REAL when its gap passes a
+threshold. For the first block, every threshold that catches it also catches the N14 right bytes
+above, on either statistic:
+
+| Statistic | N14 1200L right bytes, gap | This 1200L block, 2 wrong bytes, gap |
+|---|---|---|
+| Before (probes phased from their own frame) | 0.037 (block 1), 0.042 (tail) | 0.036 |
+| After (probes phased from the frames either side) | 0.013 (block 1), 0.021 (tail) | 0.007 |
+
+Before the fix the gap was mostly the multipath bias of the probes, which right and wrong bytes
+share. With the bias removed, two wrong bytes in 720 move the data by less than right bytes vary
+on this channel. The far-off test does not settle it either: p 1.5e−6 against `ALPHA` 1e−6, both
+before and after.
+
+The second block is not the multipath case. It is AWGN at 6 dB on a 2400S block of 448 probes and
+896 data symbols. There, right bytes leave a gap of up to 0.112 with odds of 1e−6 (the allowance
+over the window frames), and the block's gap is now 0.054. On the block line the fix moved data
+from 0.671 to 0.698 and probes from 0.767 to 0.752: the before figure took 0.042 of its gap from
+the phase references alone, and with that gone the gap is inside what right bytes leave at this
+SNR. The block's one-byte power is 0.02, so even one wrong byte would not show there.
+
+Both blocks are accepted as NOT VERIFIABLE (coordinator ruling, 2026-11-25). Neither is real, so no
+wrong block passes, and gale-rx does not count NOT VERIFIABLE as a pass.
+
+Output lines of a block whose verdict does not change (the 150S message above, block 1, right
+bytes): the figures move and the form is the same.
+
+```
+before:
+  block 1: probe agreement 0.912, data agreement 0.928, random-bytes control 0.531 (chance 0.500): the bytes fit the signal
+  block 1 window check: far off (over 15 noise powers) 0/680 probes, 0/680 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
+after:
+  block 1: probe agreement 0.874, data agreement 0.935, random-bytes control 0.532 (chance 0.500): the bytes fit the signal
+  block 1 window check: far off (over 15 noise powers) 0/680 probes, 0/680 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
+```
+
 ## Left open
 
 - **`signal_frames` on the hand-cut slice:** the base receiver reports 1 block (180 B).

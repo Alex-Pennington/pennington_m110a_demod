@@ -15,10 +15,13 @@ with the received ones:
     lcm(160, frame) symbols, so the data start is tried at each such period from the
     preamble on, and the one the decoded bytes agree with best is kept.
   - The carrier offset is measured from the probes (their phase step from frame to frame,
-    to +-30 Hz) and removed. Each frame is then phased from its own probes and the next
-    frame's, and each symbol is decided among the mode's points (BPSK, QPSK, 8PSK) turned by
-    its scrambler value. Without the offset removed, the data, 20 symbols ahead of the probes,
-    turned 35 degrees against them at +11.6 Hz on air, and right bytes scored as wrong.
+    to +-30 Hz) and removed. A frame's data are then phased from the probes around them (the
+    frame before's and its own), its probes from the probes of the frames either side (never
+    their own: under multipath a gain measured on a frame's own fixed probe pattern decides
+    those probes better than the data), and each symbol is decided among the mode's points
+    (BPSK, QPSK, 8PSK) turned by its scrambler value. Without the offset removed, the data, 20
+    symbols ahead of the probes, turned 35 degrees against them at +11.6 Hz on air, and right
+    bytes scored as wrong.
   - probe agreement: probe symbols decided right, the channel's raw symbol accuracy.
   - data agreement: data symbols equal to the re-encoded ones.
   - random-bytes control: the same for random bytes of the same length, i.e. chance.
@@ -223,9 +226,9 @@ def messages(out):
         yield kv, bytes.fromhex(hx.group(1).replace(' ', '')) if hx else b''
 
 
-def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
+def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False, fpb=None):
     """Per frame: (probe symbols decided right, data symbols equal to the re-encoded ones),
-    each out of the frame's probe and data symbol counts."""
+    each out of the frame's probe and data symbol counts. fpb: frames per interleaver block."""
     u, k = FRAME[rate]
     n = np.arange(nf * (u + k))
     f = n // (u + k)
@@ -240,10 +243,26 @@ def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
     z = z * np.exp(-1j * np.angle(np.sum(zs[1:] * np.conj(zs[:-1]))) / (u + k) * n)
     zs = np.where(isp, z, 0).reshape(nf, -1).sum(1)
     r = z * ref
-    g = zs + np.append(zs[1:], 0)  # each frame phased from its own probes and the next frame's
+    # Phase references, none holding the symbol it phases. A frame's data lie between the probes of the
+    # frame before and its own: they are phased from those. A frame's probes are phased from the probes of
+    # the frames either side, not their own: the scrambler repeats every 160 symbols, so each frame's probes
+    # are a fixed pattern, and under multipath the gain measured on them takes in their own echo (inter-symbol
+    # interference) and decides them better than the data, whose echo is random. Phased from their own frame,
+    # probes on a Watterson channel scored 0.02-0.05 above the data of right bytes, past FIT.
+    # A block's last TAIL frames carry D1/D2 probes, not the scrambler: they phase nothing (fpb, the frames
+    # per block, marks them); a side without a reference frame is left out, and with neither side a frame
+    # falls back to the next frame's probes, then to its own.
+    zv = zs if not fpb else np.where(np.arange(nf) % fpb >= fpb - TAIL, 0, zs)
+    prev, nxt = np.append(0, zv[:-1]), np.append(zv[1:], 0)
+    gp = prev + nxt
+    gp = np.where(np.abs(gp) > 0, gp, zs)
+    gd = prev + zv
+    gd = np.where(np.abs(gd) > 0, gd, nxt)
+    gd = np.where(np.abs(gd) > 0, gd, zs)
     # decide each symbol among the mode's points (BPSK, QPSK or 8PSK) turned by its scrambler value
     st = STEP8[rate]
-    dec = (np.round(((np.angle(r * np.conj(g[f])) / (np.pi / 4) - scr) % 8) / st).astype(int) * st + scr) % 8
+    dec = (np.round(((np.angle(r * np.conj(np.where(isp, gp[f], gd[f]))) / (np.pi / 4) - scr) % 8) / st).astype(int)
+           * st + scr) % 8
     t = t * np.conj(np.sum(t[isp] * np.conj(ref[isp])))  # the re-encoded signal's own phase
     tsym = np.round(np.angle(t) / (np.pi / 4)).astype(int) % 8
     pok = np.where(isp, dec == scr, False).reshape(nf, -1).sum(1)
@@ -276,10 +295,10 @@ def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
     return pok, dok, deep_p, deep_d, sep
 
 
-def agreement(bb, d0, tb, t0, rate, nf, blocks, off):
+def agreement(bb, d0, tb, t0, rate, nf, blocks, off, fpb=None):
     """Per block: (probe agreement, data agreement with the re-encoded symbols)."""
     u, k = FRAME[rate]
-    pok, dok = frame_agreement(bb, d0, tb, t0, rate, nf, off)
+    pok, dok = frame_agreement(bb, d0, tb, t0, rate, nf, off, fpb=fpb)
     fpb = nf // blocks
     b = np.arange(nf) // fpb
     return [(float(pok[b == i].sum() / (k * np.sum(b == i))), float(dok[b == i].sum() / (u * np.sum(b == i))))
@@ -379,7 +398,7 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, f
             if room(dd) < nframes:
                 continue
             off = track(bb, dd, u, k, nframes)
-            score = np.mean([r[1] for r in agreement(bb, dd, tb, t0, rate, nframes, total, off)])
+            score = np.mean([r[1] for r in agreement(bb, dd, tb, t0, rate, nframes, total, off, fpb)])
             if best is None or score > best[0]:
                 best = (score, dd)
         if best is None:
@@ -392,8 +411,9 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, f
         return
     off = track(bb, d, u, k, nframes)
     ctb, ct0 = tbs['control']
-    _, cdok = frame_agreement(bb, d, ctb, ct0, rate, min(nframes, (len(ctb) - ct0) // (p * SPS) - 1), off)
-    pok, dok, deep_p, deep_d, sep = frame_agreement(bb, d, tb, t0, rate, nframes, off, soft=True)
+    _, cdok = frame_agreement(bb, d, ctb, ct0, rate, min(nframes, (len(ctb) - ct0) // (p * SPS) - 1), off,
+                              fpb=fpb)
+    pok, dok, deep_p, deep_d, sep = frame_agreement(bb, d, tb, t0, rate, nframes, off, soft=True, fpb=fpb)
     if first == 0:
         steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
         # indented and without the label: a second head line would read as a second message
@@ -543,15 +563,15 @@ def check(a, x, sr, work):
             off = track(bb, d, u, k, nf)
             tb, t0 = tbs['decoded']
             nf = min(nf, (len(tb) - t0) // (p * SPS) - 1)
-            rows = agreement(bb, d, tb, t0, rate, nf, blocks, off)
+            rows = agreement(bb, d, tb, t0, rate, nf, blocks, off, nframes // blocks)
             score = np.mean([r[1] for r in rows])
             if best is None or score > best[0]:
                 best = (score, d, nf, off, rows)
         _, d, nf, off, rows = best
         tb, t0 = tbs['control']
-        ctl = agreement(bb, d, tb, t0, rate, min(nf, (len(tb) - t0) // (p * SPS) - 1), blocks, off)
+        ctl = agreement(bb, d, tb, t0, rate, min(nf, (len(tb) - t0) // (p * SPS) - 1), blocks, off, nframes // blocks)
         pok, dok, deep_p, deep_d, sep = frame_agreement(bb, d, tbs['decoded'][0], tbs['decoded'][1], rate, nf, off,
-                                                        soft=True)
+                                                        soft=True, fpb=nframes // blocks)
         if a.frames_json:
             dumps.append({'mode': mode, 'start_s': kv.get('start_s'), 'bytes': len(payload),
                           'sha256': hashlib.sha256(payload).hexdigest()[:12], 'blocks': blocks,
