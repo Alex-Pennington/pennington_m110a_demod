@@ -24,8 +24,12 @@
  *   --rate HZ        input sample rate (default: .json/.iqr, else 2000000)
  *   --offset HZ      dial - tuner frequency (default: .json, else 100000)
  *   --dial HZ        dial frequency, used with --ppm (default: .json wwv_hz)
- *   --ppm P          receiver clock error, ppm, + = fast. The dial is then
- *                    looked for at offset - dial * P * 1e-6.
+ *   --ppm P          receiver clock error, ppm, + = fast. The input's true sample
+ *                    rate is then rate * (1 + P * 1e-6), which the front end undoes
+ *                    on the audio so the symbol timing comes out right, and the dial is looked for at offset - dial * P * 1e-6
+ *                    (with --dial 0 the rate alone is corrected). It is the receiver's
+ *                    clock only: the sender's symbol clock is followed by the data
+ *                    grid's drift tracking (docs/m110a-timing-steps.md), not by --ppm.
  *   --format F       cs16 | cf32 (default: by extension, else cs16)
  *   --eq E           NONE DFE DFE_RLS MLSE_L2 MLSE_L3 MLSE_ADAPTIVE TURBO (DFE)
  *   --threshold T    preamble detection metric, 0..1 (default 0.45)
@@ -698,7 +702,8 @@ int main(int argc, char** argv) {
             o.input.c_str(), o.format.c_str(), o.rate, shift, o.offset, o.ppm,
             o.mode_s.c_str(), o.eq_s.c_str());
 
-    SdrFrontEnd fe(o.rate, shift);
+    // A receiver clock P ppm fast samples P ppm fast as well as tuning off (SdrFrontEnd step 5)
+    SdrFrontEnd fe(o.rate, shift, o.ppm);
     Receiver rx(o, mode, eq);
     FILE* dump = o.dump_audio.empty() ? nullptr : fopen(o.dump_audio.c_str(), "wb");
 
