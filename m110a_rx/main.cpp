@@ -188,6 +188,7 @@ struct Decoded {
     bool eom = false;
     long a1 = 0;             // window end, absolute audio index
     bool ran = false;        // false: the window was under 0.5 s, nothing decoded
+    long end75 = -1;         // 75 bps: where the transmission decoded ends (absolute audio index)
 };
 
 struct Message {
@@ -206,6 +207,7 @@ struct Message {
     bool m75 = false;
     Mode m75_mode = Mode::AUTO;  // the mode D1/D2 read (or the forced one)
     int m75_frames = 0;          // frames the acquisition integrated
+    long m75_ds = 0;             // end of its preamble, absolute audio index
 };
 
 class Receiver {
@@ -402,7 +404,10 @@ private:
         const m75::Acquisition a = m75::acquire(rf, static_cast<float>(FS), rc.carrier_freq, rc.coarse_search_range);
         if (!a.found) return false;
         if (m75_forced_) {
+            // D1/D2 read best as the forced mode's: a strong 75 bps transmission's own data
+            // can score as a countdown at some carrier offset, with no 75 bps code read there
             mode = mode_;
+            if (!a.is_75 || (a.mode == ModeId::M75NS) != (mode_ == Mode::M75_SHORT)) return false;
         } else {
             if (!m75::takes_75(a)) return false;
             mode = a.mode == ModeId::M75NS ? Mode::M75_SHORT : Mode::M75_LONG;
@@ -435,6 +440,7 @@ private:
         m.m75 = true;
         m.m75_mode = mode;
         m.m75_frames = frames;
+        m.m75_ds = ds;
         if (opt_.verbose)
             fprintf(stderr, "m110a_rx: 75 bps preamble %.3f-%.3f s, %s, z=%.1f, %+.1f Hz\n", pre0 / FS, ds / FS,
                     mode_name(mode).c_str(), z, foff);
@@ -560,15 +566,31 @@ private:
     void process_messages(bool eof) {
         while (!pending_.empty()) {
             if (pending_.front().m75) {  // one message, no chains to merge
+                // Its window is not ended by a 75 bps preamble found after it: a strong 75 bps
+                // transmission's data can score as one. Those that start before the decoded
+                // transmission ends are dropped once it is decoded.
                 Message& c = pending_.front();
                 const Message* next = nullptr;
                 for (size_t j = 1; j < pending_.size() && !next; j++)
-                    if (pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN) next = &pending_[j];
+                    if (!pending_[j].m75 && pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN)
+                        next = &pending_[j];
                 if (!decide_end(c, next, eof)) return;
                 c.end_audio = std::min(c.end_audio, audio_end_);
                 c.out = decode(c);
                 report(c, c.out, c.hits, 1, 1);
+                const long end = c.out.end75;
                 pending_.pop_front();
+                for (auto it = pending_.begin(); it != pending_.end();) {
+                    if (it->m75 && it->first_frame * DECIM < end) {
+                        if (opt_.verbose)
+                            fprintf(stderr, "m110a_rx: 75 bps preamble at %.3f s is inside the message before it\n",
+                                    it->first_frame * DECIM / FS);
+                        claimed_++;
+                        it = pending_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
                 continue;
             }
             const Message& m = pending_.front();
@@ -731,6 +753,14 @@ private:
         long eom_bit = find_eom(o.d);
         if (eom_bit >= 0) o.d.resize(static_cast<size_t>(eom_bit / 8));
         o.eom = eom_bit >= 0 || o.r.eom_sequence;
+        if (m.m75) {  // to the end of the block holding the EOM and flush, or of the last block decoded
+            const m75::RxOut& x = m75::last_rx();
+            const ModeId id = m.m75_mode == Mode::M75_SHORT ? ModeId::M75NS : ModeId::M75NL;
+            const long S = m75::sets_per_block(id);
+            long sets = x.blocks * S;
+            if (x.eom_bit >= 0) sets = (x.eom_bit + 32 + m75::FLUSH_BITS + S - 1) / S * S;
+            o.end75 = x.preamble ? m.m75_ds + sets * m75::SET_SYMBOLS * SPS_AUDIO : -1;
+        }
         return o;
     }
 

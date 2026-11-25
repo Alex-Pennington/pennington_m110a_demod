@@ -62,7 +62,9 @@ struct RxTuning {
     double noise_beta = 0.02;       // per-set update of the noise floor
     double soft_scale = 16.0;       // soft bit = scale * (sqrt M0 - sqrt M1) / sqrt(noise)
     double min_quality_db = 11.75;  // success: quality_db = 10 log10((1 - p) / p) at least this
-    double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block
+    double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block (75L)
+    double min_block_quality_db_75s = 8.5;  // ... (75S: a 90-bit block whose errors the code
+                                            //  decoded wrong scored 6.8-7.7 dB at -9 and -8 dB)
     double max_unreliable = 0.3;    // ... and sum over the message's bits of exp(-|L| / reliability_scale)
     double reliability_scale = 8.0; //     at most this (|L|: max-log reliability, m75::bit_reliability)
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
@@ -684,14 +686,15 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     res.block_quality_min_db = res.block_quality_db.empty()
                                    ? res.quality_db
                                    : *std::min_element(res.block_quality_db.begin(), res.block_quality_db.end());
-    res.block_quality_threshold_db = static_cast<float>(t.min_block_quality_db);
-    res.success = res.quality_db >= res.quality_threshold_db && q_block >= t.min_block_quality_db &&
+    const double min_block = mode == ModeId::M75NS ? t.min_block_quality_db_75s : t.min_block_quality_db;
+    res.block_quality_threshold_db = static_cast<float>(min_block);
+    res.success = res.quality_db >= res.quality_threshold_db && q_block >= min_block &&
                   r.unreliable <= t.max_unreliable && (r.eom_bit >= 0 || r.blocks > 0);
     if (!res.success) {
         char buf[200];
         if (r.eom_bit < 0 && r.blocks == 0)
             snprintf(buf, sizeof buf, "Signal covers 0 whole 75 bps interleaver blocks; no bytes reported");
-        else if (res.quality_db >= res.quality_threshold_db && q_block >= t.min_block_quality_db)
+        else if (res.quality_db >= res.quality_threshold_db && q_block >= min_block)
             snprintf(buf, sizeof buf,
                      "Decoded path within reach of others: unreliability %.2f above %.2f; bytes not trusted",
                      r.unreliable, t.max_unreliable);
@@ -699,7 +702,7 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
             snprintf(buf, sizeof buf,
                      "Worst interleaver block quality %.1f dB below %.1f dB (channel bits %.1f%% off the decoded "
                      "path there); bytes not trusted",
-                     q_block, t.min_block_quality_db, 100.0 * r.p_block);
+                     q_block, min_block, 100.0 * r.p_block);
         else
             snprintf(buf, sizeof buf,
                      "Decode quality %.1f dB below %.1f dB (channel bits %.1f%% off the decoded path); bytes not trusted",

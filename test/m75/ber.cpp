@@ -250,6 +250,7 @@ int main(int argc, char** argv) {
             else if (k == "soft_scale") t.soft_scale = x;
             else if (k == "min_quality_db") t.min_quality_db = x;
             else if (k == "min_block_quality_db") t.min_block_quality_db = x;
+            else if (k == "min_block_quality_db_75s") t.min_block_quality_db_75s = x;
             else if (k == "max_unreliable") t.max_unreliable = x;
             else if (k == "reliability_scale") t.reliability_scale = x;
             else if (k == "alt_profile_alpha") t.alt_profile_alpha = x;
