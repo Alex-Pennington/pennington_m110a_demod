@@ -144,6 +144,14 @@ target_link_libraries(test_dfe_context PRIVATE m110a_modem)
 add_test(NAME test_dfe_context COMMAND test_dfe_context)
 set_tests_properties(test_dfe_context PROPERTIES LABELS "fast;rx")
 
+# Acquisition through a frequency-selective channel (single-path correlation under its gate),
+# the forced-mode bypass, no acquisition on a tone, MLSE_ADAPTIVE quality on noise
+# (docs/m110a-acq-fading.md)
+add_executable(test_multipath_acq test/test_multipath_acq.cpp)
+target_link_libraries(test_multipath_acq PRIVATE m110a_modem)
+add_test(NAME test_multipath_acq COMMAND test_multipath_acq)
+set_tests_properties(test_multipath_acq PROPERTIES LABELS "rx" TIMEOUT 1800)
+
 # ModemTX output level and configuration checks (docs/TX_CHAIN.md)
 add_executable(test_modem_tx test/test_modem_tx.cpp)
 target_link_libraries(test_modem_tx PRIVATE m110a_modem)
