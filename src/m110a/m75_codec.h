@@ -194,6 +194,60 @@ inline std::vector<uint8_t> decode_soft(const std::vector<soft_bit_t>& soft, Mod
     return info;
 }
 
+/**
+ * Max-log a-posteriori reliability of each information bit of the K=7 code (the
+ * transmitter's conv_encode) over code-order soft bits (+ = 0): |L_k| = the best path
+ * metric with bit k = 0 less the best with bit k = 1, in magnitude. The path the Viterbi
+ * decoder takes has the sign of every L_k, so |L_k| is how far bit k's runner-up path lies
+ * behind it. The trellis starts in state 0; `terminated`: it also ends there (the flush).
+ */
+inline std::vector<double> bit_reliability(const std::vector<soft_bit_t>& code, bool terminated) {
+    constexpr int NS = 64;
+    const size_t N = code.size() / 2;
+    // state M = the last 6 inputs; input b: register M | b << 6, next state (M >> 1) | b << 5
+    int out0[NS][2], out1[NS][2];
+    for (int M = 0; M < NS; M++)
+        for (int b = 0; b < 2; b++) {
+            const int full = M | (b << 6);
+            out0[M][b] = 1 - 2 * __builtin_parity(full & 0x5B);
+            out1[M][b] = 1 - 2 * __builtin_parity(full & 0x79);
+        }
+    const double NEG = -1e300;
+    std::vector<std::array<double, NS>> alpha(N + 1);
+    alpha[0].fill(NEG);
+    alpha[0][0] = 0.0;
+    for (size_t k = 0; k < N; k++) {
+        const double s0 = code[2 * k], s1 = code[2 * k + 1];
+        for (int ns = 0; ns < NS; ns++) {
+            const int b = ns >> 5, p0 = (ns & 31) << 1, p1 = p0 | 1;
+            const double a = alpha[k][p0] + s0 * out0[p0][b] + s1 * out1[p0][b];
+            const double c = alpha[k][p1] + s0 * out0[p1][b] + s1 * out1[p1][b];
+            alpha[k + 1][ns] = std::max(a, c);
+        }
+    }
+    std::array<double, NS> beta, nb;
+    beta.fill(terminated ? NEG : 0.0);
+    beta[0] = 0.0;
+    std::vector<double> rel(N);
+    for (size_t k = N; k-- > 0;) {
+        const double s0 = code[2 * k], s1 = code[2 * k + 1];
+        double best[2] = {NEG, NEG};
+        for (int M = 0; M < NS; M++) {
+            double bm = NEG;
+            for (int b = 0; b < 2; b++) {
+                const int ns = (M >> 1) | (b << 5);
+                const double g = s0 * out0[M][b] + s1 * out1[M][b] + beta[ns];
+                best[b] = std::max(best[b], alpha[k][M] + g);
+                bm = std::max(bm, g);
+            }
+            nb[M] = bm;
+        }
+        rel[k] = std::fabs(best[0] - best[1]);
+        beta = nb;
+    }
+    return rel;
+}
+
 /// First bit position of the EOM word (msb first) in the decoded bits, or -1
 inline long find_eom(const std::vector<uint8_t>& info) {
     for (size_t p = 0; p + 32 <= info.size(); p++) {

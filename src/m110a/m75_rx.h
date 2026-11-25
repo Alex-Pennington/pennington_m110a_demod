@@ -61,8 +61,10 @@ struct RxTuning {
     double weight_floor = 2.0;      // tap weight = profile - weight_floor x noise floor, >= 0
     double noise_beta = 0.02;       // per-set update of the noise floor
     double soft_scale = 16.0;       // soft bit = scale * (sqrt M0 - sqrt M1) / sqrt(noise)
-    double min_quality_db = 11.25;  // success: quality_db = 10 log10((1 - p) / p) at least this
+    double min_quality_db = 11.75;  // success: quality_db = 10 log10((1 - p) / p) at least this
     double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block
+    double max_unreliable = 0.3;    // ... and sum over the message's bits of exp(-|L| / reliability_scale)
+    double reliability_scale = 8.0; //     at most this (|L|: max-log reliability, m75::bit_reliability)
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
     bool excise = true;             // narrowband interference excision (m75_excise.h) in front
     double alt_profile_alpha = 0.01;  // a second decode with this profile update when the first
@@ -312,6 +314,8 @@ struct RxOut {
     long sets = 0, signal_sets = 0, blocks = 0;
     double p = 0.5;           // channel bit disagreement over the message
     double p_block = 0.5;     // the same over the worst interleaver block of it
+    std::vector<double> p_blocks;  // the same per interleaver block
+    double unreliable = 1e9;  // sum of exp(-|L| / reliability_scale) over the bits scored
     double snr_db = 0.0;      // estimated, 3 kHz noise bandwidth
     long excised_frames = 0;  // excision frames hit (0: the input went in untouched)
     std::string error;
@@ -480,8 +484,20 @@ inline long demod_decode(const std::vector<std::complex<float>>& y, int sps, lon
             d += code[i] == 0 ? 0.5 : (hard != re[i] ? 1.0 : 0.0);
         }
         r.p_block = std::max(r.p_block, d / (b1 - b0));
+        r.p_blocks.push_back(d / (b1 - b0));
     }
     if (n == 0) r.p_block = 0.5;
+    // How close the decoded path came to another: per information bit, how far the best path
+    // with that bit flipped lies behind it (max-log). A Viterbi error event is a runner-up
+    // that won; the sum below is about the number of bits whose runner-up came near, and it
+    // grows with the message's length, which a fraction such as p does not.
+    {
+        const auto rel = bit_reliability(std::vector<soft_bit_t>(code.begin(), code.begin() + static_cast<long>(n)),
+                                         r.eom_bit >= 0);
+        double u = 0.0;
+        for (double x : rel) u += std::exp(-x / t.reliability_scale);
+        r.unreliable = n ? u : 1e9;
+    }
 
     // SNR: the weights sit on the channel's taps, where the losing words see noise (and
     // multipath leakage) only: with w_j proportional to a tap's signal energy, M_win - M_lose
@@ -582,8 +598,8 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     char buf[320];
     snprintf(buf, sizeof buf,
              "[RX M75] acq z=%.1f frames=%d foff=%+.1f Hz D1,D2=%d,%d (pair ratio %.2f) data_start=%ld "
-             "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f snr=%.1f dB shift=%ld",
-             r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.snr_db,
+             "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f unreliable=%.3g snr=%.1f dB shift=%ld",
+             r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.unreliable, r.snr_db,
              shift);
     std::cout << buf;
     if (alt) std::cout << " profile_alpha=" << t.alt_profile_alpha;
@@ -653,12 +669,22 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     res.quality_db = static_cast<float>(10.0 * std::log10((1.0 - r.p) / std::max(r.p, 1e-4)));
     const double q_block = 10.0 * std::log10((1.0 - r.p_block) / std::max(r.p_block, 1e-4));
     res.quality_threshold_db = quality_threshold_db(t);
+    for (double pb : r.p_blocks)
+        res.block_quality_db.push_back(static_cast<float>(10.0 * std::log10((1.0 - pb) / std::max(pb, 1e-4))));
+    res.block_quality_min_db = res.block_quality_db.empty()
+                                   ? res.quality_db
+                                   : *std::min_element(res.block_quality_db.begin(), res.block_quality_db.end());
+    res.block_quality_threshold_db = static_cast<float>(t.min_block_quality_db);
     res.success = res.quality_db >= res.quality_threshold_db && q_block >= t.min_block_quality_db &&
-                  (r.eom_bit >= 0 || r.blocks > 0);
+                  r.unreliable <= t.max_unreliable && (r.eom_bit >= 0 || r.blocks > 0);
     if (!res.success) {
         char buf[200];
         if (r.eom_bit < 0 && r.blocks == 0)
             snprintf(buf, sizeof buf, "Signal covers 0 whole 75 bps interleaver blocks; no bytes reported");
+        else if (res.quality_db >= res.quality_threshold_db && q_block >= t.min_block_quality_db)
+            snprintf(buf, sizeof buf,
+                     "Decoded path within reach of others: unreliability %.2f above %.2f; bytes not trusted",
+                     r.unreliable, t.max_unreliable);
         else if (res.quality_db >= res.quality_threshold_db)
             snprintf(buf, sizeof buf,
                      "Worst interleaver block quality %.1f dB below %.1f dB (channel bits %.1f%% off the decoded "
