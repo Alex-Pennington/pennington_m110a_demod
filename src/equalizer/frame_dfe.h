@@ -50,16 +50,21 @@ public:
      * @param preamble_symbols First preamble frame (480 symbols), for pretraining
      * @param pre_data_symbols The 32 symbols just before data symbol 0 (zero segment)
      * @param quality_span_symbols Frames ending within this many symbols are scored
+     * @param data_step The mode's data points, as an 8PSK index step (4: 150-600 bps, 2: 1200,
+     *        1: 2400/4800), for tracking (see TRACKING); 0, the earlier DFE: free 8PSK
+     *        decisions, the slower step, and the probes passed through as received
      */
     FrameDfe(int unknown_len, int known_len, int block_frames,
              const std::vector<complex_t>& preamble_symbols = {},
              bool use_nlms = false,
              const std::vector<complex_t>& pre_data_symbols = {},
-             int quality_span_symbols = 1440)
+             int quality_span_symbols = 1440,
+             int data_step = 0)
         : unknown_len_(unknown_len), known_len_(known_len), block_frames_(block_frames),
           have_preamble_(!preamble_symbols.empty()), pre_data_(pre_data_symbols),
-          quality_span_symbols_(quality_span_symbols), dfe_(config(use_nlms)) {
-        AHEAD = static_cast<size_t>(config(use_nlms).lookahead);
+          quality_span_symbols_(quality_span_symbols), data_step_(data_step),
+          dfe_(config(use_nlms, data_step > 0)) {
+        AHEAD = static_cast<size_t>(config(use_nlms, data_step > 0).lookahead);
         
         // ========================================
         // Preamble Pretraining
@@ -135,6 +140,7 @@ public:
             int scr_pos = frame_ * pattern_len + unknown_len_;
             for (int i = 0; i < scr_pos % 160; i++) scrambler_.next();
             
+            std::vector<complex_t> probe_out;
             std::vector<complex_t> probe_ref(known_len_);
             for (int i = 0; i < known_len_; i++) {
                 int scr = scrambler_.next();
@@ -155,19 +161,19 @@ public:
                 dfe_.train(probe_eq, probe_ref);
                 dfe_.clear_lines();
                 for (size_t k = 0; k < AHEAD && k < symbols.size(); k++) dfe_.push(symbols[k]);
-                dfe_.equalize(data_in, output);
+                equalize_data(data_in, output);
                 dfe_.train(probe_eq, probe_ref);
             } else {
                 // With preamble or subsequent frames: equalize first, then update.
                 // A block-boundary probe may carry D1/D2 instead of the zero probe:
                 // no adaptation, and each symbol decided between the two candidates,
                 // so the feedback line stays a line of decisions.
-                dfe_.equalize(data_in, output);
+                equalize_data(data_in, output);
                 if (!block_boundary_probe(frame_, block_frames_))
                     {
                     // Probe error of the DFE's output before it adapts to each probe,
                     // per frame while the frame lies inside the quality span
-                    const float mse = dfe_.train(probe_eq, probe_ref);
+                    const float mse = dfe_.train(probe_eq, probe_ref, &probe_out);
                     const size_t frame_end = idx_ + pattern_len;
                     if (frame_end <= static_cast<size_t>(quality_span_symbols_) && !probe_ref.empty()) {
                         double ref_pow = 0.0;
@@ -177,11 +183,16 @@ public:
                     }
                 }
                 else
-                    for (int i = 0; i < known_len_; i++) dfe_.process_antipodal(probe_eq[i], probe_ref[i]);
+                    for (int i = 0; i < known_len_; i++) probe_out.push_back(dfe_.process_antipodal(probe_eq[i], probe_ref[i]));
             }
             
-            // Pass through original probes
-            output.insert(output.end(), probe_in.begin(), probe_in.end());
+            // The probes: tracking, the DFE's own a-priori outputs on them, so they read in the
+            // reference phase as the data does (the codec's 180-degree check reads them); the
+            // earlier DFE passes the received probes through
+            if (data_step_ > 0 && probe_out.size() == probe_in.size())
+                output.insert(output.end(), probe_out.begin(), probe_out.end());
+            else
+                output.insert(output.end(), probe_in.begin(), probe_in.end());
             
             idx_ += pattern_len;
             frame_++;
@@ -246,7 +257,7 @@ private:
         return v;
     }
 
-    static DFE::Config config(bool use_nlms) {
+    static DFE::Config config(bool use_nlms, bool tracking = false) {
         // Configure DFE
         DFE::Config dfe_cfg;
         dfe_cfg.ff_taps = 11;
@@ -265,6 +276,7 @@ private:
             dfe_cfg.mu_fb = 0.002f;
         }
         dfe_cfg.leak = 0.0001f;
+        if (tracking && !use_nlms) { dfe_cfg.mu_ff *= TRACKING; dfe_cfg.mu_fb *= TRACKING; }
 
         // The feed-forward taps span the symbols -5 to +5 around the one decided, so
         // they cancel precursor ISI as well as postcursor: the DFE is fed each input
@@ -314,10 +326,35 @@ private:
         }
     }
 
+    /**
+     * Step-size factor of the tracking DFE over the earlier one. At the nominal symbol level
+     * (0.55 RMS) the earlier LMS steps (0.005, 0.002) make an effective step of about 0.0015 at
+     * unit power, too slow for HF fading: on the 2026-11-25 net's 300L burst (01:04:15Z) it
+     * decided 81 % and then 66 % of the data symbols right in blocks 1 and 2, where an RLS DFE
+     * decides 87 % in both. With the mode's own decisions and 6 times the step it decides 87 %.
+     * 4 is the factor taken: on CCIR moderate and poor (seeds 1-5, the modes this DFE runs) it
+     * decoded 88 transmissions exact where 6 decoded 89 and 3 decoded 86, none with wrong bytes,
+     * and on the AWGN set it gave up 1 exact decode where 6 gave up 6 (its step noise lowers a
+     * flat channel's quality figure) (docs/m110a-acq-fading.md).
+     */
+    static constexpr float TRACKING = 4.0f;
+
+    // Equalize one frame's data: the mode's own points (data_step_) around each symbol's
+    // scrambler value, or with the earlier DFE free 8PSK decisions
+    void equalize_data(const std::vector<complex_t>& data_in, std::vector<complex_t>& output) {
+        if (data_step_ <= 1) { dfe_.equalize(data_in, output); return; }
+        DataScramblerFixed sc;
+        const int pos = (frame_ * (unknown_len_ + known_len_)) % 160;
+        for (int i = 0; i < pos; i++) sc.next();
+        for (size_t i = 0; i < data_in.size(); i++)
+            output.push_back(dfe_.process_constrained(data_in[i], PSK8()[sc.next() & 7], data_step_));
+    }
+
     int unknown_len_, known_len_, block_frames_;
     bool have_preamble_;
     std::vector<complex_t> pre_data_;
     int quality_span_symbols_;
+    int data_step_ = 0;
     DFE dfe_;
     size_t AHEAD = 0;
     DataScramblerFixed scrambler_;
@@ -342,9 +379,10 @@ inline FrameDfeOutput frame_dfe_equalize(
     const std::vector<complex_t>& preamble_symbols = {},
     bool use_nlms = false,
     const std::vector<complex_t>& pre_data_symbols = {},
-    int quality_span_symbols = 1440) {
+    int quality_span_symbols = 1440,
+    int data_step = 0) {
     FrameDfe dfe(unknown_len, known_len, block_frames, preamble_symbols, use_nlms,
-                 pre_data_symbols, quality_span_symbols);
+                 pre_data_symbols, quality_span_symbols, data_step);
     FrameDfeOutput result;
     result.symbols.reserve(symbols.size());
     dfe.advance(symbols, true, result);

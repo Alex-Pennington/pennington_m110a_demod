@@ -1,7 +1,7 @@
 // stream_vs_whole - decode one audio buffer with ModemRX::decode() and with the streaming
 // receiver (start / push_samples / finish), and compare (docs/m110a-streaming-rx.md).
 //
-// usage: stream_vs_whole [--chunk N] [--mode M] [--eq dfe|none] [--expect FILE] AUDIO
+// usage: stream_vs_whole [--chunk N] [--mode M] [--eq dfe|none|mlse_adaptive] [--expect FILE] AUDIO
 //   AUDIO  48 kHz mono: .wav (16-bit PCM), .f32 (float32), anything else raw s16le
 //   --chunk samples per push_samples call (default 480, 10 ms)
 //   --mode  force the mode (as m110a_rx's --mode names it); default AUTO
@@ -98,12 +98,15 @@ int main(int argc, char** argv) {
         auto val = [&]() -> std::string { if (i + 1 >= argc) exit(2); return argv[++i]; };
         if (a == "--chunk") chunk = size_t(std::max(1, atoi(val().c_str())));
         else if (a == "--mode") cfg.mode = mode_of(val());
-        else if (a == "--eq") cfg.equalizer = val() == "none" ? Equalizer::NONE : Equalizer::DFE;
+        else if (a == "--eq") {
+            const std::string e = val();
+            cfg.equalizer = e == "none" ? Equalizer::NONE : e == "mlse_adaptive" ? Equalizer::MLSE_ADAPTIVE : Equalizer::DFE;
+        }
         else if (a == "--expect") expect_path = val();
         else if (a == "--dump") dump = val();
         else path = a;
     }
-    if (path.empty()) { fprintf(stderr, "usage: stream_vs_whole [--chunk N] [--mode M] [--eq dfe|none] [--expect FILE] [--dump PREFIX] AUDIO\n"); return 2; }
+    if (path.empty()) { fprintf(stderr, "usage: stream_vs_whole [--chunk N] [--mode M] [--eq dfe|none|mlse_adaptive] [--expect FILE] [--dump PREFIX] AUDIO\n"); return 2; }
     const std::vector<float> x = load(path);
     std::vector<uint8_t> expect;
     if (!expect_path.empty()) {

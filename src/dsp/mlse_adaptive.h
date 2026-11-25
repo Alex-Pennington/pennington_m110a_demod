@@ -164,7 +164,8 @@ public:
      */
     std::vector<int> equalize_with_tracking(
             const std::vector<complex_t>& received,
-            int unknown_len, int known_len) {
+            int unknown_len, int known_len,
+            std::vector<std::array<double, 3>>* probe_frames = nullptr) {
         
         std::vector<int> output;
         output.reserve(received.size());
@@ -172,7 +173,8 @@ public:
         int frame_len = unknown_len + known_len;
         size_t idx = 0;
         int frame = 0;
-        
+        if (probe_frames) probe_frames->clear();
+
         // History for channel tracking
         std::vector<complex_t> symbol_history;
         symbol_history.reserve(received.size());
@@ -215,6 +217,22 @@ public:
                 }
             }
             
+            // The probes against the channel estimate held before they update it: the
+            // equalizer's a-priori error. The output carries the known probe symbols
+            // themselves (the trellis admits only them), so it cannot be scored on them.
+            // Per frame {end symbol, error power, predicted signal power}, over the probes
+            // whose channel memory lies inside the probe block, as FrameDfe reports it.
+            if (probe_frames && probe_rx.size() >= (size_t)L_) {
+                double err = 0.0, ref = 0.0;
+                for (size_t i = L_ - 1; i < probe_rx.size(); i++) {
+                    complex_t expected(0, 0);
+                    for (int k = 0; k < L_; k++) expected += h_[k] * probe_tx[i - k];
+                    err += std::norm(probe_rx[i] - expected);
+                    ref += std::norm(expected);
+                }
+                probe_frames->push_back({static_cast<double>(idx + frame_len), err, ref});
+            }
+
             // Batch channel update from probes
             if (probe_rx.size() >= (size_t)L_) {
                 update_channel_from_probes(probe_rx, probe_tx);
