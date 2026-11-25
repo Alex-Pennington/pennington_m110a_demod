@@ -809,15 +809,20 @@ private:
     /// set where the net 300L bursts' blocks part as reencode_check parts them: the two that
     /// do not fit score 2.0 and 2.3 dB, the lowest that fit 2.5 dB. 4800S is uncoded and
     /// keeps its quality_db threshold.
+    /// Recalibrated by the same rule for the tracking DFE and multipath acquisition
+    /// (docs/m110a-acq-fading.md): 300L 2.25 -> 2.0, its cap (AWGN 300L at -2 dB, now acquired,
+    /// decodes exact with worst blocks of 2.0-2.1 dB), no CCIR change; 1200S 4.75 -> 4.5, one
+    /// rejected exact CCIR transmission fewer and no wrong one. 1200H, not in the sets, keeps 4.75.
     static float block_quality_threshold_db(ModeId mode) {
         switch (mode) {
             case ModeId::M4800S:                      return 12.5f;
             case ModeId::M150S:  case ModeId::M150L:  return 0.5f;
             case ModeId::M300S:                       return 0.5f;
-            case ModeId::M300L:                       return 2.25f;
+            case ModeId::M300L:                       return 2.0f;
             case ModeId::M600S:  case ModeId::M600H:  return 2.75f;
             case ModeId::M600L:                       return 3.0f;
-            case ModeId::M1200S: case ModeId::M1200H: return 4.75f;
+            case ModeId::M1200S:                      return 4.5f;
+            case ModeId::M1200H:                      return 4.75f;
             case ModeId::M1200L:                      return 4.5f;
             case ModeId::M2400L:                      return 8.25f;
             default:                                  return 8.0f;

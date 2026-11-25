@@ -81,18 +81,26 @@ and 66 % of block 2, for four reasons:
    more often, and both the feedback line and the LMS update take it. `DFE::process_constrained`
    now decides among the mode's own points (`FrameDfe` `data_step`: 4, 2 or 1).
 2. **The LMS step was too slow for HF fading.** At the nominal symbol level of 0.55 RMS, the steps
-   (0.005, 0.002) are an effective unit-power step of about 0.0015. They are now 6 times larger
-   (`FrameDfe::TRACKING`).
+   (0.005, 0.002) are an effective unit-power step of about 0.0015. They are now 4 times larger
+   (`FrameDfe::TRACKING`). The factor was compared at 3, 4 and 6 on the CCIR and AWGN sets, over
+   the modes this DFE runs. CCIR seeds 1-5 decoded 86, 88 and 89 transmissions exact, none with
+   wrong bytes. AWGN gave up 0, 1 and 6 exact decodes, because the step's noise lowers a flat
+   channel's quality figure.
 3. **A probe-only phase tracker ran in front of the DFE** and fought it in fades. With the DFE it no
    longer runs; the DFE tracks the carrier itself.
 4. **The DFE passed the received probes through.** The codec's 180-degree check reads the probes,
    so with the tracker gone it read the channel's own phase and flipped every bit. The DFE now
    passes on its own a-priori outputs on the probes, in the reference phase as the data is.
 
-With all four, the DFE decides 87 % of the data symbols right in every block of the 01:04:15Z
-burst, and it decodes exactly: 408 bytes and the EOM. `frame_dfe_equalize` and `FrameDfe` keep
-the earlier behaviour when `data_step` is 0, their default. `ModemRX` and the streaming receiver
-pass the mode's step.
+With all four (at 6 times the step), the DFE decides 87 % of the data symbols right in every block
+of the 01:04:15Z burst, and it decodes exactly: 408 bytes and the EOM.
+
+**Only 150 to 1200 bps.** The 8PSK modes (2400 and 4800 bps) keep the earlier DFE and the phase
+tracker in front of it. With tracking, 2400S and 2400L on CCIR seeds 1-5 decoded 11 more transmissions
+exact. But 6 transmissions with wrong bytes were reported as successes: five with 1 byte wrong and one with 163. The earlier DFE had 1. Their worst blocks were 8.3 to
+11.0 dB, among exact ones at 9.0 to 11.5 dB, so no threshold parts them. `frame_dfe_equalize`
+and `FrameDfe` keep the earlier behaviour when `data_step` is 0, their default. `ModemRX` and the
+streaming receiver pass 4 (BPSK) or 2 (QPSK), or 0 for 8PSK.
 
 ## MLSE_ADAPTIVE quality
 
