@@ -314,21 +314,24 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   5, 6, 6, 5, 6, 4 bytes; 75L 45, 15.
 
 - **Data during the burst.** Measured with `appa_rx_stream` phase `stream`: a 32 s 600S burst
-  (2252 bytes) fed in real time, 10 ms at a time, `--rx-fast`, the host's load average 12.
-  Times are against the end of the burst's signal. "Per block" is each data packet against the
-  end of its 0.6 s interleaver block on the air:
+  (2252 bytes) fed in real time, 10 ms at a time, `--rx-fast`, on saga. Times are against the
+  end of the burst's signal. "Per block" is each data packet against the end of its 0.6 s
+  interleaver block on the air:
 
-  | Build | First data | Last data, NO CARRIER | Per block (min / median / max) | Decoder time |
-  |---|---|---|---|---|
-  | whole-burst decode (origin/master) | +21.05 s | +22.08 s | 22.09 / 36.57 / 51.05 s | 20.4 s |
-  | streaming (this build) | -29.28 s | +0.40 s | 0.41 / 0.73 / 1.01 s | 1.5 s |
+  | Build, load average | First data | Last data | NO CARRIER | Per block (min / median / max) | Decoder time |
+  |---|---|---|---|---|---|
+  | whole-burst decode (origin/master), 1 | +10.77 s | +11.77 s | +11.77 s | 11.78 / 26.27 / 40.77 s | 10.1 s |
+  | streaming (this build), 1 | -29.27 s | +0.30 s | +0.61 s | 0.30 / 0.73 / 0.90 s | 1.9 s |
+  | whole-burst decode (origin/master), 12 | +21.05 s | +22.08 s | +22.08 s | 22.09 / 36.57 / 51.05 s | 20.4 s |
+  | streaming, 12 (before the carrier waited for the burst's end) | -29.28 s | +0.40 s | +0.40 s | 0.41 / 0.73 / 1.01 s | 1.5 s |
 
   A block can go no sooner than one interleaver span after its end (0.6 s at 600S): it needs
   the next block whole, which also covers the Viterbi's 34-bit traceback (0.06 s at 600 bps).
   One span plus the traceback is 0.66 s. The median, 0.73 s, is one span plus the data grid's
   lookahead: the timing-step search settles a frame's grid 8 frames later (0.13 s at 600S),
   which it must wait for to give `decode()`'s bytes. The rest is the decoder's own time under
-  load. The last block goes 0.41 s after the end, once its EOM is decoded.
+  load. The last block goes 0.30-0.41 s after the end, once its EOM is decoded, and NO CARRIER
+  when the burst closes.
   A 75 bps burst from the 75 bps finder is still decoded whole when it ends.
 - **Below the quality gate.** Each block is judged as it decodes. It passes when its
   `block_quality_db` clears the mode's block threshold and the burst's `quality_db` (the first
