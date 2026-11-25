@@ -422,17 +422,18 @@ private:
     }
 
     // A 75 bps message ending its preamble at ds, unless one already ends within a frame of it
-    // or one that starts a frame or more inside a message of another mode already reported
-    void m75_add(Mode mode, int frames, long ds, float foff, double z) {
+    // or one that starts a frame or more inside a message of another mode already reported.
+    // True when the message is there (added now or before), false when it was refused.
+    bool m75_add(Mode mode, int frames, long ds, float foff, double z) {
         for (const auto& p : m75_pre_)
-            if (std::labs(p.second - ds) <= M75_SAME) return;
+            if (std::labs(p.second - ds) <= M75_SAME) return true;
         m75_floor_ = std::max(m75_floor_, ds);
         const long pre0 = ds - static_cast<long>(frames) * M75_FRAME;
         for (const auto& w : corr_win_)
             if (pre0 > w.first && pre0 + M75_FRAME < w.second) {
                 if (opt_.verbose)
                     fprintf(stderr, "m110a_rx: 75 bps preamble at %.3f s is inside the message before it\n", pre0 / FS);
-                return;
+                return false;
             }
         m75_pre_.push_back({pre0, ds});
         if (m75_pre_.size() > 64) m75_pre_.erase(m75_pre_.begin());
@@ -454,6 +455,7 @@ private:
         auto it = pending_.begin();
         while (it != pending_.end() && it->first_frame <= m.first_frame) ++it;
         pending_.insert(it, m);
+        return true;
     }
 
     // AUTO: a correlator chain that starts inside a 75 bps preamble belongs to that 75 bps
@@ -472,8 +474,7 @@ private:
         double z = 0.0;
         if (!m75_acquire(a - 25L * M75_FRAME, audio_end_, mode, frames, ds, foff, z)) return false;
         if (!inside(ds - static_cast<long>(frames) * M75_FRAME, ds)) return false;
-        m75_add(mode, frames, ds, foff, z);
-        return true;
+        return m75_add(mode, frames, ds, foff, z);
     }
 
     // ---------------- message end and decode ----------------
