@@ -63,7 +63,7 @@ struct RxTuning {
     double soft_scale = 16.0;       // soft bit = scale * (sqrt M0 - sqrt M1) / sqrt(noise)
     double min_quality_db = 11.75;  // success: quality_db = 10 log10((1 - p) / p) at least this
     double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block (75L)
-    double min_block_quality_db_75s = 8.5;  // ... (75S: a 90-bit block whose errors the code
+    double min_block_quality_db_75s = 8.0;  // ... (75S: a 90-bit block whose errors the code
                                             //  decoded wrong scored 6.8-7.7 dB at -9 and -8 dB)
     double max_unreliable = 0.3;    // ... and sum over the message's bits of exp(-|L| / reliability_scale)
     double reliability_scale = 8.0; //     at most this (|L|: max-log reliability, m75::bit_reliability)
