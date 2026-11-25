@@ -6,6 +6,7 @@
 #include "modem/scrambler.h"
 #include "modem/symbol_mapper.h"
 #include <vector>
+#include <limits>
 #include <cmath>
 #include <algorithm>
 #include <array>
@@ -112,6 +113,37 @@ public:
         symbol_count_++;
         return output;
     }
+
+    /**
+     * process() in decision-directed mode with the decision restricted to the points
+     * base * exp(j pi/4 * k * step), k = 0 .. 8/step - 1: the points a data symbol of the mode
+     * can take around its scrambler value (base). 110A at 150-600 bps sends one of two
+     * antipodal points (step 4), 1200 bps one of four (step 2), 2400 and 4800 bps any of
+     * eight (step 1, process()'s own decision). At low SNR a free 8PSK decision is wrong far
+     * more often than the mode's own, and both the feedback line and the adaptation take it.
+     * @param input Received symbol x[n+lookahead]
+     * @param base PSK8[scrambler value] for symbol n
+     * @param step 8PSK index step between the mode's points (4, 2 or 1)
+     * @return Equalized symbol y[n]
+     */
+    complex_t process_constrained(complex_t input, complex_t base, int step) {
+        ff_delay_[ff_idx_] = input;
+        complex_t output = filter_output();
+        complex_t decision = base;
+        float best = std::numeric_limits<float>::max();
+        for (int k = 0; k < 8; k += std::max(1, step)) {
+            const complex_t c = base * std::polar(1.0f, k * PI / 4.0f);
+            const float d = std::norm(output - c);
+            if (d < best) { best = d; decision = c; }
+        }
+        adapt(decision - output);
+        fb_delay_[fb_idx_] = decision;
+        fb_idx_ = (fb_idx_ + 1) % config_.fb_taps;
+        ff_idx_ = (ff_idx_ + 1) % config_.ff_taps;
+        training_mode_ = false;
+        symbol_count_++;
+        return output;
+    }
     
     void reset() {
         std::fill(ff_taps_.begin(), ff_taps_.end(), complex_t(0.0f, 0.0f));
@@ -171,13 +203,15 @@ public:
      * @return MSE after training
      */
     float train(const std::vector<complex_t>& inputs,
-                const std::vector<complex_t>& reference) {
+                const std::vector<complex_t>& reference,
+                std::vector<complex_t>* outputs = nullptr) {
         
         float mse = 0.0f;
         size_t n = std::min(inputs.size(), reference.size());
         
         for (size_t i = 0; i < n; i++) {
             complex_t out = process(inputs[i], reference[i], true);
+            if (outputs) outputs->push_back(out);  // the a-priori output
             complex_t err = reference[i] - out;
             mse += std::norm(err);
         }

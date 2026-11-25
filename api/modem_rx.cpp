@@ -196,6 +196,7 @@ public:
         }
         
         block_frames_ = interleaver_block_frames(mode_cfg);
+        dfe_data_step_ = tracking_dfe_step(mode_cfg);
 
         // Bring symbols to the nominal level. The LMS DFE uses fixed step sizes,
         // so its convergence rate scales with input power: below about 2500 RMS
@@ -211,8 +212,11 @@ public:
         
         // Apply phase tracking to correct frequency offset
         // - With NONE: full decision-directed tracking
-        // - With DFE/MLSE: probe-only tracking (less aggressive)
-        if (config_.phase_tracking && 
+        // - With MLSE and the others: probe-only tracking (less aggressive)
+        // - With the DFE: none. The DFE tracks the carrier itself (tracking_dfe_step()); the
+        //   probe-only tracker in front of it cost the net's 300L burst of 2026-11-25 (01:04:15Z)
+        //   its second block, 74 % of the data symbols right with the tracker and 86 % without.
+        if (config_.phase_tracking && config_.equalizer != Equalizer::DFE &&
             mode_cfg.unknown_data_len > 0 && mode_cfg.known_data_len > 0) {
             
             bool probe_only = (config_.equalizer != Equalizer::NONE);
@@ -714,6 +718,15 @@ private:
 
     /// Frames per interleaver block of the mode being decoded (see above).
     int block_frames_ = 0;
+
+    /// The DFE's data decisions for mode m (FrameDfe's data_step): the mode's own points around
+    /// each symbol's scrambler value, as an 8PSK index step: 4 for the BPSK of 150-600 bps, 2 for
+    /// the QPSK of 1200 bps, 1 for 8PSK. With it the DFE tracks (FrameDfe::TRACKING) and returns
+    /// its own outputs on the probes; no phase tracker runs in front of it.
+    static int tracking_dfe_step(const ModeConfig& m) {
+        return m.bits_per_symbol >= 3 ? 1 : m.bits_per_symbol == 2 ? 2 : 4;
+    }
+    int dfe_data_step_ = 1;
 
     /// SNR in dB of the probe symbols in a data+probe stream over the quality
     /// span, after a least-squares complex gain fit to the known probe values.
@@ -1390,7 +1403,7 @@ private:
             const std::vector<complex_t>& pre_data_symbols = {}) {
         FrameDfeOutput r = frame_dfe_equalize(symbols, unknown_len, known_len, block_frames_,
                                               preamble_symbols, use_nlms, pre_data_symbols,
-                                              std::numeric_limits<int>::max());
+                                              std::numeric_limits<int>::max(), dfe_data_step_);
         dfe_probe_frames_.insert(dfe_probe_frames_.end(), r.probe_frames.begin(), r.probe_frames.end());
         return std::move(r.symbols);
     }
@@ -2191,7 +2204,7 @@ private:
         S.have_gain = symbol_gain(S.br, S.gain);
         if (S.have_gain) for (auto& x : S.br.preamble_symbols) x *= S.gain;
         S.grid = std::make_unique<BrainDecoder::DataGrid>(*S.dec, S.br, S.dec->data_start(S.br));
-        if (S.cfg.phase_tracking)
+        if (S.cfg.phase_tracking && S.cfg.equalizer != Equalizer::DFE)  // as decode(): the DFE tracks
             S.pt = std::make_unique<PhaseTracking>(S.u, S.k, S.bf, S.cfg.equalizer != Equalizer::NONE);
         state_ = RxState::RECEIVING;
         S.phase = StreamState::Phase::DATA;
@@ -2223,7 +2236,8 @@ private:
         if (S.cfg.equalizer == Equalizer::DFE) {
             if (!S.dfe && S.pre_done)
                 S.dfe = std::make_unique<FrameDfe>(S.u, S.k, S.bf, S.br.preamble_symbols, S.cfg.use_nlms,
-                                                   S.pre_data, std::numeric_limits<int>::max());
+                                                   S.pre_data, std::numeric_limits<int>::max(),
+                                                   tracking_dfe_step(S.mcfg));
             if (S.dfe) S.dfe->advance(S.pcv(), S.eof, S.eq);
         }
         const size_t f0 = S.rho.size();
