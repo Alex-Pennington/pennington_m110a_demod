@@ -68,7 +68,12 @@ target_link_libraries(modem_tx_wav PRIVATE m110a_modem)
 add_executable(m110_lan m110_lan/main.cpp)
 target_link_libraries(m110_lan PRIVATE m110a_modem)
 
-set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_chan harris_score modem_tx_wav m110_lan PROPERTIES
+# ModemRX::decode() against the streaming receiver on one audio buffer: bytes, verdict, CPU
+# (docs/m110a-streaming-rx.md)
+add_executable(stream_vs_whole test/rx/stream_vs_whole.cpp)
+target_link_libraries(stream_vs_whole PRIVATE m110a_modem)
+
+set_target_properties(m110a_server hfchansim m110a_rx m110a_tx m110d_rx m110d_chan harris_score modem_tx_wav m110_lan stream_vs_whole PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 # ---- tests ----

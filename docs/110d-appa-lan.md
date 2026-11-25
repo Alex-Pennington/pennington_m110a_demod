@@ -36,11 +36,11 @@ build/bin/m110_lan --mode 600S --tx-out tx_%d.wav --rx-in -      # receive audio
 | `--port P` | TCP data socket port. The default is 3000 (A.4.2). |
 | `--rci-port P` / `--udp-port P` | Control connection and UDP data socket ports. The defaults are 3001 and 3002. |
 | `--duplex full\|half-tx\|half-rx` | Full duplex, or half duplex as transmitter master or receiver master (A.5.1.2.7). |
-| `--rx-fast` | Deliver received data at once instead of at the over-the-air rate. |
+| `--rx-fast` | Deliver received data as soon as it is decoded, without the air-rate pacing (see "The modem behind the interface"). |
 | `--rx-gap S` | A burst ends after S seconds (default 0.5) below its own end level (see "The modem behind the interface"). |
 | `--rx-max S` | The longest burst, in seconds (default 120). |
 | `--rx-threshold X` | Preamble correlation metric, 0 to 1, that starts a burst (default 0.45). |
-| `--rx-low-quality` | Deliver the bytes of a burst the decoder scores below its quality gate (default off). See below. |
+| `--rx-low-quality` | Deliver the bytes of a block the decoder scores below its quality gate (default off). See below. |
 | `--rx-squelch X` | Accepted and has no effect: bursts are found by their preamble, not by level. |
 | `--tx-lead S`, `--tx-tail S` | Silence before and after each transmission (default 0.5 s and 1.0 s). |
 | `--tx-queue BYTES` | Transmit queue size (default 1 MiB). |
@@ -258,19 +258,41 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
     ends at the EOM. Without an EOM it ends when no set has carried signal for one interleaver
     block plus `--rx-gap`, at `--rx-max`, or at the end of the input. A level threshold does not
     end it, because at negative SNR the level hardly changes.
-  - The **decoder** decodes each whole burst, from 0.25 s before the preamble found, with the
-    110A receiver (`decode()`, AUTO, DFE), one burst at a time. A 75 bps burst is decoded as
-    the mode its preamble read (forced, so ModemRX refuses it if the preamble contradicts it).
+  - The **decoder** decodes each burst the correlator finds as its audio arrives, from 0.25 s
+    before the preamble found, with the 110A streaming receiver (ModemRX `start`,
+    `push_samples`, `take_blocks`, `finish`; AUTO, DFE; docs/m110a-streaming-rx.md). The
+    scanner hands it the burst's audio as it reads it. Each interleaver block goes to the modem
+    once it is decoded, which is once the next block is in: the Viterbi traceback reaches into
+    the next block, and that block is deinterleaved whole. The burst's last block goes when its
+    EOM is decoded. The bytes are those `decode()` gives over the same audio, but for the soft
+    demapper's SNR (measured on the probes received so far rather than on all of them;
+    docs/m110a-streaming-rx.md says how often that changes a byte). One burst is decoded at a
+    time. A 75 bps burst from the 75 bps finder is decoded whole when it ends, as the mode its
+    preamble read (forced, so ModemRX refuses it if the preamble contradicts it).
 - **Carrier.** CARRIER DETECTED stays up from preamble sync through the decode and the delivery
   (Table A-VI: "synchronized on a preamble or is processing data from the air"). The data goes
-  one blocking factor at a time, at the over-the-air rate from the end of the decode
-  (immediately with `--rx-fast`), and NO CARRIER follows the last packet. A failed decode sends
-  NO CARRIER with no data packets. One reception is reported at a time: a burst found while the
-  last is still being decoded or delivered gets its CARRIER DETECTED after that one's NO CARRIER.
+  one blocking factor at a time as it decodes. NO CARRIER follows the last packet once the
+  burst is also over on the air: its level gone, the next preamble, or `--rx-gap` after the
+  audio that decided its EOM. The EOM end does not need the noise floor before the burst, which
+  a modem that has just transmitted did not hear (its burst then ran to `--rx-max`, 120 s, in
+  greybeard-ale's 5066 loopback at 6 dB). The last data comes at
+  the EOM, while the far transmitter may still be sending its flush bits and its tail. A DTE
+  that answers at NO CARRIER then does not key over it. greybeard-ale's 5066 loopback, whose
+  audio relay deafens a keyed side, lost every answer to that before the carrier waited. A chunk
+  goes once all its bytes are decoded. It goes as LAST only when the decoder has said no more
+  will come, and it holds back only until then: before the last block, the decoder reports a
+  block once at least one more byte is known to follow it. Delivery is paced at the air rate:
+  chunk i (i >= 1) goes no sooner than i - 1 blocking factors after the first. Fed in real time,
+  the stream delivers each chunk as it decodes. With input faster than the air (a file), or a
+  whole-burst decode, the first two chunks go at once and then one per blocking factor.
+  `--rx-fast` drops the pacing. A burst with no bytes sends NO CARRIER with no data packets. One
+  reception is reported at a time: a burst found while the last is still being decoded or
+  delivered gets its CARRIER DETECTED after that one's NO CARRIER.
 - **Measured** (`appa_rx_stream`): CARRIER DETECTED arrives 0.15 s after the preamble's first
-  sample goes into the input, and no audio is dropped during an 11 s decode of a 32 s 600S
-  burst. A 600S burst in noise band-limited to 300-3300 Hz is found at -2 dB SNR (carrier, then
-  NO CARRIER: the 110A receiver's own mode detection fails there, so nothing is decoded), and
+  sample goes into the input, and no audio is dropped while a 32 s 600S burst is decoded. That
+  burst's data arrives during the burst. See "Data during the burst" below for the timings.
+  A 600S burst in noise band-limited to 300-3300 Hz is found at -2 dB SNR (carrier, then NO
+  CARRIER: the 110A receiver's own mode detection fails there, so nothing is decoded), and
   found and decoded exact at 2 dB.
 - **Measured, 75 bps** (`appa_lan_75` phase `rx75`, input fed in real time 10 ms at a time,
   4 s of input before the burst, `--rx-fast`): see the table below. Every case delivered the
@@ -291,22 +313,47 @@ Enhanced/Encoded Data packets whose every codeword the test's own RS encoder con
   1.19 to 2.72 s, because the scanner fell behind real time. TCP packets: 75S 5, 6, 5, 6, 6,
   5, 6, 6, 5, 6, 4 bytes; 75L 45, 15.
 
-- **Not done: data before the burst ends.** The decoder is the one-shot `decode()`. It returns
-  bytes only once it has the whole burst, so the first data comes a decode time after the
-  burst's end (11.5 s for a 32 s 600S burst, measured). `ModemRX::push_samples` buffers the
-  samples and runs the same one-shot decode, so it gives no earlier output. At 75 bps the burst
-  is already decoded block by block to find its EOM (above). Delivering those blocks as they
-  decode would give data during the burst, but it is not done: the bytes still go once the
-  whole burst is decoded.
-- **Below the quality gate** (`--rx-low-quality`). The decoder refuses bytes whose decode
-  quality is under the mode's threshold. With this option those bytes are delivered as any
-  others: CARRIER DETECTED, data, NO CARRIER. **Appendix A has no field to mark received data
-  as suspect.** The Data Transfer payload is order, packet ID and data (Figure A-3). The
-  Carrier State is NO CARRIER or CARRIER DETECTED only (Table A-VI). The UDP Error Vector,
-  Status Vector and Control Vector define no such bit, and their reserved bits "shall always be
-  0" (Tables A-XI to A-XV). So the bytes go unmarked on the wire, and only the modem's log line
-  ("BELOW THE QUALITY GATE, delivered", with the quality and the threshold) says what they are.
-  The DTE needs its own integrity check, such as STANAG 5066's D_PDU CRCs.
+- **Data during the burst.** Measured with `appa_rx_stream` phase `stream`: a 32 s 600S burst
+  (2252 bytes) fed in real time, 10 ms at a time, `--rx-fast`, on saga. Times are against the
+  end of the burst's signal. "Per block" is each data packet against the end of its 0.6 s
+  interleaver block on the air:
+
+  | Build, load average | First data | Last data | NO CARRIER | Per block (min / median / max) | Decoder time |
+  |---|---|---|---|---|---|
+  | whole-burst decode (origin/master), 1 | +10.77 s | +11.77 s | +11.77 s | 11.78 / 26.27 / 40.77 s | 10.1 s |
+  | streaming (this build), 1 | -29.27 s | +0.30 s | +0.61 s | 0.30 / 0.73 / 0.90 s | 1.9 s |
+  | whole-burst decode (origin/master), 12 | +21.05 s | +22.08 s | +22.08 s | 22.09 / 36.57 / 51.05 s | 20.4 s |
+  | streaming, 12 (before the carrier waited for the burst's end) | -29.28 s | +0.40 s | +0.40 s | 0.41 / 0.73 / 1.01 s | 1.5 s |
+
+  A block can go no sooner than one interleaver span after its end (0.6 s at 600S): it needs
+  the next block whole, which also covers the Viterbi's 34-bit traceback (0.06 s at 600 bps).
+  One span plus the traceback is 0.66 s. The median, 0.73 s, is one span plus the data grid's
+  lookahead: the timing-step search settles a frame's grid 8 frames later (0.13 s at 600S),
+  which it must wait for to give `decode()`'s bytes. The rest is the decoder's own time under
+  load. The last block goes 0.30-0.41 s after the end, once its EOM is decoded, and NO CARRIER
+  when the burst closes.
+  A 75 bps burst from the 75 bps finder is still decoded whole when it ends.
+- **Below the quality gate.** Each block is judged as it decodes. It passes when its
+  `block_quality_db` clears the mode's block threshold and the burst's `quality_db` (the first
+  1440 data symbols) clears the mode's threshold (docs/m110a-quality-gate.md). The first block
+  below the gate ends the delivery. The bytes of the blocks before it have already gone. Its
+  own bytes and the rest do not go. **Appendix A has no field to mark received data as suspect,
+  or to say a reception was cut short.** The Data Transfer payload is order, packet ID and data
+  (Figure A-3). The Carrier State is NO CARRIER or CARRIER DETECTED only (Table A-VI). The UDP
+  Error Vector, Status Vector and Control Vector define no such bit, and their reserved bits
+  "shall always be 0" (Tables A-XI to A-XV). So the DTE learns of it only as a message that
+  ends early. On TCP, the last chunk before the failing block goes as LAST, then NO CARRIER.
+  When that chunk has already gone, the reception ends as ABORT_RECEPTION ends one (A.5.1.2.6
+  step 6): a LAST packet with no data, then NO CARRIER. A gate that fails on the first block
+  sends NO CARRIER with no data packets. On UDP the bytes before the
+  block are framed with the EOM, and the set holding it carries the last-set flag. The modem's
+  log line ("below the quality gate ... delivery ends after N bytes") says what happened. The
+  DTE needs its own integrity check, such as STANAG 5066's D_PDU CRCs. A 5066 node sees a cut
+  short as a D_PDU whose CRC fails, or one that never ends, and its ARQ repeats what was lost.
+  With `--rx-low-quality` a block below the gate is delivered like any other, and the log line
+  "BELOW THE QUALITY GATE, delivered" gives its quality and the thresholds. Bytes refused for
+  another reason are not delivered even then: no bytes, or a forced 75 bps decode whose
+  preamble names another mode.
 - **Blocking factor** (Transmit Setup, Carrier Detect, status): the data rate times the 110A
   interleaver span, 0.6 s short and 4.8 s long. For 600S that is 360 bits, and 45 bytes per TCP
   data packet. Inferred: MIL-STD-188-110 gives the interleaver spans, and Appendix A says only

@@ -110,6 +110,53 @@ struct DecodeResult {
 };
 
 /**
+ * Preamble sync of a streaming decode, reported once (ModemRX::take_sync)
+ */
+struct StreamSync {
+    /// Mode the preamble's D1/D2 name (AUTO), or the forced mode
+    Mode mode = Mode::AUTO;
+    int d1 = -1;
+    int d2 = -1;
+    /// Carrier offset from the AFC (Hz)
+    float freq_offset_hz = 0.0f;
+    /// Input sample (from start()) where the preamble frame found begins
+    size_t preamble_sample = 0;
+};
+
+/**
+ * One interleaver block of a streaming decode (ModemRX::take_blocks), in order.
+ *
+ * Block i carries the decoded bytes that end inside its info bits: bytes floor(B*i/8) to
+ * floor(B*(i+1)/8), B the info bits per block (the mode's rate times its interleaver span),
+ * cut at the EOM. A block's bytes are reported once the Viterbi decoder has decided them,
+ * which takes the next block's symbols: its traceback reaches into the next block, and
+ * that block is deinterleaved whole. A block that is not the last is reported only when
+ * at least one more byte is known to follow it.
+ */
+struct BlockRecord {
+    /// Interleaver block, from 0
+    size_t index = 0;
+    /// Its bytes (may be empty for the last block: the EOM and flush bits only)
+    std::vector<uint8_t> data;
+    /// DecodeResult::block_quality_db of this block, and the mode's threshold for it
+    float block_quality_db = 0.0f;
+    float block_quality_threshold_db = 0.0f;
+    /// DecodeResult::quality_db (the first 1440 data symbols) and its threshold
+    float quality_db = 0.0f;
+    float quality_threshold_db = 0.0f;
+    /// The block clears both thresholds (and, when the stream fell back to a whole-burst
+    /// decode, that decode succeeded)
+    bool passes = false;
+    /// When !passes: true when the bytes fail on quality alone (a receiver may still choose
+    /// to deliver them); false when they are refused for another reason
+    bool below_quality = false;
+    /// The last block of the message: no block follows
+    bool last = false;
+    /// The EOM was found; the message ends in this block
+    bool eom = false;
+};
+
+/**
  * Receiver state
  */
 enum class RxState {
@@ -137,21 +184,25 @@ enum class RxState {
  *   }
  * @endcode
  * 
- * Usage (streaming):
+ * Usage (streaming, one burst from start() to finish()):
  * @code
  *   ModemRX rx;
  *   rx.start();
  *   while (audio_available()) {
- *       auto chunk = read_audio_chunk(1024);
- *       rx.push_samples(chunk);
- *       if (rx.state() == RxState::COMPLETE) {
- *           auto result = rx.get_result();
- *           process(result);
- *           rx.start();  // Reset for next message
- *       }
+ *       rx.push_samples(read_audio_chunk(480));
+ *       StreamSync sync;
+ *       if (rx.take_sync(sync)) report_carrier(sync.mode);
+ *       for (auto& b : rx.take_blocks()) deliver(b);   // b.last ends the message
+ *       if (rx.is_complete()) break;                  // the EOM was decoded
  *   }
- *   rx.stop();
+ *   auto result = rx.finish();                         // the whole burst's verdict
+ *   for (auto& b : rx.take_blocks()) deliver(b);
  * @endcode
+ *
+ * The streaming decode gives the same bytes as decode() over the same samples, with one
+ * exception: the SNR the soft demapper weights each block by is measured on the probes
+ * received up to that block, where decode() measures it on all of them
+ * (docs/m110a-streaming-rx.md).
  */
 class ModemRX {
 public:
@@ -231,17 +282,38 @@ public:
     // --------------------------------------------------------
     
     /**
-     * Start streaming decode session
-     * Resets state and prepares for sample input.
+     * Start a streaming decode of one burst: the samples pushed from here on are the
+     * buffer decode() would be given. Resets any streaming decode in progress.
      */
     void start();
     
     /**
-     * Push audio samples for processing
+     * Push audio samples of the burst. Decodes as far as they allow: the preamble (then
+     * take_sync() reports it), and each interleaver block once the next one is in (then
+     * take_blocks() returns it). Samples after the EOM are ignored.
      * @param samples Audio samples to process
-     * @return Success or error
+     * @return Success or error (RX_NOT_STARTED before start())
      */
     Result<void> push_samples(const Samples& samples);
+
+    /**
+     * The preamble sync, once: true and sync filled the first time it is called after the
+     * preamble and mode are read, false before and after.
+     */
+    bool take_sync(StreamSync& sync);
+
+    /**
+     * Blocks decoded since the last call, in order.
+     */
+    std::vector<BlockRecord> take_blocks();
+
+    /**
+     * End of the burst's samples: decode the rest, report the remaining blocks (take_blocks())
+     * and return the whole burst's result, judged as decode() judges it. Its data is the
+     * blocks' bytes (with the older ModemTX zero ending, decode()'s strip of trailing zeros
+     * applies to the result only).
+     */
+    DecodeResult finish();
     
     /**
      * Stop streaming decode session

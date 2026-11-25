@@ -536,38 +536,9 @@ public:
         // Probes should descramble to 0; if they're closer to 4, we have phase inversion
         int phase_offset = detect_phase_offset(all_symbols, unknown_len, known_len);
         
-        DataScramblerFixed scrambler;
         std::vector<soft_bit_t> soft_bits;
-        
-        size_t idx = 0;
-        while (idx + pattern_len <= all_symbols.size()) {
-            // Process data symbols - apply detected phase correction
-            for (int i = 0; i < unknown_len && idx + i < all_symbols.size(); i++) {
-                complex_t sym = all_symbols[idx + i];
-                int pos = (symbol_to_position(sym) + phase_offset) & 7;
-                int scr = scrambler.next();
-                int descrambled = (pos - scr + 8) & 7;
-                
-                switch (config_.modulation) {
-                    case Modulation::BPSK:
-                        soft_bits.push_back(bpsk_soft_bit(descrambled));
-                        break;
-                    case Modulation::QPSK:
-                        add_qpsk_soft_bits(descrambled, soft_bits);
-                        break;
-                    case Modulation::PSK8:
-                        add_8psk_soft_bits(descrambled, soft_bits);
-                        break;
-                }
-            }
-            
-            // Skip probe symbols but advance scrambler
-            for (int i = 0; i < known_len; i++) {
-                scrambler.next();
-            }
-            
-            idx += pattern_len;
-        }
+        demap_frames(all_symbols, 0, all_symbols.size() / pattern_len, phase_offset,
+                     DecodeOptions::legacy(), soft_bits);
         
         return decode_soft_bits(soft_bits);
     }
@@ -601,6 +572,61 @@ public:
         // Detect 180° phase ambiguity using probe symbols
         int phase_offset = detect_phase_offset(all_symbols, unknown_len, known_len);
         
+        std::vector<soft_bit_t> soft_bits;
+        demap_frames(all_symbols, 0, all_symbols.size() / pattern_len, phase_offset, opts, soft_bits);
+        
+        return decode_soft_bits(soft_bits);
+    }
+
+    /**
+     * Soft bits of the data in frames [f0, f1) of all_symbols (data + probes from data
+     * symbol 0), as decode_with_probes() makes them: the legacy demapper, or with
+     * opts.use_snr_weighted_demapper the SNR-weighted one at opts.snr_db, after the
+     * 180-degree correction phase_offset (probe_phase_offset()). Appended to soft_bits.
+     */
+    void demap_frames(const std::vector<complex_t>& all_symbols, size_t f0, size_t f1,
+                      int phase_offset, const DecodeOptions& opts,
+                      std::vector<soft_bit_t>& soft_bits) const {
+        int unknown_len = config_.unknown_data_len;
+        int known_len = config_.known_data_len;
+        int pattern_len = unknown_len + known_len;
+        
+        DataScramblerFixed scrambler;
+        for (size_t i = 0; i < (f0 * pattern_len) % 160; i++) scrambler.next();
+        
+        if (!opts.use_snr_weighted_demapper) {
+            size_t idx = f0 * pattern_len;
+            while (idx + pattern_len <= all_symbols.size() && idx < f1 * pattern_len) {
+                // Process data symbols - apply detected phase correction
+                for (int i = 0; i < unknown_len && idx + i < all_symbols.size(); i++) {
+                    complex_t sym = all_symbols[idx + i];
+                    int pos = (symbol_to_position(sym) + phase_offset) & 7;
+                    int scr = scrambler.next();
+                    int descrambled = (pos - scr + 8) & 7;
+                    
+                    switch (config_.modulation) {
+                        case Modulation::BPSK:
+                            soft_bits.push_back(bpsk_soft_bit(descrambled));
+                            break;
+                        case Modulation::QPSK:
+                            add_qpsk_soft_bits(descrambled, soft_bits);
+                            break;
+                        case Modulation::PSK8:
+                            add_8psk_soft_bits(descrambled, soft_bits);
+                            break;
+                    }
+                }
+                
+                // Skip probe symbols but advance scrambler
+                for (int i = 0; i < known_len; i++) {
+                    scrambler.next();
+                }
+                
+                idx += pattern_len;
+            }
+            return;
+        }
+        
         // Apply phase correction if needed
         float phase_rotation = -phase_offset * (M_PI / 4.0f);
         complex_t phase_rot(std::cos(phase_rotation), std::sin(phase_rotation));
@@ -614,11 +640,8 @@ public:
         demapper_qpsk.set_snr(opts.snr_db);
         demapper_bpsk.set_snr(opts.snr_db);
         
-        DataScramblerFixed scrambler;
-        std::vector<soft_bit_t> soft_bits;
-        
-        size_t idx = 0;
-        while (idx + pattern_len <= all_symbols.size()) {
+        size_t idx = f0 * pattern_len;
+        while (idx + pattern_len <= all_symbols.size() && idx < f1 * pattern_len) {
             // Process data symbols with SNR-weighted soft demapping
             for (int i = 0; i < unknown_len && idx + i < all_symbols.size(); i++) {
                 complex_t sym = all_symbols[idx + i];
@@ -662,9 +685,38 @@ public:
             
             idx += pattern_len;
         }
-        
-        return decode_soft_bits(soft_bits);
     }
+
+    /// The 180-degree correction decode_with_probes() applies: 4 when the first five frames'
+    /// probes read nearer 4 than 0 after descrambling, else 0
+    int probe_phase_offset(const std::vector<complex_t>& all_symbols) const {
+        return detect_phase_offset(all_symbols, config_.unknown_data_len, config_.known_data_len);
+    }
+
+    /// Soft bits per interleaver block
+    int block_size() const { return interleaver_.block_size(); }
+
+    /**
+     * The Viterbi input of one interleaver block of soft bits (block_size() of them):
+     * deinterleaved, and with symbol repetition each FEC bit pair's repeats combined.
+     * decode_soft_bits() feeds the Viterbi decoder these, block after block.
+     */
+    std::vector<int8_t> block_viterbi_input(const std::vector<soft_bit_t>& block) {
+        auto dil = interleaver_.deinterleave(block);
+        return combine_repeats(dil);
+    }
+
+    /// Info bits decided from one block's Viterbi input without the Viterbi decoder (4800S,
+    /// uncoded): a hard decision per bit
+    static void hard_bits(const std::vector<int8_t>& in, std::vector<uint8_t>& out) {
+        for (auto sb : in) out.push_back(sb < 0 ? 1 : 0);
+    }
+
+    /// True when the mode carries no FEC (4800S): its bits are hard_bits(), not Viterbi output
+    bool uncoded() const { return config_.bps == 4800; }
+
+    /// Bits (LSB first) to bytes, as decode_with_probes() returns them
+    static std::vector<uint8_t> bits_to_bytes(const std::vector<uint8_t>& bits) { return bits_to_bytes_lsb(bits); }
     
     /**
      * Estimate SNR from probe symbols
@@ -826,25 +878,45 @@ private:
     std::vector<uint8_t> decode_soft_bits(std::vector<soft_bit_t>& soft_bits) {
         // Step 2: Deinterleave
         int block_size = interleaver_.block_size();
-        std::vector<soft_bit_t> deinterleaved;
         
         // Pad to block size if needed
         while (soft_bits.size() % block_size != 0) {
             soft_bits.push_back(0);
         }
         
+        // Step 2.5: Combine repeated FEC bit pairs (for modes with rep > 1), per block
+        std::vector<int8_t> soft_for_viterbi;
         for (size_t i = 0; i < soft_bits.size(); i += block_size) {
             std::vector<soft_bit_t> block(soft_bits.begin() + i,
                                           soft_bits.begin() + i + block_size);
-            auto dil = interleaver_.deinterleave(block);
-            deinterleaved.insert(deinterleaved.end(), dil.begin(), dil.end());
+            auto v = block_viterbi_input(block);
+            soft_for_viterbi.insert(soft_for_viterbi.end(), v.begin(), v.end());
         }
         
-        // Step 2.5: Combine repeated FEC bit pairs (for modes with rep > 1)
-        // Deinterleaver output for rep=2: G1a, G2a, G1b, G2b (repeating)
-        // Reference modem fetches: metric1=G1a+G1b, metric2=G2a+G2b
+        // Step 3: Viterbi decode (except 4800 bps uncoded)
+        std::vector<uint8_t> decoded_bits;
+        if (config_.bps == 4800) {
+            // No FEC - just hard decision
+            hard_bits(soft_for_viterbi, decoded_bits);
+        } else {
+            ViterbiDecoder viterbi;
+            viterbi.decode_block(soft_for_viterbi, decoded_bits, true);
+        }
+        
+        // Step 4: Convert bits to bytes (LSB first!)
+        return bits_to_bytes_lsb(decoded_bits);
+    }
+
+    /**
+     * Combine repeated FEC bit pairs of deinterleaved soft bits (for modes with rep > 1)
+     * Deinterleaver output for rep=2: G1a, G2a, G1b, G2b (repeating)
+     * Reference modem fetches: metric1=G1a+G1b, metric2=G2a+G2b
+     * An interleaver block holds whole info bits (2 x rep values each), so this gives the
+     * same block by block as over the whole stream.
+     */
+    std::vector<int8_t> combine_repeats(const std::vector<soft_bit_t>& deinterleaved) const {
         int rep = config_.symbol_repetition;
-        std::vector<soft_bit_t> combined;
+        std::vector<int8_t> combined;
         
         if (rep > 1 && config_.modulation == Modulation::BPSK) {
             // Each info bit produces 2 coded bits (rate 1/2)
@@ -874,29 +946,9 @@ private:
                     std::max(-127.0f, std::min(127.0f, metric2))));
             }
         } else {
-            combined = std::move(deinterleaved);
+            combined.assign(deinterleaved.begin(), deinterleaved.end());
         }
-        
-        // Step 3: Viterbi decode (except 4800 bps uncoded)
-        std::vector<uint8_t> decoded_bits;
-        if (config_.bps == 4800) {
-            // No FEC - just hard decision
-            for (auto sb : combined) {
-                decoded_bits.push_back(sb < 0 ? 1 : 0);
-            }
-        } else {
-            // Convert to int8_t for Viterbi
-            std::vector<int8_t> soft_for_viterbi;
-            for (auto sb : combined) {
-                soft_for_viterbi.push_back(static_cast<int8_t>(sb));
-            }
-            
-            ViterbiDecoder viterbi;
-            viterbi.decode_block(soft_for_viterbi, decoded_bits, true);
-        }
-        
-        // Step 4: Convert bits to bytes (LSB first!)
-        return bits_to_bytes_lsb(decoded_bits);
+        return combined;
     }
     
     /**

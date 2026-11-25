@@ -192,14 +192,11 @@ decoded twice: with a 30 s threshold m110a_rx took 21 s CPU on it, against 11.5 
 
 ## Streaming (ModemRX::push_samples)
 
-The block fields and the block gate are not applied in the streaming path. `push_samples`
-(api/modem_rx.cpp) calls `decode_internal`, a separate, older decode: no equalizer, no EOM
-cut, no signal end. On a clean 1200S message that `decode()` decodes exact, its mode
-detection pass reads "UNKNOWN" and it returns before decoding, at the base and on this
-branch alike (a scratch build of the base with a print in `decode_internal`). `get_result`
-keeps only successful results, so block fields filled there could not be observed. The
-streaming path has no callers in this repo. Making it decode is the streaming receiver's
-work; a patch that fills the fields there exists outside the tree, untested for that reason.
+The streaming receiver (`start`, `push_samples`, `take_blocks`, `finish`;
+docs/m110a-streaming-rx.md) reports each interleaver block with its `block_quality_db` and
+the mode's block threshold, and `quality_db` over the first 1440 data symbols with its
+threshold. `finish()` judges the whole message with the same code as `decode()` (`judge()`
+in api/modem_rx.cpp). m110_lan applies the gate block by block (docs/110d-appa-lan.md).
 
 ## Measured
 

@@ -212,15 +212,23 @@ uint8_t udp_tx_state(TxSt s) {  // Table A-XIV
     }
 }
 
-// One burst from the air, from preamble sync until its data is delivered or it is dropped.
+// One burst from the air, from preamble sync until its data is delivered and the burst is
+// over, or it is dropped. Its bytes arrive block by block as the streaming decoder decodes them
+// (DECODING, data growing); READY once no more will come; FAILED with none. The carrier stays
+// up until the burst is also over on the air (air_done): the data can be complete, at the EOM,
+// while the far transmitter is still sending its flush bits and tail.
 struct Reception {
     uint64_t id = 0;  // the scanner's burst number; 0 for none
     Mode mode = Mode::AUTO;
     uint32_t rate = 0, bf = 0;
     Clock::time_point sync_at;  // when the preamble was synchronised
     enum St { DECODING, READY, FAILED } st = DECODING;
+    bool air_done = false;         // the burst has ended and its decode is over
     bool data_started = false;
     std::vector<uint8_t> data;
+    bool cut = false;              // delivery ended at a block below the quality gate
+    bool last_sent = false;        // the TCP packet with LAST (or FIRST_AND_LAST) has gone
+    Clock::time_point first_sent;  // when the first data packet went
 };
 
 struct InSet {  // one interleaver set of an inbound UDP transfer
@@ -286,7 +294,8 @@ public:
     int deliver_idx = 0;
     Clock::time_point next_deliver;
     // UDP delivery: whole sets precomputed
-    std::vector<uint8_t> out_stream;
+    std::vector<uint8_t> out_stream;  // the data so far; framed (EOM, padding) once complete
+    bool out_framed = false;
     size_t out_set_bytes = 0, out_per = 0, out_sets_sent = 0;
     int out_n = 0, out_k = 0;
     uint16_t out_seq = 0;
@@ -409,6 +418,7 @@ public:
             std::vector<uint8_t> eom = appa::rs::frame_stream({}, out_set_bytes);
             done.insert(done.end(), eom.begin(), eom.end());
             out_stream = done;
+            out_framed = true;
             udp_send_set();
         }
         cur = Reception{};  // its decode result, when it comes, is dropped
@@ -433,14 +443,47 @@ public:
         deliver_tick();  // CARRIER DETECTED now if the receiver is idle, not on the next tick
         return true;
     }
-    // The decoder's verdict on burst id. A burst no longer held (aborted, or its DTE gone) is ignored.
+    // The reception of burst id, while it is held; null when it is not (aborted, its DTE gone)
+    Reception* held(uint64_t id) {
+        if (rx != RxSt::NO_CARRIER && cur.id == id) return &cur;
+        for (auto& p : rx_pending) if (p.id == id) return &p;
+        return nullptr;
+    }
+    // The decoder's verdict on burst id (a whole-burst decode). A burst no longer held is ignored.
     void rx_result(uint64_t id, bool ok, std::vector<uint8_t> data) {
-        Reception* r = nullptr;
-        if (rx != RxSt::NO_CARRIER && cur.id == id) r = &cur;
-        for (auto& p : rx_pending) if (p.id == id) r = &p;
+        Reception* r = held(id);
         if (!r) return;
         r->st = ok ? Reception::READY : Reception::FAILED;
         r->data = std::move(data);
+        r->air_done = true;  // decoded whole, after the burst ended
+        deliver_tick();
+    }
+    // One decoded interleaver block of burst id: its bytes, and whether it is the last
+    void rx_block(uint64_t id, const std::vector<uint8_t>& bytes, bool last) {
+        Reception* r = held(id);
+        if (!r || r->st != Reception::DECODING) return;
+        r->data.insert(r->data.end(), bytes.begin(), bytes.end());
+        if (last) r->st = r->data.empty() ? Reception::FAILED : Reception::READY;
+        deliver_tick();
+    }
+    // A block of burst id fell below the quality gate: what was received before it is all
+    // that is delivered (the delivery ends after it with LAST, A.5.1.2.6 step 6; NO CARRIER
+    // follows once the burst is over)
+    void rx_cut(uint64_t id) {
+        Reception* r = held(id);
+        if (!r || r->st != Reception::DECODING) return;
+        r->cut = true;
+        r->st = r->data.empty() ? Reception::FAILED : Reception::READY;
+        deliver_tick();
+    }
+    // The burst id is over on the air and its decode is done: whatever is not yet complete
+    // ends here, and NO CARRIER can follow the last packet
+    void rx_end(uint64_t id) {
+        Reception* r = held(id);
+        if (!r) return;
+        if (r->st == Reception::DECODING)
+            r->st = r->data.empty() && !r->data_started ? Reception::FAILED : Reception::READY;
+        r->air_done = true;
         deliver_tick();
     }
     void start_reception(Reception r) {
@@ -453,7 +496,8 @@ public:
             fec_nk(cur.rate, out_n, out_k);
             out_per = appa::rs::bytes_per_packet(cur.bf, out_k);
             out_set_bytes = appa::rs::user_bytes_per_set(out_per, out_k);
-            out_stream.clear();  // framed once the data is decoded
+            out_stream.clear();  // framed once the data is complete
+            out_framed = false;
             out_sets_sent = 0;
             out_seq = 0;
             out_tid = uint16_t(out_tid + 1);
@@ -470,6 +514,14 @@ public:
     }
     // Called from the timer thread, and on sync and decode results. Carrier stays up from preamble
     // sync through the decode ("processing data from the air", Table A-VI) and the delivery.
+    //
+    // The data goes one blocking factor at a time as the decoder delivers it: a chunk once its
+    // bytes are all decoded (and, before the last block, at least one byte after it is known
+    // to follow, so it is not the last), the last chunk with LAST once the decoder says no
+    // more will come. Paced at the air rate: chunk i (i >= 1) no sooner than i - 1 blocking
+    // factors after the first went (--rx-fast: no pacing). A stream fed in real time delivers
+    // each chunk as it decodes; a whole-burst decode, or input faster than the air, delivers
+    // the first two at once and then one per blocking factor.
     void deliver_tick() {
         if (rx == RxSt::NO_CARRIER) {
             if (rx_pending.empty() || !dte()) return;
@@ -477,23 +529,24 @@ public:
             rx_pending.pop_front();
             start_reception(std::move(r));
         }
-        if (cur.st == Reception::DECODING) return;
-        if (cur.st == Reception::FAILED) { end_reception(); return; }  // no data packets
-        if (!cur.data_started) {
-            // delivery is paced from here as it was from the whole-burst decode: the first chunk
-            // one blocking factor's air time after the data is in, then one per blocking factor
-            // (--rx-fast: one per timer tick)
-            cur.data_started = true;
-            if (udp_have_dte) out_stream = appa::rs::frame_stream(cur.data, out_set_bytes);
-            double block_s = double(cur.bf) / double(cur.rate);
-            next_deliver = Clock::now() + std::chrono::microseconds(cfg.rx_realtime ? long(block_s * 1e6) : 0);
-            logf("rx: %s %u bps, %zu bytes", mode_name(cur.mode).c_str(), cur.rate, cur.data.size());
+        if (cur.st == Reception::FAILED || (cur.st == Reception::READY && cur.data.empty() && !cur.data_started)) {
+            if (cur.air_done) end_reception();  // no data packets
             return;
         }
-        if (Clock::now() < next_deliver) return;
-        rx = RxSt::RECEIVING;  // the receive interleaver has filled
-        double block_s = double(cur.bf) / double(cur.rate);
-        bool done = false;
+        const bool complete = cur.st == Reception::READY;
+        if (!complete && cur.data.empty()) return;
+        if (cur.last_sent || (udp_have_dte && !tcp_established && out_framed &&
+                              out_sets_sent * out_set_bytes >= out_stream.size())) {
+            if (cur.air_done) end_reception();  // all delivered: NO CARRIER once the burst is over
+            return;
+        }
+        if (!cur.data_started) {
+            cur.data_started = true;
+            logf("rx: %s %u bps, first data", mode_name(cur.mode).c_str(), cur.rate);
+        }
+        if (cfg.rx_realtime && deliver_idx > 0 && Clock::now() < next_deliver) return;
+        const double block_s = double(cur.bf) / double(cur.rate);
+        bool sent = false, done = false;
         if (tcp_established) {
             // One packet per blocking factor (A.5.1.1.8: "data chunks equal to this value", in
             // bits), and packets carry whole bytes (A.5.1.2.8.2: "8-bit byte alignment"). The
@@ -501,29 +554,66 @@ public:
             // (75S: 45 bits, 150S: 90, 300S: 180). Chunk i carries the bytes that end inside it:
             // bytes floor(bf*i/8) to floor(bf*(i+1)/8). So the delivery rate is the air rate,
             // and a whole-byte blocking factor gives bf/8 bytes per packet, as before.
-            size_t total = cur.data.size();
+            const size_t total = cur.data.size();
             auto upto = [&](size_t i) { return std::min(total, size_t(uint64_t(cur.bf) * i / 8)); };
-            size_t npk = std::max<size_t>(1, (total * 8 + cur.bf - 1) / cur.bf);
-            size_t end = size_t(deliver_idx) + 1 >= npk ? total : upto(size_t(deliver_idx) + 1);
-            deliver_off = upto(size_t(deliver_idx));
+            const size_t i = size_t(deliver_idx);
+            size_t end;
+            bool last;
+            if (complete) {
+                const size_t npk = std::max<size_t>(1, (total * 8 + cur.bf - 1) / cur.bf);
+                if (i >= npk) {
+                    // every byte went in packets that were not marked last (the delivery was
+                    // cut at a block below the quality gate): end it with an empty LAST
+                    tcp_send(tcp::data_transfer(i == 0 ? tcp::FIRST_AND_LAST : tcp::LAST, next_pid(), nullptr, 0));
+                    cur.last_sent = true;
+                    if (cur.air_done) end_reception();
+                    return;
+                }
+                end = i + 1 >= npk ? total : upto(i + 1);
+                last = i + 1 >= npk;
+            } else {
+                // a chunk not yet whole waits; a whole one before the last block is not the last
+                const size_t want = size_t(uint64_t(cur.bf) * (i + 1) / 8);
+                if (total < want) return;
+                end = want;
+                last = false;
+            }
+            deliver_off = upto(i);
             size_t len = end - deliver_off;
-            uint8_t order = npk == 1 ? tcp::FIRST_AND_LAST
-                          : deliver_idx == 0 ? tcp::FIRST_ONLY
-                          : size_t(deliver_idx) == npk - 1 ? tcp::LAST : tcp::CONTINUATION;
+            uint8_t order = i == 0 ? (last ? tcp::FIRST_AND_LAST : tcp::FIRST_ONLY)
+                                   : (last ? tcp::LAST : tcp::CONTINUATION);
             tcp_send(tcp::data_transfer(order, next_pid(), cur.data.data() + deliver_off, len));
             deliver_off += len;
             deliver_idx++;
-            done = size_t(deliver_idx) >= npk;
+            cur.last_sent = last;
+            sent = true;
+            done = last;
         } else if (udp_have_dte) {
-            udp_send_set();
-            deliver_idx++;
-            done = out_sets_sent * out_set_bytes >= out_stream.size();
-            block_s = double(out_set_bytes * 8) / double(cur.rate);
+            if (complete && !out_framed) {
+                out_stream = appa::rs::frame_stream(cur.data, out_set_bytes);
+                out_framed = true;
+            } else if (!out_framed) {
+                out_stream = cur.data;
+            }
+            const size_t s0 = out_sets_sent;
+            if (out_framed || (s0 + 1) * out_set_bytes <= out_stream.size()) {
+                udp_send_set();
+                sent = out_sets_sent > s0;
+                if (sent) deliver_idx++;
+            }
+            done = out_framed && out_sets_sent * out_set_bytes >= out_stream.size();
         } else {
-            done = true;
+            done = complete;
+            if (done) cur.last_sent = true;
         }
-        next_deliver = Clock::now() + std::chrono::microseconds(cfg.rx_realtime ? long(block_s * 1e6) : 0);
-        if (done) end_reception();
+        if (sent) {
+            rx = RxSt::RECEIVING;  // the receive interleaver has filled
+            if (deliver_idx == 1) cur.first_sent = Clock::now();
+            double per = udp_have_dte && !tcp_established ? double(out_set_bytes * 8) / double(cur.rate) : block_s;
+            // chunk deliver_idx no sooner than deliver_idx - 1 chunks after the first
+            next_deliver = cur.first_sent + std::chrono::microseconds(long(per * 1e6 * double(deliver_idx - 1)));
+        }
+        if (done && cur.air_done) end_reception();
     }
 
     // ======================= UDP =======================
@@ -535,7 +625,7 @@ public:
     void udp_send_set() {
         size_t s = out_sets_sent;
         if (s * out_set_bytes >= out_stream.size()) return;
-        bool first = s == 0, last = (s + 1) * out_set_bytes >= out_stream.size();
+        bool first = s == 0, last = out_framed && (s + 1) * out_set_bytes >= out_stream.size();
         auto pk = appa::rs::encode_set(&out_stream[s * out_set_bytes], out_per, out_n, out_k);
         for (int j = 0; j < out_n; j++) {
             udp::DataHeader h;
@@ -1230,16 +1320,23 @@ struct AudioQueue {
 };
 AudioQueue g_audio;
 
+// A burst for the decoder, its audio from 0.25 s before the preamble found. A correlator burst
+// is handed over as the scanner reads it and decoded as it arrives (ModemRX's streaming
+// receiver); a 75 bps burst from the 75 bps finder is handed over whole when it ends and
+// decoded whole, as the mode its preamble read.
 struct DecodeJob {
     uint64_t id = 0;
     bool forced = false;     // decode as `mode` (a 75 bps burst: D1/D2 read over the whole preamble)
     Mode mode = Mode::AUTO;  // as read from the preamble
-    double t0 = 0, t1 = 0;   // seconds of input
-    std::vector<float> s;
+    double t0 = 0, t1 = 0;   // seconds of input (t1 once ended)
+    std::deque<std::vector<float>> chunks;  // audio not yet taken by the decoder
+    bool ended = false;      // the scanner has closed the burst
+    long a0 = 0;             // input sample of the first audio handed over
+    long eom_end_a = -1;     // the decoder's EOM: the burst may close at this input sample
 };
 std::mutex g_dec_mu;
 std::condition_variable g_dec_cv;
-std::deque<DecodeJob> g_dec_q;
+std::deque<std::shared_ptr<DecodeJob>> g_dec_q;
 
 // Preamble D1, D2 to the mode: MIL-STD-188-110 Table XI, and the Harris application-specific
 // codes this repo's receiver decodes (5,7 600H and 5,6 1200H; Table XI reserves them)
@@ -1257,46 +1354,153 @@ bool mode_from_d1d2(int d1, int d2, Mode& m) {
     return true;
 }
 
+// A whole-burst decode (a 75 bps finder burst)
+void rx_decode_whole(DecodeJob& j) {
+    std::vector<float> x;
+    for (auto& c : j.chunks) x.insert(x.end(), c.begin(), c.end());
+    RxConfig rc;
+    rc.sample_rate = 48000;
+    rc.mode = j.forced ? j.mode : Mode::AUTO;
+    rc.equalizer = Equalizer::DFE;
+    auto t = Clock::now();
+    DecodeResult r = decode(x, rc);
+    double took = std::chrono::duration<double>(Clock::now() - t).count();
+    double len = double(x.size()) / kFs;
+    // below the gate: bytes decoded, quality scored under the mode's threshold
+    bool below = !r.success && !r.data.empty() && r.quality_threshold_db > 0.0f &&
+                 r.quality_db < r.quality_threshold_db;
+    bool ok = r.success || (below && cfg.rx_low_quality);
+    if (r.success) {
+        logf("rx: burst %llu (%.2f-%.2f s of input) decoded in %.2f s: %s, %zu bytes, quality %.1f dB",
+             (unsigned long long)j.id, j.t0, j.t1, took, mode_name(r.mode).c_str(), r.data.size(), r.quality_db);
+    } else if (ok) {
+        // Appendix A has no field to mark received data as suspect (Tables A-II, A-VI, A-XI
+        // to A-XV): the bytes go out as any others, and only this line says what they are
+        logf("rx: burst %llu (%.2f-%.2f s of input) BELOW THE QUALITY GATE, delivered (--rx-low-quality): "
+             "%s, %zu bytes, quality %.1f dB, threshold %.1f dB, decode %.2f s",
+             (unsigned long long)j.id, j.t0, j.t1, mode_name(r.mode).c_str(), r.data.size(),
+             r.quality_db, r.quality_threshold_db, took);
+    } else {
+        logf("rx: burst of %.2f s not decoded (%s), decode %.2f s", len,
+             r.error ? r.error->message.c_str() : "quality below threshold", took);
+    }
+    if (ok && r.mode != j.mode)
+        logf("rx: burst %llu decoded as %s, its preamble read %s", (unsigned long long)j.id,
+             mode_name(r.mode).c_str(), mode_name(j.mode).c_str());
+    std::lock_guard<std::mutex> lk(M.mu);
+    M.rx_result(j.id, ok, ok ? std::move(r.data) : std::vector<uint8_t>());
+}
+
+// A streaming decode: the burst's audio pushed as the scanner hands it over, each interleaver
+// block handed to the modem as it decodes. A block below the quality gate ends the delivery
+// (with --rx-low-quality it is delivered, and logged as below the gate): Appendix A has no
+// field to mark received data as suspect (Tables A-II, A-VI, A-XI to A-XV), so the DTE sees
+// the message end there (docs/110d-appa-lan.md).
+void rx_decode_stream(DecodeJob& j) {
+    RxConfig rc;
+    rc.sample_rate = 48000;
+    rc.mode = Mode::AUTO;
+    rc.equalizer = Equalizer::DFE;
+    ModemRX rx(rc);
+    rx.start();
+    double busy = 0;
+    size_t blocks = 0, delivered = 0;
+    bool cut = false, last_seen = false;
+    Mode synced = Mode::AUTO;
+    auto handle = [&](std::vector<BlockRecord> recs) {
+        for (auto& b : recs) {
+            blocks++;
+            if (cut || last_seen) continue;
+            if (!b.passes) {
+                if (b.below_quality && cfg.rx_low_quality) {
+                    logf("rx: burst %llu block %zu BELOW THE QUALITY GATE, delivered (--rx-low-quality): %zu bytes, "
+                         "block quality %.1f dB (threshold %.2f dB), quality %.1f dB (threshold %.1f dB)",
+                         (unsigned long long)j.id, b.index, b.data.size(), b.block_quality_db,
+                         b.block_quality_threshold_db, b.quality_db, b.quality_threshold_db);
+                } else {
+                    cut = true;
+                    logf("rx: burst %llu block %zu below the quality gate (block quality %.1f dB, threshold %.2f dB; "
+                         "quality %.1f dB, threshold %.1f dB): delivery ends after %zu bytes",
+                         (unsigned long long)j.id, b.index, b.block_quality_db, b.block_quality_threshold_db,
+                         b.quality_db, b.quality_threshold_db, delivered);
+                    std::lock_guard<std::mutex> lk(M.mu);
+                    M.rx_cut(j.id);
+                    continue;
+                }
+            }
+            delivered += b.data.size();
+            if (b.last) last_seen = true;
+            std::lock_guard<std::mutex> lk(M.mu);
+            M.rx_block(j.id, b.data, b.last);
+        }
+    };
+    long fed = 0;
+    bool eom_told = false;
+    for (;;) {
+        std::deque<std::vector<float>> got;
+        bool ended;
+        {
+            std::unique_lock<std::mutex> lk(g_dec_mu);
+            g_dec_cv.wait(lk, [&] { return !j.chunks.empty() || j.ended; });
+            got.swap(j.chunks);
+            ended = j.ended;
+        }
+        auto t = Clock::now();
+        for (auto& c : got) {
+            rx.push_samples(c);
+            fed += long(c.size());
+            StreamSync sy;
+            if (rx.take_sync(sy)) synced = sy.mode;
+            handle(rx.take_blocks());
+            if (!eom_told && (rx.state() == RxState::COMPLETE || rx.state() == RxState::DECODE_ERROR) &&
+                rx.get_result().eom_sequence) {
+                // The message has ended at its EOM: the burst may close --rx-gap after the
+                // audio that decided it, as a level end comes --rx-gap after the signal. A
+                // level end needs the noise before the burst, which a modem that has just
+                // transmitted did not hear.
+                eom_told = true;
+                std::lock_guard<std::mutex> lk(g_dec_mu);
+                j.eom_end_a = j.a0 + fed + long(cfg.rx_gap * kFs);
+            }
+        }
+        busy += std::chrono::duration<double>(Clock::now() - t).count();
+        if (ended) break;
+    }
+    auto t = Clock::now();
+    DecodeResult r = rx.finish();
+    handle(rx.take_blocks());
+    busy += std::chrono::duration<double>(Clock::now() - t).count();
+    const double len = j.t1 - j.t0;
+    if (r.success) {
+        logf("rx: burst %llu (%.2f-%.2f s of input) decoded in %.2f s: %s, %zu bytes, quality %.1f dB; "
+             "streamed, %zu blocks, %zu bytes delivered%s",
+             (unsigned long long)j.id, j.t0, j.t1, busy, mode_name(r.mode).c_str(), r.data.size(), r.quality_db,
+             blocks, delivered, cut ? " (cut at a block below the quality gate)" : "");
+    } else {
+        logf("rx: burst of %.2f s not decoded (%s), decode %.2f s; streamed, %zu blocks, %zu bytes delivered", len,
+             r.error ? r.error->message.c_str() : "quality below threshold", busy, blocks, delivered);
+    }
+    const Mode got_mode = synced != Mode::AUTO ? synced : r.mode;
+    if (delivered > 0 && got_mode != j.mode)
+        logf("rx: burst %llu decoded as %s, its preamble read %s", (unsigned long long)j.id,
+             mode_name(got_mode).c_str(), mode_name(j.mode).c_str());
+    std::lock_guard<std::mutex> lk(M.mu);
+    M.rx_end(j.id);
+}
+
 void rx_decode() {
     for (;;) {
-        DecodeJob j;
+        std::shared_ptr<DecodeJob> j;
         {
             std::unique_lock<std::mutex> lk(g_dec_mu);
             g_dec_cv.wait(lk, [] { return !g_dec_q.empty(); });
-            j = std::move(g_dec_q.front());
-            g_dec_q.pop_front();
+            j = g_dec_q.front();
+            if (j->forced) g_dec_cv.wait(lk, [&] { return j->ended; });
         }
-        RxConfig rc;
-        rc.sample_rate = 48000;
-        rc.mode = j.forced ? j.mode : Mode::AUTO;
-        rc.equalizer = Equalizer::DFE;
-        auto t = Clock::now();
-        DecodeResult r = decode(j.s, rc);
-        double took = std::chrono::duration<double>(Clock::now() - t).count();
-        double len = double(j.s.size()) / kFs;
-        // below the gate: bytes decoded, quality scored under the mode's threshold
-        bool below = !r.success && !r.data.empty() && r.quality_threshold_db > 0.0f &&
-                     r.quality_db < r.quality_threshold_db;
-        bool ok = r.success || (below && cfg.rx_low_quality);
-        if (r.success) {
-            logf("rx: burst %llu (%.2f-%.2f s of input) decoded in %.2f s: %s, %zu bytes, quality %.1f dB",
-                 (unsigned long long)j.id, j.t0, j.t1, took, mode_name(r.mode).c_str(), r.data.size(), r.quality_db);
-        } else if (ok) {
-            // Appendix A has no field to mark received data as suspect (Tables A-II, A-VI, A-XI
-            // to A-XV): the bytes go out as any others, and only this line says what they are
-            logf("rx: burst %llu (%.2f-%.2f s of input) BELOW THE QUALITY GATE, delivered (--rx-low-quality): "
-                 "%s, %zu bytes, quality %.1f dB, threshold %.1f dB, decode %.2f s",
-                 (unsigned long long)j.id, j.t0, j.t1, mode_name(r.mode).c_str(), r.data.size(),
-                 r.quality_db, r.quality_threshold_db, took);
-        } else {
-            logf("rx: burst of %.2f s not decoded (%s), decode %.2f s", len,
-                 r.error ? r.error->message.c_str() : "quality below threshold", took);
-        }
-        if (ok && r.mode != j.mode)
-            logf("rx: burst %llu decoded as %s, its preamble read %s", (unsigned long long)j.id,
-                 mode_name(r.mode).c_str(), mode_name(j.mode).c_str());
-        std::lock_guard<std::mutex> lk(M.mu);
-        M.rx_result(j.id, ok, ok ? std::move(r.data) : std::vector<uint8_t>());
+        if (j->forced) rx_decode_whole(*j);
+        else rx_decode_stream(*j);
+        std::lock_guard<std::mutex> lk(g_dec_mu);
+        g_dec_q.pop_front();
     }
 }
 
@@ -1396,9 +1600,29 @@ private:
             scan_t_++;
         }
         if (st_ == St::BURST && t75_) track75();
+        if (st_ == St::BURST && job_) hand_over(audio_end_);
+        if (st_ == St::BURST && job_) {
+            long eom_a;
+            {
+                std::lock_guard<std::mutex> lk(g_dec_mu);
+                eom_a = job_->eom_end_a;
+            }
+            if (eom_a >= 0 && eom_a <= audio_end_) close_burst(eom_a, "EOM");
+        }
         if (st_ != St::BURST) m75_detect(eof);
         if (eof && st_ == St::BURST) close_burst(audio_end_, "end of input");
         trim();
+    }
+
+    // Give the streaming decoder the burst's audio up to audio sample `upto`
+    void hand_over(long upto) {
+        if (!job_ || upto <= pushed_a_) return;
+        std::vector<float> c(size_t(upto - pushed_a_));
+        for (long n = pushed_a_; n < upto; n++) c[size_t(n - pushed_a_)] = at(n);
+        pushed_a_ = upto;
+        std::lock_guard<std::mutex> lk(g_dec_mu);
+        job_->chunks.push_back(std::move(c));
+        g_dec_cv.notify_all();
     }
 
     // The 75 bps acquisition over the last kM75Window of input, from the end of the last
@@ -1634,6 +1858,20 @@ private:
             std::lock_guard<std::mutex> lk(M.mu);
             deliver_ = M.rx_sync(r);
         }
+        if (deliver_) {
+            // decoded as it arrives, from 0.25 s before the preamble found
+            job_ = std::make_shared<DecodeJob>();
+            job_->id = id_;
+            job_->mode = mode;
+            job_->t0 = sec(a0_);
+            job_->a0 = a0_;
+            pushed_a_ = a0_;
+            {
+                std::lock_guard<std::mutex> lk(g_dec_mu);
+                g_dec_q.push_back(job_);
+            }
+            hand_over(audio_end_);
+        }
         logf("rx: preamble sync at %.2f s of input: %s, correlation %.2f; burst %llu%s; level %.1f dB over %s",
              sec(hit_a_), mode_name(mode).c_str(), hit_m_, (unsigned long long)id_, deliver_ ? "" : " (dropped)",
              pn > 0 ? 10.0 * std::log10(ps / pn) : 0.0, pn > 0 ? "the noise before it" : "nothing measured before it");
@@ -1654,15 +1892,26 @@ private:
         end_a = std::min(end_a, audio_end_);
         logf("rx: burst %llu ends at %.2f s of input (%s), %.2f s long", (unsigned long long)id_, sec(end_a), why,
              sec(end_a - a0_));
-        if (deliver_ && end_a > a0_) {
-            DecodeJob j;
-            j.id = id_;
-            j.mode = mode_;
-            j.forced = t75_ != nullptr;  // found by the 75 bps finder; a correlator burst decodes AUTO
-            j.t0 = sec(a0_);
-            j.t1 = sec(end_a);
-            j.s.resize(size_t(end_a - a0_));
-            for (long n = a0_; n < end_a; n++) j.s[size_t(n - a0_)] = at(n);
+        if (job_) {
+            // the streaming decoder has the audio up to here (or past it: what it was given
+            // as the scanner read it stays given; the decode ends at the EOM in any case)
+            hand_over(end_a);
+            std::lock_guard<std::mutex> lk(g_dec_mu);
+            job_->t1 = sec(std::max(end_a, pushed_a_));
+            job_->ended = true;
+            g_dec_cv.notify_all();
+            job_.reset();
+        } else if (deliver_ && end_a > a0_) {
+            auto j = std::make_shared<DecodeJob>();
+            j->id = id_;
+            j->mode = mode_;
+            j->forced = t75_ != nullptr;  // found by the 75 bps finder
+            j->t0 = sec(a0_);
+            j->t1 = sec(end_a);
+            std::vector<float> x(size_t(end_a - a0_));
+            for (long n = a0_; n < end_a; n++) x[size_t(n - a0_)] = at(n);
+            j->chunks.push_back(std::move(x));
+            j->ended = true;
             std::lock_guard<std::mutex> lk(g_dec_mu);
             g_dec_q.push_back(std::move(j));
             g_dec_cv.notify_all();
@@ -1728,6 +1977,10 @@ private:
     long level_from_ = 0;
     std::deque<double> gap_;
     double gap_sum_ = 0;
+
+    // the correlator burst's streaming decode
+    std::shared_ptr<DecodeJob> job_;
+    long pushed_a_ = 0;  // audio handed over to it, up to here
 
     // 75 bps
     std::unique_ptr<m110a::m75::SlidingAcq> sacq_;  // only when configured for 75 bps
