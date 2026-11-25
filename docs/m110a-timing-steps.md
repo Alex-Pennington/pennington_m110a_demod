@@ -561,10 +561,41 @@ is real:
 | 1200L, Watterson poor, seed 2, block 1 (`success=0`) | 2 of 720 | 0.860 / 0.824, NOT REAL | 0.842 / 0.835, NOT VERIFIABLE |
 | Held-out 2400S, 6 dB, message 7, block 2 | most | 0.767 / 0.671, NOT REAL | 0.752 / 0.698, NOT VERIFIABLE |
 
-The first cannot be caught by the gap without the right bytes above: before the fix the 1200L right
-bytes gave 0.037 and these wrong bytes 0.036; after it, 0.013 to 0.021 against 0.007. Its far-off
-test is p 1.5e−6 against `ALPHA` 1e−6 both before and after. The second sits at a gap of 0.054
-against an allowance of 0.112, and its one-byte power is 0.02.
+**Why no gap rule separates them.** A gap rule calls a block NOT REAL when its gap passes a
+threshold. For the first block, every threshold that catches it also catches the N14 right bytes
+above, on either statistic:
+
+| Statistic | N14 1200L right bytes, gap | This 1200L block, 2 wrong bytes, gap |
+|---|---|---|
+| Before (probes phased from their own frame) | 0.037 (block 1), 0.042 (tail) | 0.036 |
+| After (probes phased from the frames either side) | 0.013 (block 1), 0.021 (tail) | 0.007 |
+
+Before the fix the gap was mostly the multipath bias of the probes, which right and wrong bytes
+share. With the bias removed, two wrong bytes in 720 move the data by less than right bytes vary
+on this channel. The far-off test does not settle it either: p 1.5e−6 against `ALPHA` 1e−6, both
+before and after.
+
+The second block is not the multipath case. It is AWGN at 6 dB on a 2400S block of 448 probes and
+896 data symbols. There, right bytes leave a gap of up to 0.112 with odds of 1e−6 (the allowance
+over the window frames), and the block's gap is now 0.054. On the block line the fix moved data
+from 0.671 to 0.698 and probes from 0.767 to 0.752: the before figure took 0.042 of its gap from
+the phase references alone, and with that gone the gap is inside what right bytes leave at this
+SNR. The block's one-byte power is 0.02, so even one wrong byte would not show there.
+
+Both blocks are accepted as NOT VERIFIABLE (coordinator ruling, 2026-11-25). Neither is real, so no
+wrong block passes, and gale-rx does not count NOT VERIFIABLE as a pass.
+
+Output lines of a block whose verdict does not change (the 150S message above, block 1, right
+bytes): the figures move and the form is the same.
+
+```
+before:
+  block 1: probe agreement 0.912, data agreement 0.928, random-bytes control 0.531 (chance 0.500): the bytes fit the signal
+  block 1 window check: far off (over 15 noise powers) 0/680 probes, 0/680 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
+after:
+  block 1: probe agreement 0.874, data agreement 0.935, random-bytes control 0.532 (chance 0.500): the bytes fit the signal
+  block 1 window check: far off (over 15 noise powers) 0/680 probes, 0/680 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
+```
 
 ## Left open
 
