@@ -53,9 +53,10 @@ static std::vector<uint8_t> payload(size_t n, unsigned seed) {
 }
 
 /// ModemTX's burst with 0.5 s of silence before it, its first `faded` preamble frames scaled by
-/// `gain`, then white noise at snr_db in 3 kHz (signal power measured over the unfaded part).
+/// `gain` (ramp: rising linearly from `gain` at the first to full level after the last), then
+/// white noise at snr_db in 3 kHz (signal power measured over the unfaded part).
 static Samples burst(Mode mode, const std::vector<uint8_t>& data, int faded, float gain, float snr_db,
-                     unsigned seed) {
+                     unsigned seed, bool ramp = false) {
     TxConfig t;
     t.mode = mode;
     t.sample_rate = FS;
@@ -71,7 +72,10 @@ static Samples burst(Mode mode, const std::vector<uint8_t>& data, int faded, flo
     long np = 0;
     for (long n = s0 + faded * FRAME; n < static_cast<long>(x.size()); n++, np++) p += static_cast<double>(x[n]) * x[n];
     p /= std::max(1L, np);
-    for (long n = s0; n < s0 + faded * FRAME && n < static_cast<long>(x.size()); n++) x[static_cast<size_t>(n)] *= gain;
+    for (long n = s0; n < s0 + faded * FRAME && n < static_cast<long>(x.size()); n++) {
+        const float g = ramp ? gain + (1.0f - gain) * static_cast<float>(n - s0) / static_cast<float>(faded * FRAME) : gain;
+        x[static_cast<size_t>(n)] *= g;
+    }
     Samples y(static_cast<size_t>(0.5 * FS), 0.0f);
     y.insert(y.end(), x.begin(), x.end());
     y.insert(y.end(), static_cast<size_t>(0.5 * FS), 0.0f);
@@ -89,9 +93,10 @@ static const char* verdict(const DecodeResult& r, const std::vector<uint8_t>& p)
            std::equal(p.begin(), p.end(), r.data.begin()) ? "exact" : "WRONG");
 }
 
-static void check(const char* name, Mode mode, int faded, float gain, float snr_db, unsigned seed) {
+static void check(const char* name, Mode mode, int faded, float gain, float snr_db, unsigned seed,
+                  bool ramp = false) {
     const auto p = payload(120, seed);
-    const DecodeResult r = quiet_decode(burst(mode, p, faded, gain, snr_db, seed), Mode::AUTO);
+    const DecodeResult r = quiet_decode(burst(mode, p, faded, gain, snr_db, seed, ramp), Mode::AUTO);
     const bool ok = r.success && r.data.size() >= p.size() && std::equal(p.begin(), p.end(), r.data.begin());
     std::printf("%-44s success=%d bytes=%zu quality=%.1f dB %s\n", name, r.success ? 1 : 0, r.data.size(),
                 r.quality_db, ok ? "PASS" : "FAIL");
@@ -101,11 +106,12 @@ static void check(const char* name, Mode mode, int faded, float gain, float snr_
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--sweep") == 0) {
         const Mode mode = std::string(argv[2]) == "600L" ? Mode::M600_LONG : Mode::M300_LONG;
+        const bool ramp = argc > 4 && std::strcmp(argv[4], "ramp") == 0;
         for (int faded : {argc > 3 ? std::atoi(argv[3]) : 4})
-            for (float gain : {1.0f, 0.5f, 0.35f, 0.25f, 0.18f})
-                for (float snr : {0.0f, 3.0f, 6.0f}) {
+            for (float gain : {1.0f, 0.5f, 0.35f, 0.25f, 0.18f, 0.1f})
+                for (float snr : {-2.0f, 0.0f, 3.0f}) {
                     const auto p = payload(120, 1);
-                    const DecodeResult r = quiet_decode(burst(mode, p, faded, gain, snr, 1), Mode::AUTO);
+                    const DecodeResult r = quiet_decode(burst(mode, p, faded, gain, snr, 1, ramp), Mode::AUTO);
                     std::printf("faded=%2d gain=%.2f snr=%4.1f: success=%d bytes=%zu %s err=%s\n", faded, gain, snr,
                                 r.success ? 1 : 0, r.data.size(), verdict(r, p), (r.error ? r.error->message.c_str() : ""));
                 }
