@@ -279,10 +279,12 @@ if(M110A_HAVE_SCIPY)
   set_tests_properties(rx_end_fade PROPERTIES LABELS "iq;tx" TIMEOUT 1800)
 
   # the re-encode check: wrong bytes with a fade inside their block are not real, right bytes
-  # are, and its block lines keep the form gale-rx parses (test/rx/reencode_window.py)
+  # are, right bytes under Watterson multipath and through a resample chain are never NOT REAL,
+  # and its block lines keep the form gale-rx parses (test/rx/reencode_window.py)
   add_test(NAME rx_reencode_window
            COMMAND ${Python3_EXECUTABLE} -I -B ${CMAKE_SOURCE_DIR}/test/rx/reencode_window.py
                    --tool $<TARGET_FILE:modem_tx_wav> --rx $<TARGET_FILE:m110a_rx>
+                   --chan $<TARGET_FILE:hfchansim>
                    --work ${CMAKE_BINARY_DIR}/rx_work/rx_reencode_window)
   set_tests_properties(rx_reencode_window PROPERTIES LABELS "iq;tx" TIMEOUT 3600)
 

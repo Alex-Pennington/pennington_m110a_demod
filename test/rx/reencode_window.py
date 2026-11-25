@@ -25,6 +25,13 @@ let wrong bytes pass, and the existing output lines keep their form.
   whole2400  2400S, 540 B (exactly 3 blocks; the tail block is EOM, flush and padding only) at 8, 14
            and 20 dB: the sent bytes never NOT REAL in any of the 4 blocks (at 8 dB NOT VERIFIABLE, since
            one wrong byte would not show there), real at 20 dB, where one wrong bit is NOT REAL.
+  net      Watterson poor (hfchansim), three messages per recording with gaps, cut to one message and
+           resampled 48 -> 8 kHz as gale-rx does: 1200L 800 B at 6 dB seed 3, and 150S 100 B at 18 dB seed 2,
+           where the check read the right bytes NOT REAL (data below the probes, the probes phased from their
+           own frame). The sent bytes never NOT REAL; one flipped bit never real in its block.
+  sixa     1200S, 38 B, eom=1 (a stand-in for the keyed 6a dummy-load message the review read NOT REAL) at 4
+           and 6 dB, read at 8 kHz and after 8 -> 48 -> 8 kHz: the sent bytes never NOT REAL on either copy,
+           one flipped bit never real.
   sweep    (not in the default; --cases sweep) random-length eom=1 messages in the ten probe modes at
            each --sweep-snr: the receiver's bytes, the sent bytes and one flipped bit, counted as real /
            NOT VERIFIABLE / NOT REAL. Passes when no exact block is NOT REAL, no wrong block is real,
@@ -329,6 +336,101 @@ def case_fade(a, data, seed):
     return ok
 
 
+NET_SETS = [('600S', 200), ('1200S', 300), ('2400S', 400), ('300S', 100), ('600L', 400), ('1200L', 800),
+            ('300L', 300), ('2400L', 1000), ('150L', 150), ('150S', 100)]
+# Recordings where the check read right bytes NOT REAL (data below the probes): (preset, SNR dB, seed, the
+# message's index in the recording). Three messages with gaps, Watterson (hfchansim), 48 kHz; the
+# message is cut out and resampled to 8 kHz as gale-rx does.
+NET = {'N14': ('poor', 6, 3, 2), 'N22': ('poor', 18, 2, 1)}
+
+
+def net_recording(a, preset, snr, seed):
+    """Three messages with gaps through hfchansim, as the review built its net set. Returns the 48 kHz
+    audio and [(start s, mode, payload, length s)]."""
+    rng = random.Random(f'{preset}/{snr}/{seed}')
+    y, msgs, t = [np.zeros(3 * SR)], [], 3.0
+    for i, (mode, nb) in enumerate(rng.sample(NET_SETS, 3)):
+        data = bytes(rng.randrange(256) for _ in range(nb))
+        b, w = os.path.join(a.work, f'net{i}.bin'), os.path.join(a.work, f'net{i}.wav')
+        with open(b, 'wb') as f:
+            f.write(data)
+        subprocess.run([a.tool, '--mode', mode, '--lead', '0', '--tail', '0', b, w], check=True, capture_output=True)
+        _, x = wavfile.read(w)
+        os.remove(b)
+        os.remove(w)
+        gap = rng.uniform(3.0, 6.0)
+        msgs.append((t, mode, data, len(x) / SR))
+        y += [x.astype(float), np.zeros(int(gap * SR))]
+        t += len(x) / SR + gap
+    y.append(np.zeros(8 * SR))
+    pin, pout = os.path.join(a.work, 'net.in.pcm'), os.path.join(a.work, 'net.out.pcm')
+    np.clip(np.round(np.concatenate(y)), -32768, 32767).astype('<i2').tofile(pin)
+    subprocess.run([a.chan, pin, pout, '--preset', preset, '--snr', str(snr), '--seed', str(seed)], check=True,
+                   capture_output=True)
+    z = np.fromfile(pout, '<i2').astype(float)
+    os.remove(pin)
+    os.remove(pout)
+    return z, msgs
+
+
+def case_net(a):
+    """Watterson poor, the two recordings where right bytes read NOT REAL (data below the probes; the probes
+    were phased from their own frame, and under multipath that decides them better than the data). The
+    sent bytes are never NOT REAL; one flipped bit in a block is never real there."""
+    if not a.chan:
+        print('net: no --chan (hfchansim) -> FAIL', flush=True)
+        return False
+    ok = True
+    for tag, (preset, snr, seed, idx) in NET.items():
+        z, msgs = net_recording(a, preset, snr, seed)
+        t0, mode, data, dur = msgs[idx]
+        y8 = np.clip(np.round(resample_poly(z, 1, 6)), -32768, 32767)
+        wav = os.path.join(a.work, f'net_{tag}.wav')
+        wavfile.write(wav, 8000, y8[int((t0 - 0.5) * 8000):int((t0 + dur + 1.0) * 8000)].astype(np.int16))
+        out = run_check(a, wav, data)
+        v = verdicts(out)
+        good = form_ok(out, f'net {tag} {mode}') and bool(v) and 'NOT REAL' not in v.values()
+        bad = bytearray(data)
+        at = len(data) // 3
+        bad[at] ^= 0x04
+        blk = (8 * at + 2) // block_bits(mode) + 1
+        v2 = verdicts(run_check(a, wav, bytes(bad)))
+        good &= v2.get(blk) not in (None, 'real')
+        ok &= good
+        print(f'net {tag} {mode} {preset} {snr} dB seed {seed}: sent bytes {v}; one flipped bit in block {blk}: '
+              f'{v2.get(blk)} -> {"PASS" if good else "FAIL"}', flush=True)
+        os.remove(wav)
+    return ok
+
+
+def case_sixa(a):
+    """A stand-in for the keyed 6a dummy-load message (1200S, 38 bytes, eom=1, under one block, so the tail
+    check alone covers it): the check reads it at 8 kHz, and after 8 kHz -> 48 kHz -> 8 kHz as gale-rx's
+    store does. The sent bytes are never NOT REAL on either copy; one flipped bit is never real."""
+    data = (b'DE AAM402 re-encode 6A 1200S DUMMY LOAD ' + bytes(8))[:38]
+    ok = True
+    for snr, seed in ((4.0, 1), (4.0, 2), (6.0, 1)):
+        wav = audio(a, data, snr, None, seed, f'sixa_{snr:g}_{seed}', mode='1200S')
+        sr, x = wavfile.read(wav)
+        up = np.clip(np.round(resample_poly(x.astype(float), 6, 1)), -32768, 32767)
+        chain = os.path.join(a.work, f'sixa_{snr:g}_{seed}.chain.wav')
+        wavfile.write(chain, 8000, np.clip(np.round(resample_poly(up, 1, 6)), -32768, 32767).astype(np.int16))
+        res = []
+        for w in (wav, chain):
+            v = verdicts(run_check(a, w, data))
+            bad = bytearray(data)
+            bad[20] ^= 0x01
+            v2 = verdicts(run_check(a, w, bytes(bad)))
+            res.append((v, v2))
+        good = all(bool(v) and 'NOT REAL' not in v.values() and v2.get(1) not in (None, 'real') for v, v2 in res)
+        ok &= good
+        print(f'sixa 1200S {snr:g} dB seed {seed}: 8 kHz {res[0][0]} (flipped bit {res[0][1]}), 8-48-8 kHz {res[1][0]} '
+              f'(flipped bit {res[1][1]}) -> {"PASS" if good else "FAIL"}', flush=True)
+        os.remove(wav)
+        os.remove(chain)
+    return ok
+
+
 SWEEP_MODES = ('150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L')
 
 
@@ -425,10 +527,12 @@ def main():
     ap.add_argument('--tool', required=True)
     ap.add_argument('--rx', required=True)
     ap.add_argument('--work', required=True)
+    ap.add_argument('--chan', default=None, help='hfchansim, for the net case')
     ap.add_argument('--fade-snr', type=float, default=10.0)
     ap.add_argument('--fade-seeds', default='4,6', help=f'noise seeds of the fade case, of {sorted(BAD)}')
-    ap.add_argument('--cases', default='counts,clean,short,tails,whole2400,fade',
-                    help='of counts,clean,short,tails,whole2400,fade,sweep (sweep is long and not in the default)')
+    ap.add_argument('--cases', default='counts,clean,short,tails,whole2400,fade,net,sixa',
+                    help='of counts,clean,short,tails,whole2400,fade,net,sixa,sweep (sweep is long and not in the '
+                         'default; net needs --chan)')
     ap.add_argument('--sweep-snr', default='8,20')
     ap.add_argument('--sweep-n', type=int, default=4, help='messages per mode and SNR')
     ap.add_argument('--sweep-tag', default='sweep', help='seeds the sweep lengths, payloads and (if not "sweep") noise')
@@ -442,6 +546,7 @@ def main():
         ok &= {'counts': lambda: case_counts(), 'clean': lambda: case_clean(a, data),
                'short': lambda: case_short(a), 'tails': lambda: case_tails(a), 'whole2400': lambda: case_whole2400(a),
                'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')]),
+               'net': lambda: case_net(a), 'sixa': lambda: case_sixa(a),
                'sweep': lambda: case_sweep(a)}[c]()
     print('reencode_window: all cases pass' if ok else 'reencode_window: FAILED')
     return 0 if ok else 1
