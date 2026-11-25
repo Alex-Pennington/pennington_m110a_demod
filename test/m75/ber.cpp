@@ -28,7 +28,7 @@
 //                [--snr DB] [--path DELAY_MS:GAIN_DB:DOPPLER_HZ ...] [--foff HZ]
 //                [--tone F:SIR ...] [--sweep SIR] [--fsk SIR] [--voice SIR] [--cochannel SIR]
 //                [--co-foff HZ] [--co-skip S]
-//                [--no-excise] [--tune FIELD=VALUE ...] [--save SEED:OUT.f32] [-v]
+//                [--no-excise] [--tune FIELD=VALUE ...] [--save SEED:OUT.f32] [--trace OUT.bin] [-v]
 
 #include "api/modem.h"
 #include "channel/appe_channel.h"
@@ -197,6 +197,7 @@ struct Opts {
     bool excise = true, verbose = false;
     long save_seed = -1;
     std::string save_path;
+    std::string trace_path;  // --trace: per seed, the decode's code-order soft bits and the truth
 };
 
 }  // namespace
@@ -261,6 +262,7 @@ int main(int argc, char** argv) {
             else if (k == "ex_floor_frames") m75::default_excise_tuning().floor_frames = static_cast<int>(x);
             else usage("--tune: unknown field");
         }
+        else if (a == "--trace") o.trace_path = val();
         else if (a == "--save") {
             const std::string v = val();
             const auto c = v.find(':');
@@ -329,6 +331,7 @@ int main(int argc, char** argv) {
         std::stringstream sink;
         std::streambuf* so = std::cout.rdbuf(sink.rdbuf());
         std::streambuf* se = std::cerr.rdbuf(sink.rdbuf());
+        m75::last_rx() = m75::RxOut();
         api::DecodeResult r = api::decode(in, rc);
         std::cout.rdbuf(so);
         std::cerr.rdbuf(se);
@@ -348,6 +351,22 @@ int main(int argc, char** argv) {
                            api::mode_name(r.mode) == o.mode_s;
         // sync: the decode found the preamble and named the mode (an error-free decode needs it)
         const bool sync = api::mode_name(r.mode) == o.mode_s && r.d1 >= 0;
+        if (!o.trace_path.empty()) {
+            // record: int32 seed, success, n (soft bits scored), nt (truth coded bits), then
+            // int8 soft[n], uint8 re[n] (decoded path coded again), uint8 truth[nt]
+            std::vector<int> ib;
+            for (uint8_t c : data)
+                for (int k = 0; k < 8; k++) ib.push_back((c >> k) & 1);
+            const std::vector<int> truth = m75::conv_encode(m75::message_bits(ib, true));
+            const m75::RxOut& x = m75::last_rx();
+            std::ofstream f(o.trace_path, std::ios::binary | std::ios::app);
+            const int32_t h[4] = {static_cast<int32_t>(seed), r.success ? 1 : 0, static_cast<int32_t>(x.code.size()),
+                                  static_cast<int32_t>(truth.size())};
+            f.write(reinterpret_cast<const char*>(h), sizeof h);
+            f.write(reinterpret_cast<const char*>(x.code.data()), static_cast<long>(x.code.size()));
+            for (int v : x.re) f.put(static_cast<char>(v));
+            for (int v : truth) f.put(static_cast<char>(v));
+        }
         tot_bits += bits;
         tot_err += err;
         n_ok += r.success;

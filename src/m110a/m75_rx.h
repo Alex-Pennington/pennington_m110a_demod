@@ -315,7 +315,15 @@ struct RxOut {
     double snr_db = 0.0;      // estimated, 3 kHz noise bandwidth
     long excised_frames = 0;  // excision frames hit (0: the input went in untouched)
     std::string error;
+    std::vector<soft_bit_t> code;  // the soft bits the message was scored over, in code order
+    std::vector<int> re;           // the decoded bits coded again, the same span
 };
+
+/// The last RxOut decode() produced on this thread (for test tools: m75_ber --trace)
+inline RxOut& last_rx() {
+    thread_local RxOut r;
+    return r;
+}
 
 /// Max-log soft bits of one set (+ = 0, the Viterbi convention), Table IX inverted
 inline void soft_bits(const WalshRake::SetOut& o, double scale, soft_bit_t& first, soft_bit_t& last) {
@@ -456,6 +464,8 @@ inline long demod_decode(const std::vector<std::complex<float>>& y, int sps, lon
         dis += code[i] == 0 ? 0.5 : (hard != re[i] ? 1.0 : 0.0);
     }
     r.p = n ? dis / n : 0.5;
+    r.code.assign(code.begin(), code.begin() + static_cast<long>(n));
+    r.re.assign(re.begin(), re.begin() + static_cast<long>(n));
     // ... and block by block (code order is block by block after deinterleaving): a fade
     // longer than the interleaver leaves one block's errors to the code, which may decode
     // them wrong while the whole message still agrees well
@@ -622,7 +632,7 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
         const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
         if (a.found && a.is_75 && clear_d(a, 1.1)) mode = a.mode;
     }
-    const RxOut r = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);
+    const RxOut& r = last_rx() = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);
     res.mode = mode == ModeId::M75NS ? api::Mode::M75_SHORT : api::Mode::M75_LONG;
     if (r.preamble) {  // as the 75 bps acquisition read them: the frame locked onto is the last
         res.d1 = r.acq.d1;
