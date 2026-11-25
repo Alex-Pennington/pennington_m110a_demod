@@ -536,6 +536,36 @@ noise powers out. The capture's own record ends the message at 61.4 s; the revie
 flipped bit never real) and a 1200S 38 B stand-in for the 6a message at 4 and 6 dB, read at 8 kHz
 and after 8 to 48 to 8 kHz (`sixa`).
 
+Measured, before and after on the same audio. The counts are real / NOT VERIFIABLE / NOT REAL;
+wrong blocks are blocks whose bytes differ from the sent ones.
+
+| Set | Exact blocks, before | Exact blocks, after | Wrong blocks, before | Wrong blocks, after |
+|---|---|---|---|---|
+| AWGN, every mode, 30 dB down to its knee (64 messages) | 216/12/0 | 216/12/0 | — | — |
+| eom=1, random lengths, every mode, 12 and 20 dB (40) | 93/7/0 | 93/7/0 | — | — |
+| Review's fades, 300L to 2400L (48) | 25/5/0 | 25/5/0 | 0/0/29 | 0/0/29 |
+| 1200L, −15 dB 1 s fade (18) | 25/0/0 | 25/0/0 | 0/0/11 | 0/0/11 |
+| Watterson moderate and poor, 7 modes (28) | 29/34/0 | 29/34/0 | 0/2/14 | 0/3/13 |
+| Fades inside block 1, case F and K files (9) | 19/0/0 | 19/0/0 | 0/0/3 | 0/0/3 |
+| Held-out 2400S and 2400L, 6, 8 and 10 dB (120) | 0/205/0 | 0/205/0 | 0/55/97 | 0/56/96 |
+| Real captures: RSP2, net 300L b1 to b4, 6a 0, 5, 8 and 11 | 66 verdicts | the same 66 | b1 blocks 2 and 9 NOT REAL | the same |
+
+On the Watterson set the largest gap of an exact block (probe minus data) falls from 0.051 to 0.022;
+on AWGN from 0.021 to 0.006.
+
+**What it costs.** Two wrong blocks that the gap alone called NOT REAL are now NOT VERIFIABLE. Neither
+is real:
+
+| Block | Wrong bytes | Before: probe / data, verdict | After: probe / data, verdict |
+|---|---|---|---|
+| 1200L, Watterson poor, seed 2, block 1 (`success=0`) | 2 of 720 | 0.860 / 0.824, NOT REAL | 0.842 / 0.835, NOT VERIFIABLE |
+| Held-out 2400S, 6 dB, message 7, block 2 | most | 0.767 / 0.671, NOT REAL | 0.752 / 0.698, NOT VERIFIABLE |
+
+The first cannot be caught by the gap without the right bytes above: before the fix the 1200L right
+bytes gave 0.037 and these wrong bytes 0.036; after it, 0.013 to 0.021 against 0.007. Its far-off
+test is p 1.5e−6 against `ALPHA` 1e−6 both before and after. The second sits at a gap of 0.054
+against an allowance of 0.112, and its one-byte power is 0.02.
+
 ## Left open
 
 - **`signal_frames` on the hand-cut slice:** the base receiver reports 1 block (180 B).
