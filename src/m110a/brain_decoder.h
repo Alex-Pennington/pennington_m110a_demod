@@ -60,8 +60,11 @@ struct BrainDecoderConfig {
     // misses its 0.70 gate, look for the common segment through a channel of up to
     // MP_LAGS symbols either side of the start and take the preamble when that channel
     // explains at least multipath_threshold of the received energy.
+    // 0.50: 30 min of band-limited noise reached 0.22 at most, 2G ALE vectors 0.45 (an FSK tone
+    // 75 n Hz from the carrier meets the common segment's spectral lines, the 32-symbol period,
+    // at every lag alike), 110D and 110B App C 0.24; the 2026-11-25 net's 110A bursts 0.57-0.94.
     bool multipath_acq = true;
-    float multipath_threshold = 0.40f;
+    float multipath_threshold = 0.50f;
     // The caller forces the mode: take the best multipath start even under the threshold
     // (result.gate_bypassed); the caller verifies it by D1/D2 and the data probes.
     bool forced_mode = false;

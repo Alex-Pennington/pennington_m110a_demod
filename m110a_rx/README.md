@@ -4,7 +4,7 @@
 
 ## Chain
 
-1. **Tune.** Move the dial (the USB suppressed carrier) from `+offset` Hz to 0 Hz. With `--ppm`, also correct the receiver's clock error.
+1. **Tune.** Move the dial (the USB suppressed carrier) from `+offset` Hz to 0 Hz. With `--ppm`, also correct the receiver's clock error: the dial's position, and after step 4 the audio's sample rate.
 2. **Decimate.** `IQSource` brings the input down to 48 kHz complex.
 3. **Filter.** Keep the upper sideband, 300 to 3300 Hz.
 4. **Demodulate.** Take the real part. That is the audio, with the 110A carrier at 1800 Hz.
@@ -31,7 +31,7 @@ The binary is `build/bin/m110a_rx`.
 
 Command-line options override the sidecar.
 
-`--ppm P` is the receiver clock error in ppm, with + meaning the clock runs fast. A receiver whose clock is 1.09 ppm slow takes `--ppm -1.09`. The dial is then looked for at `offset − dial × P × 1e-6` Hz.
+`--ppm P` is the receiver clock error in ppm, with + meaning the clock runs fast. A receiver whose clock is 1.09 ppm slow takes `--ppm -1.09`. The dial is then looked for at `offset − dial × P × 1e-6` Hz, and the audio is resampled by 1 + P × 1e-6, because a clock P ppm fast also takes P ppm more samples per second and moves the symbol timing. With `--dial 0` only the sample clock is corrected. `--ppm` is the receiver's clock only. The sender's symbol clock is followed by the data grid's drift tracking (docs/m110a-timing-steps.md), and `--ppm` does not change it. On a 2400L message whose receiver clock ran 200 ppm fast (12 dB), only `--ppm 200` decoded it: exact, q 13.2 dB. At ±40 ppm the decode is exact without it, and the flag raises q from 11.3 to 13.2 dB (2400L) and from 9.9 to 13.0 dB (1200L).
 
 `--mode` defaults to `AUTO`: the receiver reads the mode from the preamble's D1 and D2. Give a mode, such as `--mode 600L`, to force it.
 
