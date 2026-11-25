@@ -15,10 +15,13 @@ with the received ones:
     lcm(160, frame) symbols, so the data start is tried at each such period from the
     preamble on, and the one the decoded bytes agree with best is kept.
   - The carrier offset is measured from the probes (their phase step from frame to frame,
-    to +-30 Hz) and removed. Each frame is then phased from its own probes and the next
-    frame's, and each symbol is decided among the mode's points (BPSK, QPSK, 8PSK) turned by
-    its scrambler value. Without the offset removed, the data, 20 symbols ahead of the probes,
-    turned 35 degrees against them at +11.6 Hz on air, and right bytes scored as wrong.
+    to +-30 Hz) and removed. A frame's data are then phased from the probes around them (the
+    frame before's and its own), its probes from the probes of the frames either side (never
+    their own: under multipath a gain measured on a frame's own fixed probe pattern decides
+    those probes better than the data), and each symbol is decided among the mode's points
+    (BPSK, QPSK, 8PSK) turned by its scrambler value. Without the offset removed, the data, 20
+    symbols ahead of the probes, turned 35 degrees against them at +11.6 Hz on air, and right
+    bytes scored as wrong.
   - probe agreement: probe symbols decided right, the channel's raw symbol accuracy.
   - data agreement: data symbols equal to the re-encoded ones.
   - random-bytes control: the same for random bytes of the same length, i.e. chance.

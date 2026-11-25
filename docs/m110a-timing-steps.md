@@ -486,6 +486,56 @@ bit would escape the far-off test at most 1 time in 100. No wrong block came out
 the sets above (the review's 81, the held-out 152, the sweep's 40 flipped bits, the real
 captures' 3).
 
+### Multipath: probes phased from other frames (2026-11-25)
+
+A review of master 548cc27 ran gale-rx over a scratch store of Watterson recordings (three
+messages each, with gaps) and found right bytes NOT REAL in two messages, both by "data below the
+probes":
+
+```
+  block 1: probe agreement 0.845, data agreement 0.808, random-bytes control 0.247 (chance 0.250): the bytes DO NOT FIT the signal (bit errors)
+  block 1 window check: far off (over 15 noise powers) 0/5720 probes, 0/5720 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict NOT REAL: data below the probes over the block (bit errors)
+```
+
+**The cause.** Each frame's symbols were decided against a gain measured on its own frame's probes
+and the next frame's. The scrambler repeats every 160 symbols, so each frame's 16 or 20 probes are a
+fixed pattern. On a two-path channel, each received probe carries an echo of the probes a few
+symbols before it, and over a frame that echo correlates with the pattern. A gain measured on those
+probes takes part of the echo in, and so decides the same probes better than it decides the data,
+whose echo is random. Probe agreement read 0.02 to 0.05 above the data of right bytes, past `FIT`.
+Phasing the data from the probes that bracket them (the frame before and their own) changed nothing
+(0.809 against 0.808); leaving the probes' own frame out did.
+
+**The fix.** A frame's probes are decided against the gain of the frames either side of them, never
+their own. Its data are decided against the probes around them: the frame before and its own. A
+block's last two frames carry D1/D2 probes, not the scrambler, so they are no frame's reference;
+where one side has no reference frame, the other side alone is used. The far-off test's gain and
+noise power are unchanged. (Measuring the probe residuals against the other frames' gain as well
+was tried and backed out. No reproduced case needs it, and it cost a NOT REAL: one flipped bit at
+1200S 6 dB, 2 far-off data symbols at 15 noise powers, dropped to 1.)
+
+The two messages regenerate bit for bit with this build: ModemTX, `hfchansim --preset poor`, the
+review's seeds. They were cut to the message and resampled 48 to 8 kHz as gale-rx does:
+
+| Message | Block | Before: probe / data, verdict | After: probe / data, verdict |
+|---|---|---|---|
+| 1200L 800 B, poor, 6 dB, seed 3 | 1 | 0.845 / 0.808, NOT REAL | 0.822 / 0.809, NOT VERIFIABLE |
+| the same | tail 2 | 0.847 / 0.805, NOT REAL | 0.816 / 0.795, NOT VERIFIABLE |
+| 150S 100 B, poor, 18 dB, seed 2 | 5 | 0.938 / 0.903, NOT REAL | 0.889 / 0.900, real |
+| the same recording, 2400L (decoded wrong) | 1, 2 | 0.688 / 0.620, 0.423 / 0.229, NOT REAL | 0.675 / 0.645, 0.385 / 0.224, NOT REAL |
+
+The same review read a keyed 6a dummy-load message NOT REAL with its bytes exact (6a capture 5,
+1200S, 38 B, under one block, so the tail check alone covers it). Its run did not survive and does
+not reproduce here. The check calls that message NOT VERIFIABLE on both the 548cc27 and this
+receiver, at 8 kHz and after 8 to 48 to 8 kHz, with six different cuts, before and after this change:
+probe 0.934, data 0.918 against an allowance of 0.064, and no symbol decided wrong further than 6
+noise powers out. The capture's own record ends the message at 61.4 s; the review's run ended it at
+60.85 s, so its receiver or its cut differed from every one tried here.
+
+`ctest rx_reencode_window` carries the two messages (`net`: the sent bytes never NOT REAL, and one
+flipped bit never real) and a 1200S 38 B stand-in for the 6a message at 4 and 6 dB, read at 8 kHz
+and after 8 to 48 to 8 kHz (`sixa`).
+
 ## Left open
 
 - **`signal_frames` on the hand-cut slice:** the base receiver reports 1 block (180 B).
