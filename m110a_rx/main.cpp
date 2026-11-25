@@ -99,14 +99,15 @@ constexpr long GRID_TOL = 10L * SPS_SCAN;
 // 75 bps acquisition (Receiver::m75_detect): m75::acquire over the M75_WINDOW of audio before
 // each point of a grid M75_STEP apart, run only when the sliding coarse search
 // (m75::SlidingAcq) holds an end of preamble there at M75_PRESCREEN of acquire's threshold.
-// A window that ends inside a long preamble reads an earlier frame boundary as its end, so
-// a preamble is taken when two runs agree on its end within M75_AGREE (or at end of input).
+// A window that ends inside a long preamble reads a frame boundary inside it as its end, so
+// a preamble found is confirmed by acquire over its whole countdown again, once the audio
+// reaches M75_STEP past where that countdown would end if the end found were its first frame's.
 constexpr long M75_WINDOW = static_cast<long>(6.0 * FS);
 constexpr long M75_STEP = static_cast<long>(0.5 * FS);
 constexpr double M75_PRESCREEN = 0.75;
-constexpr long M75_AGREE = 2L * SPS_AUDIO;
+constexpr long M75_FRAME = 480L * SPS_AUDIO;
 // Two 75 bps acquisitions of one preamble: ends of preamble within a frame
-constexpr long M75_SAME = 480L * SPS_AUDIO;
+constexpr long M75_SAME = M75_FRAME;
 
 struct Options {
     std::string input, mode_s = "AUTO", eq_s = "DFE", format, expect, dump_audio;
@@ -357,30 +358,37 @@ private:
     }
 
     // m75::acquire over the M75_WINDOW before audio index t (from the last 75 bps preamble's
-    // end on). Taken: a preamble found whose countdown is the length its D1/D2 name (75S 3
-    // frames, 75L 24: the first frames of a 75L preamble score well as a 3-frame countdown),
-    // read best as 7,5 or 5,5 in AUTO (m75::takes_75), the forced mode's length when forced; and two runs
-    // M75_STEP apart agreeing on its end, or the end of the input.
+    // end on), run when the sliding search holds an end of preamble there. Found: a preamble
+    // wholly inside the window whose countdown is the length its D1/D2 name (75S 3 frames,
+    // 75L 24: the first frames of a 75L preamble score well as a 3-frame countdown), read
+    // best as 7,5 or 5,5 in AUTO (m75::takes_75), the forced mode's length when forced. A
+    // window ending inside a 75L preamble finds a frame boundary inside it, with frames before
+    // the preamble counted, so what is found is a candidate: acquire runs again over the
+    // countdown before it and as long again after it, plus M75_STEP, once that audio is in
+    // (or at the end of input), and the preamble that run finds is taken.
     void m75_run(long t, bool eof) {
-        const long w0 = std::max({t - M75_WINDOW, m75_floor_, audio_base_});
-        if (t - w0 < static_cast<long>(0.8 * FS)) return;
-        const m75::AcqTuning tune;
-        if (sacq_->best(w0, t).z < M75_PRESCREEN * tune.min_z) { m75_cand_ = false; return; }
         Mode mode;
         int frames = 0;
         long ds = 0;
         float foff = 0.0f;
         double z = 0.0;
-        if (!m75_acquire(w0, t, mode, frames, ds, foff, z)) { m75_cand_ = false; return; }
-        const bool agree = m75_cand_ && m75_cand_mode_ == mode && std::labs(ds - m75_cand_ds_) <= M75_AGREE;
-        if (!agree && !eof) {
-            m75_cand_ = true;
-            m75_cand_ds_ = ds;
-            m75_cand_mode_ = mode;
+        if (m75_cand_) {
+            if (t < m75_confirm_at_ && !eof) return;
+            m75_cand_ = false;
+            const long lo = std::max(m75_floor_, m75_cand_ds_ - m75_cand_frames_ * M75_FRAME - M75_STEP);
+            if (m75_acquire(lo, t, mode, frames, ds, foff, z)) m75_add(mode, frames, ds, foff, z);
             return;
         }
-        m75_cand_ = false;
-        m75_add(mode, frames, ds, foff, z);
+        const long w0 = std::max({t - M75_WINDOW, m75_floor_, audio_base_});
+        if (t - w0 < static_cast<long>(0.8 * FS)) return;
+        const m75::AcqTuning tune;
+        if (sacq_->best(w0, t).z < M75_PRESCREEN * tune.min_z) return;
+        if (!m75_acquire(w0, t, mode, frames, ds, foff, z)) return;
+        if (eof) { m75_add(mode, frames, ds, foff, z); return; }
+        m75_cand_ = true;
+        m75_cand_ds_ = ds;
+        m75_cand_frames_ = frames;
+        m75_confirm_at_ = ds + frames * M75_FRAME + M75_STEP;
     }
 
     // m75::acquire over audio [a0, a1): a 75 bps preamble as m75_run takes it, its end ds
@@ -400,6 +408,7 @@ private:
             mode = a.mode == ModeId::M75NS ? Mode::M75_SHORT : Mode::M75_LONG;
         }
         if (a.frames != preamble_frames(mode)) return false;
+        if (a.data_start < a.frames * M75_FRAME) return false;  // frames before the window counted
         frames = a.frames;
         ds = a0 + a.data_start;
         foff = a.freq_offset_hz;
@@ -412,7 +421,7 @@ private:
         for (const auto& p : m75_pre_)
             if (std::labs(p.second - ds) <= M75_SAME) return;
         m75_floor_ = std::max(m75_floor_, ds);
-        const long pre0 = ds - static_cast<long>(frames) * 480L * SPS_AUDIO;
+        const long pre0 = ds - static_cast<long>(frames) * M75_FRAME;
         m75_pre_.push_back({pre0, ds});
         if (m75_pre_.size() > 64) m75_pre_.erase(m75_pre_.begin());
         Message m;
@@ -448,8 +457,8 @@ private:
         long ds = 0;
         float foff = 0.0f;
         double z = 0.0;
-        if (!m75_acquire(a - 25L * 480L * SPS_AUDIO, audio_end_, mode, frames, ds, foff, z)) return false;
-        if (!inside(ds - static_cast<long>(frames) * 480L * SPS_AUDIO, ds)) return false;
+        if (!m75_acquire(a - 25L * M75_FRAME, audio_end_, mode, frames, ds, foff, z)) return false;
+        if (!inside(ds - static_cast<long>(frames) * M75_FRAME, ds)) return false;
         m75_add(mode, frames, ds, foff, z);
         return true;
     }
@@ -794,9 +803,10 @@ private:
     std::unique_ptr<m75::SlidingAcq> sacq_;
     long m75_next_ = 0;   // next grid point, audio index
     long m75_floor_ = 0;  // it searches from here on: the end of the last 75 bps preamble
-    bool m75_cand_ = false;
+    bool m75_cand_ = false;     // a preamble found, to be confirmed at m75_confirm_at_
     long m75_cand_ds_ = 0;
-    Mode m75_cand_mode_ = Mode::AUTO;
+    int m75_cand_frames_ = 0;
+    long m75_confirm_at_ = 0;
     std::vector<std::pair<long, long>> m75_pre_;  // 75 bps preambles taken: first frame, end (audio)
     int claimed_ = 0;     // correlator chains inside a 75 bps preamble, not reported
     int reported_ = 0;
