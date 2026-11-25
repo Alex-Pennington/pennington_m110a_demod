@@ -208,6 +208,7 @@ struct Message {
     Mode m75_mode = Mode::AUTO;  // the mode D1/D2 read (or the forced one)
     int m75_frames = 0;          // frames the acquisition integrated
     long m75_ds = 0;             // end of its preamble, absolute audio index
+    bool m75_checked = false;    // a correlator chain already found not inside a 75 bps preamble
 };
 
 class Receiver {
@@ -384,8 +385,22 @@ private:
         const long w0 = std::max({t - M75_WINDOW, m75_floor_, audio_base_});
         if (t - w0 < static_cast<long>(0.8 * FS)) return;
         const m75::AcqTuning tune;
-        if (sacq_->best(w0, t).z < M75_PRESCREEN * tune.min_z) return;
-        if (!m75_acquire(w0, t, mode, frames, ds, foff, z)) return;
+        const m75::SlidingAcq::Best b = sacq_->best(w0, t);
+        if (b.z < M75_PRESCREEN * tune.min_z) return;
+        // The sliding search's best end was looked at by an earlier run and nothing was taken:
+        // acquire would find the same (it stays in the window for 6 s; another mode's data can
+        // hold one, measured in 600L and 300L)
+        for (long e : m75_seen_)
+            if (std::labs(e - b.end) <= M75_FRAME / 4) return;
+        // Another mode's preamble (or part of it), read clearly: search after it from now on.
+        // A 75 bps preamble read clearly reads 7,5 or 5,5, so this does not skip one.
+        long other = -1;
+        if (!m75_acquire(w0, t, mode, frames, ds, foff, z, &other)) {
+            if (other > 0) m75_floor_ = std::max(m75_floor_, other);
+            m75_seen_.push_back(b.end);
+            if (m75_seen_.size() > 16) m75_seen_.erase(m75_seen_.begin());
+            return;
+        }
         if (eof) { m75_add(mode, frames, ds, foff, z); return; }
         m75_cand_ = true;
         m75_cand_ds_ = ds;
@@ -395,7 +410,10 @@ private:
 
     // m75::acquire over audio [a0, a1): a 75 bps preamble as m75_run takes it, its end ds
     // (absolute audio index), or false
-    bool m75_acquire(long a0, long a1, Mode& mode, int& frames, long& ds, float& foff, double& z) const {
+    // other: set to the end found of a preamble whose D1/D2 read clearly as a code other than
+    // 75 bps (another mode's preamble, or part of one), else left alone.
+    bool m75_acquire(long a0, long a1, Mode& mode, int& frames, long& ds, float& foff, double& z,
+                     long* other = nullptr) const {
         a0 = std::max(a0, audio_base_);
         a1 = std::min(a1, audio_end_);
         if (a1 - a0 < static_cast<long>(0.8 * FS)) return false;
@@ -403,6 +421,7 @@ private:
         const RxConfig rc;
         const m75::Acquisition a = m75::acquire(rf, static_cast<float>(FS), rc.carrier_freq, rc.coarse_search_range);
         if (!a.found) return false;
+        if (other && !a.is_75 && m75::clear_d(a)) *other = a0 + a.data_start;
         if (m75_forced_) {
             // D1/D2 read best as the forced mode's: a strong 75 bps transmission's own data
             // can score as a countdown at some carrier offset, with no 75 bps code read there
@@ -606,9 +625,11 @@ private:
             // every chain that can start inside the longest preamble is closed
             if (!eof && (scan_t_ <= span_end + HOLD_SCAN + 1 || (have_chain_ && chain_.front().t <= span_end)))
                 break;
-            if (sacq_) {
+            if (sacq_ && !m.m75_checked) {
                 const long hit = m.first_hit;  // m75_claims may add a message in front of m
-                if (m75_claims(m)) {  // part of a 75 bps preamble: that message reports it
+                const bool claimed = m75_claims(m);
+                if (!claimed) pending_.front().m75_checked = true;  // decoding it may wait for audio
+                if (claimed) {  // part of a 75 bps preamble: that message reports it
                     if (opt_.verbose)
                         fprintf(stderr, "m110a_rx: chain at %.3f s is inside a 75 bps preamble\n", hit * DECIM / FS);
                     claimed_++;
@@ -873,6 +894,7 @@ private:
     long m75_cand_ds_ = 0;
     int m75_cand_frames_ = 0;
     long m75_confirm_at_ = 0;
+    std::vector<long> m75_seen_;  // sliding-search ends acquire looked at and did not take
     std::vector<std::pair<long, long>> m75_pre_;  // 75 bps preambles taken: first frame, end (audio)
     std::vector<std::pair<long, long>> corr_win_;  // other modes' messages reported: first frame, window end (audio)
     int claimed_ = 0;     // correlator chains inside a 75 bps preamble, not reported
