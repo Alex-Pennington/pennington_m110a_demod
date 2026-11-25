@@ -706,8 +706,9 @@ private:
      * one 0.43, under the 0.70 gate, while 99 % and 66 % of their energy matched the preamble
      * through a short channel. Here each start t is scored by
      *
-     *   m(t) = sum over lags k in [-MP_LAGS, MP_LAGS] and 72-symbol pieces b of
-     *          |sum_i x[t + (72 b + i + k) sps] conj(c[72 b + i])|^2  /  (72 sum_i |x[t + i sps]|^2)
+     *   m(t) = sum over lags k in [-MP_LAGS, MP_LAGS] of
+     *          sum over 72-symbol pieces b of |sum_i x[t + (72 b + i + k) sps] conj(c[72 b + i])|^2
+     *          /  (72 sum_i |x[t + (i + k) sps]|^2)
      *
      * the share of the received energy a channel of 2 MP_LAGS + 1 symbol-spaced taps,
      * constant over each 72-symbol piece, explains. A clean preamble scores about 1 through
@@ -741,15 +742,29 @@ private:
             }
             E[static_cast<size_t>(j)] = s;
         }
-        // energy over the 288 symbols from each start, by a running sum per sample phase
+        // P[u]: the energy of the 288 symbols the pieces at u read (outside filtered: 0)
+        std::vector<double> P(static_cast<size_t>(nu), 0.0);
+        double pmax = 0.0;
+        for (long j = 0; j < nu; j++) {
+            double e = 0.0;
+            for (int i = 0; i < 288; i++) {
+                const long idx = u0 + j + static_cast<long>(i) * sps;
+                if (idx >= 0 && idx < n) e += std::norm(filtered[idx]);
+            }
+            P[static_cast<size_t>(j)] = e;
+            pmax = std::max(pmax, e);
+        }
+        // Each lag's share against the energy it read, so no lag counts for more than 1 (a
+        // lag reaching into signal from a start over silence read up to 10^35 against the
+        // lag-0 energy); a lag over silence (under 1e-6 of the loudest) counts 0.
         double best = -1.0;
         long best_t = 0;
         for (long t = 0; t < max_search; t++) {
-            double e = 0.0;
-            for (int i = 0; i < 288; i++) e += std::norm(filtered[t + i * sps]);
             double m = 0.0;
-            for (int k = -MP_LAGS; k <= MP_LAGS; k++) m += E[static_cast<size_t>(t + k * sps - u0)];
-            m = e > 0.0 ? m / (MP_SEG * e) : 0.0;
+            for (int k = -MP_LAGS; k <= MP_LAGS; k++) {
+                const size_t j = static_cast<size_t>(t + k * sps - u0);
+                if (P[j] > 1e-6 * pmax) m += E[j] / (MP_SEG * P[j]);
+            }
             if (m > best) { best = m; best_t = t; }
         }
         if (best < 0.0) return;
