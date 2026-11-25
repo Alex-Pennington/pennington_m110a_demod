@@ -240,10 +240,20 @@ def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
     z = z * np.exp(-1j * np.angle(np.sum(zs[1:] * np.conj(zs[:-1]))) / (u + k) * n)
     zs = np.where(isp, z, 0).reshape(nf, -1).sum(1)
     r = z * ref
-    g = zs + np.append(zs[1:], 0)  # each frame phased from its own probes and the next frame's
+    # Phase references, none holding the symbol it phases. A frame's data lie between the probes of the
+    # frame before and its own: they are phased from those. A frame's probes are phased from the probes of
+    # the frames either side, not their own: the scrambler repeats every 160 symbols, so each frame's probes
+    # are a fixed pattern, and under multipath the gain measured on them takes in their own echo (inter-symbol
+    # interference) and decides them better than the data, whose echo is random. Phased from their own frame,
+    # probes on a Watterson channel scored 0.02-0.05 above the data of right bytes, past FIT.
+    prev, nxt = np.append(0, zs[:-1]), np.append(zs[1:], 0)
+    gp = prev + nxt
+    gp = np.where(np.abs(gp) > 0, gp, zs)  # one frame alone: its own probes
+    gd = prev + zs
     # decide each symbol among the mode's points (BPSK, QPSK or 8PSK) turned by its scrambler value
     st = STEP8[rate]
-    dec = (np.round(((np.angle(r * np.conj(g[f])) / (np.pi / 4) - scr) % 8) / st).astype(int) * st + scr) % 8
+    dec = (np.round(((np.angle(r * np.conj(np.where(isp, gp[f], gd[f]))) / (np.pi / 4) - scr) % 8) / st).astype(int)
+           * st + scr) % 8
     t = t * np.conj(np.sum(t[isp] * np.conj(ref[isp])))  # the re-encoded signal's own phase
     tsym = np.round(np.angle(t) / (np.pi / 4)).astype(int) % 8
     pok = np.where(isp, dec == scr, False).reshape(nf, -1).sum(1)
@@ -253,17 +263,23 @@ def frame_agreement(bb, d0, tb, t0, rate, nf, off, soft=False):
     # Soft: each symbol's distance from where the sent symbol would land, in units of the noise
     # (for data, the re-encoded symbol).
     # A frame's data lies between the probes of the frame before and its own: G, the channel's
-    # gain and phase, comes from those 2k probes, and the noise power from the median of their
-    # residuals (median / ln 2 is the mean of an exponential; one crash does not move it).
+    # gain and phase, comes from those 2k probes. A probe's residual is measured against the gain of
+    # the frames either side of it, not its own (as its decision is, above), and the noise power is the
+    # median of the residuals of those 2k probes (median / ln 2 is the mean of an exponential; one crash
+    # does not move it). Measured against their own frame's gain, probes under multipath gave a noise
+    # power below what the data see, and right bytes' data symbols read as far off.
     rp, refp = r[isp].reshape(nf, k), ref[isp].reshape(nf, k)
     rd, td = r[~isp].reshape(nf, u), PSK8[tsym[~isp]].reshape(nf, u)
     zp = rp * np.conj(refp)
     gsum = zp.sum(1) + np.append(zp[0].sum(), zp[:-1].sum(1))
     g2 = (gsum / (2 * k))[:, None]
-    prev_rp = np.vstack([rp[:1], rp[:-1]])
-    prev_ref = np.vstack([refp[:1], refp[:-1]])
-    res_p = np.abs(rp - g2 * refp) ** 2
-    s2 = np.median(np.hstack([np.abs(prev_rp - g2 * prev_ref) ** 2, res_p]), 1) / np.log(2) + 1e-30
+    zf = zp.sum(1)
+    pn = np.append(0, zf[:-1]) + np.append(zf[1:], 0)
+    cnt = (np.arange(nf) > 0).astype(int) + (np.arange(nf) < nf - 1).astype(int)
+    gpo = np.where(cnt > 0, pn / (k * np.maximum(cnt, 1)), zf / k)[:, None]  # each frame's probes, others' gain
+    res_p = np.abs(rp - gpo * refp) ** 2
+    prev_res = np.vstack([res_p[:1], res_p[:-1]])
+    s2 = np.median(np.hstack([prev_res, res_p]), 1) / np.log(2) + 1e-30
     eps_p = res_p / s2[:, None]
     eps_d = np.abs(rd - g2 * td) ** 2 / s2[:, None]
     # far off: decided as another point, and further than tau noise powers from the sent one
