@@ -8,7 +8,7 @@ payload ("DE AAM402 " + random bytes) -> modem_tx_wav (ModemTX::encode, 48 kHz)
   -> per case: exact (success=1, eom=1, mode named, bytes equal), success, false success
      (success=1 with wrong bytes), bytes_ok (the payload bytes exact whatever success says)
      and bit errors over the payload (bytes not delivered
-     count as all bits wrong).
+     count as all bits wrong); one_msg: the transmission came out as exactly one message.
 
 Usage: python3 -I -B test/m75/m75_sweep.py --tool MODEM_TX_WAV (--rx M110A_RX | --wav-rx M75_WAV_RX) --work DIR
            [--chansim HFCHANSIM] [--modes 75S,75L,150S,300S] [--channel awgn|moderate|poor|D,T]
@@ -158,7 +158,7 @@ def main():
     route = "WAV -> ModemRX (m75_wav_rx)" if a.wav_rx else "I/Q -> m110a_rx"
     print(f"channel={a.channel} bytes={a.bytes} seeds={len(seeds)} route={route} rx_args='{a.rx_args}' (SNR in 3 kHz)")
     print(f"{'mode':6} {'snr_db':>7} {'exact':>7} {'bytes_ok':>8} {'success':>8} {'false_ok':>8} {'BER':>10}"
-          f" {'q_min_right':>11} {'q_max_wrong':>11}")
+          f" {'q_min_right':>11} {'q_max_wrong':>11} {'one_msg':>8}")
     table = {}
     for m in modes:
         for s in snrs:
@@ -172,8 +172,9 @@ def main():
             qw = [r["q"] for r in rs if r.get("wrong") and r["q"] is not None]
             fq = lambda v: f"{v:11.1f}" if v is not None else f"{'-':>11}"
             rt = sum(bool(r.get("right")) for r in rs)
+            one = sum(r.get("msgs") == 1 for r in rs)
             print(f"{m:6} {s:7g} {ex_:>3}/{len(rs):<3} {rt:>4}/{len(rs):<3} {su:>4}/{len(rs):<3} {fp:>4}/{len(rs):<3} {ber:10.2e}"
-                  f" {fq(min(qr) if qr else None)} {fq(max(qw) if qw else None)}", flush=True)
+                  f" {fq(min(qr) if qr else None)} {fq(max(qw) if qw else None)} {one:>4}/{len(rs):<3}", flush=True)
     ok = True
     for req in a.require:
         m, s, n = req.split(":")

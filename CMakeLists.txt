@@ -332,8 +332,10 @@ if(M110A_HAVE_SCIPY)
     "m75_awgn|--wav-rx $<TARGET_FILE:m75_wav_rx> --modes 75S,75L --snr=-8 --seeds 1,2,3,4 --require 75S:-8:4 --require 75L:-8:4"
     # CCIR poor (Watterson 2 Hz, 2 ms) through ModemRX
     "m75_watterson_poor|--wav-rx $<TARGET_FILE:m75_wav_rx> --channel poor --modes 75S,75L --snr=0 --seeds 1,2,3 --require 75S:0:3 --require 75L:0:3"
-    # the I/Q route, m110a_rx's preamble scan in front (it finds no preamble below about -7 dB)
+    # the I/Q route, m110a_rx's preamble scan in front
     "m75_iq|--rx $<TARGET_FILE:m110a_rx> --modes 75S,75L --snr=0 --seeds 1,2 --require 75S:0:2 --require 75L:0:2"
+    # ... below the correlator's reach: m110a_rx's 75 bps acquisition (docs/m110a-75bps.md)
+    "m75_iq_lowsnr|--rx $<TARGET_FILE:m110a_rx> --modes 75S,75L --snr=-8 --seeds 1,2 --require 75S:-8:2 --require 75L:-8:2"
   )
   foreach(c ${_m75_cases})
     string(REPLACE "|" ";" _p "${c}")

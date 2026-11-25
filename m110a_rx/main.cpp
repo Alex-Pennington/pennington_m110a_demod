@@ -8,6 +8,18 @@
  *           normalise its level, decode with ModemRX -> cut at EOM -> the chains
  *           of one preamble merged (Receiver::process_messages) -> print one.
  *
+ * 75 bps (AUTO, 75S, 75L): the preamble correlator above reads one frame at a time
+ * and finds no preamble below about -7 dB in 3 kHz, where 75 bps still decodes. So
+ * the 75 bps acquisition (src/m110a/m75_acq.h), which integrates the whole preamble,
+ * runs on the audio as well (Receiver::m75_detect): a preamble whose D1/D2 read 7,5
+ * or 5,5, with the 3 or 24 frames they name, is one 75 bps message, decoded from its
+ * preamble. In AUTO the correlator's chains that fall inside a 75 bps preamble are
+ * that message's own and are not reported (Receiver::m75_claims). Forced to 75S or
+ * 75L, only the 75 bps acquisition looks for preambles. Every other mode is found and
+ * decoded as before. A 75 bps message line gives preamble_hits = the frames its
+ * acquisition integrated (3 or 24) and acq_metric = that acquisition's significance
+ * (z, found at 9 or more), where other modes give the correlator's hits and metric.
+ *
  * A message's end, for the decode window: the power steps down and stays down
  * (see Receiver::find_step). Measured only from the message's own audio, so it is
  * the same whatever lead-in precedes the preamble, and a fade, however deep or
@@ -38,6 +50,7 @@
 #include "api/modem.h"
 #include "api/iq_file_source.h"
 #include "api/sdr_frontend.h"
+#include "m110a/m75_rx.h"
 #include "sync/preamble_acq.h"
 
 #include <algorithm>
@@ -48,6 +61,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -82,6 +96,18 @@ constexpr float CORROBORATE_DB = 0.75f;
 // Chains on one preamble's frame grid: within this of a whole number of frames apart.
 // Two Watterson paths 2 ms apart move the correlation peak by 4.8 symbols.
 constexpr long GRID_TOL = 10L * SPS_SCAN;
+// 75 bps acquisition (Receiver::m75_detect): m75::acquire over the M75_WINDOW of audio before
+// each point of a grid M75_STEP apart, run only when the sliding coarse search
+// (m75::SlidingAcq) holds an end of preamble there at M75_PRESCREEN of acquire's threshold.
+// A window that ends inside a long preamble reads a frame boundary inside it as its end, so
+// a preamble found is confirmed by acquire over its whole countdown again, once the audio
+// reaches M75_STEP past where that countdown would end if the end found were its first frame's.
+constexpr long M75_WINDOW = static_cast<long>(6.0 * FS);
+constexpr long M75_STEP = static_cast<long>(0.5 * FS);
+constexpr double M75_PRESCREEN = 0.75;
+constexpr long M75_FRAME = 480L * SPS_AUDIO;
+// Two 75 bps acquisitions of one preamble: ends of preamble within a frame
+constexpr long M75_SAME = M75_FRAME;
 
 struct Options {
     std::string input, mode_s = "AUTO", eq_s = "DFE", format, expect, dump_audio;
@@ -162,6 +188,7 @@ struct Decoded {
     bool eom = false;
     long a1 = 0;             // window end, absolute audio index
     bool ran = false;        // false: the window was under 0.5 s, nothing decoded
+    long end75 = -1;         // 75 bps: where the transmission decoded ends (absolute audio index)
 };
 
 struct Message {
@@ -176,12 +203,24 @@ struct Message {
     std::vector<double> pw;  // 0.1 s block power from first_frame * DECIM on
     bool done = false;    // decoded, result in out
     Decoded out;
+    // A 75 bps message found by the 75 bps acquisition (m75_detect, m75_claims)
+    bool m75 = false;
+    Mode m75_mode = Mode::AUTO;  // the mode D1/D2 read (or the forced one)
+    int m75_frames = 0;          // frames the acquisition integrated
+    long m75_ds = 0;             // end of its preamble, absolute audio index
+    bool m75_checked = false;    // a correlator chain already found not inside a 75 bps preamble
 };
 
 class Receiver {
 public:
     Receiver(const Options& o, Mode mode, Equalizer eq)
         : opt_(o), mode_(mode), eq_(eq), corr_(SPS_SCAN) {
+        m75_forced_ = mode_ == Mode::M75_SHORT || mode_ == Mode::M75_LONG;
+        if (m75_forced_ || mode_ == Mode::AUTO) {
+            const RxConfig rc;
+            sacq_ = std::make_unique<m75::SlidingAcq>(static_cast<float>(FS), rc.carrier_freq, rc.coarse_search_range,
+                                                      M75_WINDOW / FS + 1.0, m75::AcqTuning().coarse_step_hz);
+        }
         // RRC matched filter at 48 kHz, alpha 0.35, 6 symbols
         const int half = 3 * SPS_AUDIO;
         const double a = 0.35;
@@ -206,12 +245,16 @@ public:
     void push_audio(const std::vector<float>& a, bool eof) {
         audio_.insert(audio_.end(), a.begin(), a.end());
         audio_end_ += static_cast<long>(a.size());
-        scan(eof);
+        if (sacq_) {
+            sacq_->push(a.data(), a.size());
+            m75_detect(eof);
+        }
+        if (!m75_forced_) scan(eof);
         process_messages(eof);
         trim();
     }
 
-    int found() const { return next_id_ - 1; }
+    int found() const { return next_id_ - 1 - claimed_; }
     int decoded_ok() const { return decoded_ok_; }
     bool expect_met() const { return expect_met_; }
 
@@ -220,7 +263,7 @@ private:
     float audio_at(long n) const { return audio_[static_cast<size_t>(n - audio_base_)]; }
 
     void trim() {
-        long keep = std::min(scan_t_ * DECIM, audio_end_) - static_cast<long>(40 * FS);
+        long keep = std::min(m75_forced_ ? audio_end_ : scan_t_ * DECIM, audio_end_) - static_cast<long>(40 * FS);
         for (auto& m : pending_) keep = std::min(keep, m.first_frame * DECIM - static_cast<long>(4 * FS));
         if (keep - audio_base_ > static_cast<long>(30 * FS)) {
             audio_.erase(audio_.begin(), audio_.begin() + (keep - audio_base_));
@@ -306,6 +349,151 @@ private:
         m.freq = static_cast<float>(fs / chain_.size());
         pending_.push_back(m);
         chain_.clear();
+    }
+
+    // ---------------- 75 bps preambles ----------------
+    // The 75 bps acquisition at each grid point up to the audio received (and once at its
+    // end): the grid, not the size of the pieces the input arrives in, decides where it runs.
+    void m75_detect(bool eof) {
+        if (m75_next_ == 0) m75_next_ = M75_STEP;
+        for (; m75_next_ <= audio_end_; m75_next_ += M75_STEP) m75_run(m75_next_, false);
+        if (eof) m75_run(audio_end_, true);
+    }
+
+    // m75::acquire over the M75_WINDOW before audio index t (from the last 75 bps preamble's
+    // end on), run when the sliding search holds an end of preamble there. Found: a preamble
+    // wholly inside the window whose countdown is the length its D1/D2 name (75S 3 frames,
+    // 75L 24: the first frames of a 75L preamble score well as a 3-frame countdown), read
+    // best as 7,5 or 5,5 in AUTO (m75::takes_75), the forced mode's length when forced. A
+    // window ending inside a 75L preamble finds a frame boundary inside it, with frames before
+    // the preamble counted, so what is found is a candidate: acquire runs again over the
+    // countdown before it and as long again after it, plus M75_STEP, once that audio is in
+    // (or at the end of input), and the preamble that run finds is taken.
+    void m75_run(long t, bool eof) {
+        Mode mode;
+        int frames = 0;
+        long ds = 0;
+        float foff = 0.0f;
+        double z = 0.0;
+        if (m75_cand_) {
+            if (t < m75_confirm_at_ && !eof) return;
+            m75_cand_ = false;
+            const long lo = std::max(m75_floor_, m75_cand_ds_ - m75_cand_frames_ * M75_FRAME - M75_STEP);
+            if (m75_acquire(lo, t, mode, frames, ds, foff, z)) m75_add(mode, frames, ds, foff, z);
+            return;
+        }
+        const long w0 = std::max({t - M75_WINDOW, m75_floor_, audio_base_});
+        if (t - w0 < static_cast<long>(0.8 * FS)) return;
+        const m75::AcqTuning tune;
+        const m75::SlidingAcq::Best b = sacq_->best(w0, t);
+        if (b.z < M75_PRESCREEN * tune.min_z) return;
+        // The sliding search's best end was looked at by an earlier run and nothing was taken:
+        // acquire would find the same (it stays in the window for 6 s; another mode's data can
+        // hold one, measured in 600L and 300L)
+        for (long e : m75_seen_)
+            if (std::labs(e - b.end) <= M75_FRAME / 4) return;
+        // Another mode's preamble (or part of it), read clearly: search after it from now on.
+        // A 75 bps preamble read clearly reads 7,5 or 5,5, so this does not skip one.
+        long other = -1;
+        if (!m75_acquire(w0, t, mode, frames, ds, foff, z, &other)) {
+            if (other > 0) m75_floor_ = std::max(m75_floor_, other);
+            m75_seen_.push_back(b.end);
+            if (m75_seen_.size() > 16) m75_seen_.erase(m75_seen_.begin());
+            return;
+        }
+        if (eof) { m75_add(mode, frames, ds, foff, z); return; }
+        m75_cand_ = true;
+        m75_cand_ds_ = ds;
+        m75_cand_frames_ = frames;
+        m75_confirm_at_ = ds + frames * M75_FRAME + M75_STEP;
+    }
+
+    // m75::acquire over audio [a0, a1): a 75 bps preamble as m75_run takes it, its end ds
+    // (absolute audio index), or false
+    // other: set to the end found of a preamble whose D1/D2 read clearly as a code other than
+    // 75 bps (another mode's preamble, or part of one), else left alone.
+    bool m75_acquire(long a0, long a1, Mode& mode, int& frames, long& ds, float& foff, double& z,
+                     long* other = nullptr) const {
+        a0 = std::max(a0, audio_base_);
+        a1 = std::min(a1, audio_end_);
+        if (a1 - a0 < static_cast<long>(0.8 * FS)) return false;
+        std::vector<float> rf(audio_.begin() + (a0 - audio_base_), audio_.begin() + (a1 - audio_base_));
+        const RxConfig rc;
+        const m75::Acquisition a = m75::acquire(rf, static_cast<float>(FS), rc.carrier_freq, rc.coarse_search_range);
+        if (!a.found) return false;
+        if (other && !a.is_75 && m75::clear_d(a)) *other = a0 + a.data_start;
+        if (m75_forced_) {
+            // D1/D2 read best as the forced mode's: a strong 75 bps transmission's own data
+            // can score as a countdown at some carrier offset, with no 75 bps code read there
+            mode = mode_;
+            if (!a.is_75 || (a.mode == ModeId::M75NS) != (mode_ == Mode::M75_SHORT)) return false;
+        } else {
+            if (!m75::takes_75(a)) return false;
+            mode = a.mode == ModeId::M75NS ? Mode::M75_SHORT : Mode::M75_LONG;
+        }
+        if (a.frames != preamble_frames(mode)) return false;
+        if (a.data_start < a.frames * M75_FRAME) return false;  // frames before the window counted
+        frames = a.frames;
+        ds = a0 + a.data_start;
+        foff = a.freq_offset_hz;
+        z = a.z;
+        return true;
+    }
+
+    // A 75 bps message ending its preamble at ds, unless one already ends within a frame of it
+    // or one that starts a frame or more inside a message of another mode already reported.
+    // True when the message is there (added now or before), false when it was refused.
+    bool m75_add(Mode mode, int frames, long ds, float foff, double z) {
+        for (const auto& p : m75_pre_)
+            if (std::labs(p.second - ds) <= M75_SAME) return true;
+        m75_floor_ = std::max(m75_floor_, ds);
+        const long pre0 = ds - static_cast<long>(frames) * M75_FRAME;
+        for (const auto& w : corr_win_)
+            if (pre0 > w.first && pre0 + M75_FRAME < w.second) {
+                if (opt_.verbose)
+                    fprintf(stderr, "m110a_rx: 75 bps preamble at %.3f s is inside the message before it\n", pre0 / FS);
+                return false;
+            }
+        m75_pre_.push_back({pre0, ds});
+        if (m75_pre_.size() > 64) m75_pre_.erase(m75_pre_.begin());
+        Message m;
+        m.id = next_id_++;
+        m.first_frame = pre0 / DECIM;
+        m.first_hit = m.first_frame;
+        m.preamble_end = ds / DECIM;
+        m.hits = frames;
+        m.metric = static_cast<float>(z);
+        m.freq = foff;
+        m.m75 = true;
+        m.m75_mode = mode;
+        m.m75_frames = frames;
+        m.m75_ds = ds;
+        if (opt_.verbose)
+            fprintf(stderr, "m110a_rx: 75 bps preamble %.3f-%.3f s, %s, z=%.1f, %+.1f Hz\n", pre0 / FS, ds / FS,
+                    mode_name(mode).c_str(), z, foff);
+        auto it = pending_.begin();
+        while (it != pending_.end() && it->first_frame <= m.first_frame) ++it;
+        pending_.insert(it, m);
+        return true;
+    }
+
+    // AUTO: a correlator chain that starts inside a 75 bps preamble belongs to that 75 bps
+    // message. Known preambles first; otherwise m75::acquire over the audio around the chain
+    // (the 75 bps acquisition takes a preamble once its end has passed, later than the chain
+    // is due), and a 75 bps preamble found there becomes the message.
+    bool m75_claims(const Message& m) {
+        const long a = m.first_hit * DECIM, tol = GRID_TOL * DECIM;
+        auto inside = [&](long pre0, long ds) { return a >= pre0 - tol && a <= ds + tol; };
+        for (const auto& p : m75_pre_)
+            if (inside(p.first, p.second)) return true;
+        Mode mode;
+        int frames = 0;
+        long ds = 0;
+        float foff = 0.0f;
+        double z = 0.0;
+        if (!m75_acquire(a - 25L * M75_FRAME, audio_end_, mode, frames, ds, foff, z)) return false;
+        if (!inside(ds - static_cast<long>(frames) * M75_FRAME, ds)) return false;
+        return m75_add(mode, frames, ds, foff, z);
     }
 
     // ---------------- message end and decode ----------------
@@ -404,22 +592,67 @@ private:
     // message that follows within 24 frames stays a message of its own.
     void process_messages(bool eof) {
         while (!pending_.empty()) {
+            if (pending_.front().m75) {  // one message, no chains to merge
+                // Its window is not ended by a 75 bps preamble found after it: a strong 75 bps
+                // transmission's data can score as one. Those that start before the decoded
+                // transmission ends are dropped once it is decoded.
+                Message& c = pending_.front();
+                const Message* next = nullptr;
+                for (size_t j = 1; j < pending_.size() && !next; j++)
+                    if (!pending_[j].m75 && pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN)
+                        next = &pending_[j];
+                if (!decide_end(c, next, eof)) return;
+                c.end_audio = std::min(c.end_audio, audio_end_);
+                c.out = decode(c);
+                report(c, c.out, c.hits, 1, 1);
+                const long end = c.out.end75;
+                pending_.pop_front();
+                for (auto it = pending_.begin(); it != pending_.end();) {
+                    if (it->m75 && it->first_frame * DECIM < end) {
+                        if (opt_.verbose)
+                            fprintf(stderr, "m110a_rx: 75 bps preamble at %.3f s is inside the message before it\n",
+                                    it->first_frame * DECIM / FS);
+                        claimed_++;
+                        it = pending_.erase(it);
+                    } else {
+                        ++it;
+                    }
+                }
+                continue;
+            }
             const Message& m = pending_.front();
             const long span_end = m.first_hit + 23 * FRAME_SCAN + GRID_TOL;
             // every chain that can start inside the longest preamble is closed
             if (!eof && (scan_t_ <= span_end + HOLD_SCAN + 1 || (have_chain_ && chain_.front().t <= span_end)))
                 break;
+            if (sacq_ && !m.m75_checked) {
+                const long hit = m.first_hit;  // m75_claims may add a message in front of m
+                const bool claimed = m75_claims(m);
+                if (!claimed) pending_.front().m75_checked = true;  // decoding it may wait for audio
+                if (claimed) {  // part of a 75 bps preamble: that message reports it
+                    if (opt_.verbose)
+                        fprintf(stderr, "m110a_rx: chain at %.3f s is inside a 75 bps preamble\n", hit * DECIM / FS);
+                    claimed_++;
+                    for (auto it = pending_.begin(); it != pending_.end(); ++it)
+                        if (!it->m75 && it->first_hit == hit) { pending_.erase(it); break; }
+                    continue;
+                }
+            }
             std::vector<size_t> cand;
             for (size_t i = 0; i < pending_.size() && pending_[i].first_hit <= span_end; i++)
-                if (i == 0 || on_grid(m.first_hit, pending_[i].first_hit)) cand.push_back(i);
+                if (i == 0 || (!pending_[i].m75 && on_grid(m.first_hit, pending_[i].first_hit))) cand.push_back(i);
             for (size_t i : cand) {
                 Message& c = pending_[i];
                 if (c.done) continue;
                 // A preamble that starts within 24 frames (the longest preamble) of c's first
                 // frame may be c's own: only a later one is a different message, and bounds c.
+                // A 75 bps preamble the 75 bps acquisition found does not: inside another mode's
+                // data it can be a false one (measured on a net 300L burst, z 13.8 and 17.4); a
+                // real one also has its correlator chain here at the SNR c was found at.
                 const Message* next = nullptr;
                 for (size_t j = i + 1; j < pending_.size() && !next; j++)
-                    if (pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN) next = &pending_[j];
+                    if (!pending_[j].m75 && pending_[j].first_frame >= c.first_frame + 24 * FRAME_SCAN)
+                        next = &pending_[j];
                 if (!decide_end(c, next, eof)) return;
                 c.end_audio = std::min(c.end_audio, audio_end_);
                 c.out = decode(c);
@@ -486,8 +719,32 @@ private:
             int hits = 0;
             for (size_t i : group) hits += pending_[i].hits;
             report(m, out, hits, static_cast<int>(group.size()), std::max(1, votes[bi]));
+            // a message of another mode: its decode read a mode, not 75 bps
+            const bool other = out.ran && out.r.mode != Mode::AUTO && out.r.mode != Mode::M75_SHORT &&
+                               out.r.mode != Mode::M75_LONG;
+            long end = 0;  // the latest decode window of the message
+            if (other)
+                for (size_t i : group) end = std::max(end, pending_[i].out.a1);
+            const long first = m.first_frame;
+            if (other) {
+                corr_win_.push_back({first * DECIM, end});
+                if (corr_win_.size() > 64) corr_win_.erase(corr_win_.begin());
+            }
             for (auto it = group.rbegin(); it != group.rend(); ++it)
                 pending_.erase(pending_.begin() + static_cast<long>(*it));
+            // 75 bps preambles found starting a frame or more before that window ends are inside
+            // the message just reported (a 75 bps transmission's own chain ends it first)
+            for (auto it = pending_.begin(); it != pending_.end();) {
+                if (it->m75 && it->first_frame > first && it->first_frame * DECIM + M75_FRAME < end) {
+                    if (opt_.verbose)
+                        fprintf(stderr, "m110a_rx: 75 bps preamble at %.3f s is inside the message before it\n",
+                                it->first_frame * DECIM / FS);
+                    claimed_++;
+                    it = pending_.erase(it);
+                } else {
+                    ++it;
+                }
+            }
         }
     }
 
@@ -536,7 +793,7 @@ private:
 
         RxConfig cfg;
         cfg.sample_rate = static_cast<float>(FS);
-        cfg.mode = mode_;
+        cfg.mode = m.m75 ? m.m75_mode : mode_;
         cfg.equalizer = eq_;
 
         std::stringstream sink;
@@ -553,6 +810,14 @@ private:
         long eom_bit = find_eom(o.d);
         if (eom_bit >= 0) o.d.resize(static_cast<size_t>(eom_bit / 8));
         o.eom = eom_bit >= 0 || o.r.eom_sequence;
+        if (m.m75) {  // to the end of the block holding the EOM and flush, or of the last block decoded
+            const m75::RxOut& x = m75::last_rx();
+            const ModeId id = m.m75_mode == Mode::M75_SHORT ? ModeId::M75NS : ModeId::M75NL;
+            const long S = m75::sets_per_block(id);
+            long sets = x.blocks * S;
+            if (x.eom_bit >= 0) sets = (x.eom_bit + 32 + m75::FLUSH_BITS + S - 1) / S * S;
+            o.end75 = x.preamble ? m.m75_ds + sets * m75::SET_SYMBOLS * SPS_AUDIO : -1;
+        }
         return o;
     }
 
@@ -620,6 +885,19 @@ private:
     std::vector<Hit> chain_;
     std::deque<Message> pending_;
     int next_id_ = 1;
+    // 75 bps acquisition (m75_detect): only in AUTO and forced 75S/75L
+    bool m75_forced_ = false;
+    std::unique_ptr<m75::SlidingAcq> sacq_;
+    long m75_next_ = 0;   // next grid point, audio index
+    long m75_floor_ = 0;  // it searches from here on: the end of the last 75 bps preamble
+    bool m75_cand_ = false;     // a preamble found, to be confirmed at m75_confirm_at_
+    long m75_cand_ds_ = 0;
+    int m75_cand_frames_ = 0;
+    long m75_confirm_at_ = 0;
+    std::vector<long> m75_seen_;  // sliding-search ends acquire looked at and did not take
+    std::vector<std::pair<long, long>> m75_pre_;  // 75 bps preambles taken: first frame, end (audio)
+    std::vector<std::pair<long, long>> corr_win_;  // other modes' messages reported: first frame, window end (audio)
+    int claimed_ = 0;     // correlator chains inside a 75 bps preamble, not reported
     int reported_ = 0;
     int decoded_ok_ = 0;
     bool expect_met_ = false;

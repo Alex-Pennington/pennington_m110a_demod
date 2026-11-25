@@ -25,8 +25,12 @@
 //    without it at the last interleaver block the signal covers.
 //  - success: the decoded bits, coded again, agree with the hard channel decisions on
 //    all but a fraction p of the message's coded bits, quality_db = 10 log10((1-p)/p) at
-//    least 11.25 dB, and on the worst interleaver block at least 6.5 dB (a fade longer than
-//    the 0.6 s interleaver decodes wrong while the message as a whole still agrees well).
+//    least 10.5 dB; on the worst interleaver block at least 6.5 dB (75L) or 7.0 dB (75S)
+//    (a fade longer than the 0.6 s interleaver decodes wrong while the message as a whole
+//    still agrees well); and the decoded path clear of its runner-ups: the sum over the
+//    message's bits of exp(-|L| / 8), L the max-log reliability (m75::bit_reliability), at
+//    most 0.07. That sum grows with the message's length, so a long message needs more
+//    margin than a short one, which p alone does not ask (docs/m110a-75bps.md, "Success").
 
 #ifndef M110A_M75_RX_H
 #define M110A_M75_RX_H
@@ -61,8 +65,12 @@ struct RxTuning {
     double weight_floor = 2.0;      // tap weight = profile - weight_floor x noise floor, >= 0
     double noise_beta = 0.02;       // per-set update of the noise floor
     double soft_scale = 16.0;       // soft bit = scale * (sqrt M0 - sqrt M1) / sqrt(noise)
-    double min_quality_db = 11.25;  // success: quality_db = 10 log10((1 - p) / p) at least this
-    double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block
+    double min_quality_db = 10.5;   // success: quality_db = 10 log10((1 - p) / p) at least this
+    double min_block_quality_db = 6.5;  // ... and the same over the worst interleaver block (75L)
+    double min_block_quality_db_75s = 7.0;  // ... (75S: a 90-bit block of 14-18% channel errors
+                                            //  is where a 75S decode goes wrong unseen)
+    double max_unreliable = 0.07;   // ... and sum over the message's bits of exp(-|L| / reliability_scale)
+    double reliability_scale = 8.0; //     at most this (|L|: max-log reliability, m75::bit_reliability)
     double signal_ratio = 2.0;      // a set carries signal when (Mwin - Mlose) / noise >= this
     bool excise = true;             // narrowband interference excision (m75_excise.h) in front
     double alt_profile_alpha = 0.01;  // a second decode with this profile update when the first
@@ -312,10 +320,20 @@ struct RxOut {
     long sets = 0, signal_sets = 0, blocks = 0;
     double p = 0.5;           // channel bit disagreement over the message
     double p_block = 0.5;     // the same over the worst interleaver block of it
+    std::vector<double> p_blocks;  // the same per interleaver block
+    double unreliable = 1e9;  // sum of exp(-|L| / reliability_scale) over the bits scored
     double snr_db = 0.0;      // estimated, 3 kHz noise bandwidth
     long excised_frames = 0;  // excision frames hit (0: the input went in untouched)
     std::string error;
+    std::vector<soft_bit_t> code;  // the soft bits the message was scored over, in code order
+    std::vector<int> re;           // the decoded bits coded again, the same span
 };
+
+/// The last RxOut decode() produced on this thread (for test tools: m75_ber --trace)
+inline RxOut& last_rx() {
+    thread_local RxOut r;
+    return r;
+}
 
 /// Max-log soft bits of one set (+ = 0, the Viterbi convention), Table IX inverted
 inline void soft_bits(const WalshRake::SetOut& o, double scale, soft_bit_t& first, soft_bit_t& last) {
@@ -390,6 +408,16 @@ inline std::vector<float> lead_in(const std::vector<float>& buffer, const std::v
 /// wrong reading cannot pass the decode gate (a 150S read as 75S decodes to garbage).
 inline bool clear_d(const Acquisition& a, double ratio = 1.25) { return a.pair_ratio >= ratio; }
 
+/// AUTO takes a found preamble as 75 bps: D1/D2 read best as 7,5 or 5,5, and either clearly
+/// (clear_d 1.1) or with the countdown they name (75S 3 frames, 75L 24). A 75S preamble
+/// gives D1 and D2 three segments each: at -9 dB one digit can sit near its runner-up while
+/// the other is clear, and the best pair then leads a pair sharing the clear digit by under
+/// 1.1 (measured: 2 of 24 at -9 dB, ratios 1.003 and 1.068, D1/D2 read right, 3 frames).
+inline bool takes_75(const Acquisition& a) {
+    if (!a.found || !a.is_75) return false;
+    return clear_d(a, 1.1) || a.frames == (a.mode == ModeId::M75NS ? 3 : 24);
+}
+
 /// Demodulate and decode the data after the preamble from matched-filter output y: fills
 /// r's sets, signal_sets, blocks, eom_bit, data, p, p_block and snr_db; returns the
 /// window shift the RAKE ended at.
@@ -456,6 +484,8 @@ inline long demod_decode(const std::vector<std::complex<float>>& y, int sps, lon
         dis += code[i] == 0 ? 0.5 : (hard != re[i] ? 1.0 : 0.0);
     }
     r.p = n ? dis / n : 0.5;
+    r.code.assign(code.begin(), code.begin() + static_cast<long>(n));
+    r.re.assign(re.begin(), re.begin() + static_cast<long>(n));
     // ... and block by block (code order is block by block after deinterleaving): a fade
     // longer than the interleaver leaves one block's errors to the code, which may decode
     // them wrong while the whole message still agrees well
@@ -470,8 +500,20 @@ inline long demod_decode(const std::vector<std::complex<float>>& y, int sps, lon
             d += code[i] == 0 ? 0.5 : (hard != re[i] ? 1.0 : 0.0);
         }
         r.p_block = std::max(r.p_block, d / (b1 - b0));
+        r.p_blocks.push_back(d / (b1 - b0));
     }
     if (n == 0) r.p_block = 0.5;
+    // How close the decoded path came to another: per information bit, how far the best path
+    // with that bit flipped lies behind it (max-log). A Viterbi error event is a runner-up
+    // that won; the sum below is about the number of bits whose runner-up came near, and it
+    // grows with the message's length, which a fraction such as p does not.
+    {
+        const auto rel = bit_reliability(std::vector<soft_bit_t>(code.begin(), code.begin() + static_cast<long>(n)),
+                                         r.eom_bit >= 0);
+        double u = 0.0;
+        for (double x : rel) u += std::exp(-x / t.reliability_scale);
+        r.unreliable = n ? u : 1e9;
+    }
 
     // SNR: the weights sit on the channel's taps, where the losing words see noise (and
     // multipath leakage) only: with w_j proportional to a tap's signal energy, M_win - M_lose
@@ -572,8 +614,8 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     char buf[320];
     snprintf(buf, sizeof buf,
              "[RX M75] acq z=%.1f frames=%d foff=%+.1f Hz D1,D2=%d,%d (pair ratio %.2f) data_start=%ld "
-             "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f snr=%.1f dB shift=%ld",
-             r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.snr_db,
+             "sets=%ld signal_sets=%ld blocks=%ld eom_bit=%ld p=%.4f p_block=%.4f unreliable=%.3g snr=%.1f dB shift=%ld",
+             r.acq.z, r.acq.frames, r.acq.freq_offset_hz, r.acq.d1, r.acq.d2, r.acq.pair_ratio, data_start, r.sets, r.signal_sets, r.blocks, r.eom_bit, r.p, r.p_block, r.unreliable, r.snr_db,
              shift);
     std::cout << buf;
     if (alt) std::cout << " profile_alpha=" << t.alt_profile_alpha;
@@ -581,6 +623,20 @@ inline RxOut receive(const std::vector<float>& rf, ModeId mode, float fs, float 
     if (r.excised_frames > 0) std::cout << " excised_frames=" << r.excised_frames << " cut=" << ex.cut_share;
     std::cout << std::endl;
     return r;
+}
+
+/// The success gate on a receive in `mode` (docs/m110a-75bps.md, "Success"): message
+/// quality, worst interleaver block, the decoded path clear of its runner-ups, and some
+/// bytes or an EOM. quality_db and q_block (if given) receive the two qualities.
+inline bool gate_passes(const RxOut& r, ModeId mode, const RxTuning& t, double* quality_db = nullptr,
+                        double* q_block = nullptr) {
+    const double q = 10.0 * std::log10((1.0 - r.p) / std::max(r.p, 1e-4));
+    const double qb = 10.0 * std::log10((1.0 - r.p_block) / std::max(r.p_block, 1e-4));
+    if (quality_db) *quality_db = q;
+    if (q_block) *q_block = qb;
+    const double min_block = mode == ModeId::M75NS ? t.min_block_quality_db_75s : t.min_block_quality_db;
+    return r.preamble && static_cast<float>(q) >= quality_threshold_db(t) && qb >= min_block &&
+           r.unreliable <= t.max_unreliable && (r.eom_bit >= 0 || r.blocks > 0);
 }
 
 /// In a forced mode, the Table XI data mode a clearly read D1/D2 names instead, or ""
@@ -602,11 +658,28 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
 
 /// ModemRX's AUTO pass, when the shared acquisition found no preamble: is there a 75 bps
 /// one, found and with D1/D2 read clearly as 7,5 or 5,5? Its mode in `mode`.
+///
+/// When D2 does not read 5 but D1 reads clearly as 7 with a 3-frame countdown (or as 5 with
+/// 24 frames), the audio is received as 75S (75L), and taken as that only when the decode
+/// passes the success gate: D2's three 75S segments misread at -9 dB while D1 read clearly
+/// (measured 2 of 48: D2 read 6 and 7, D1 at 6 and 2.5 times its runner-up). Otherwise the
+/// answer is no, as before, so a 150S or 4800S preamble below the shared acquisition still
+/// reads "Mode detection failed".
 inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
     const std::vector<float>& in = default_tuning().excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
     const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
-    if (!a.found || !a.is_75 || !clear_d(a, 1.1)) return false;
-    mode = a.mode;
+    if (takes_75(a)) {
+        mode = a.mode;
+        return true;
+    }
+    if (!a.found || a.d1_e < 2.0 * a.d1_e2) return false;
+    ModeId m;
+    if (a.frames == 3 && a.d1_top == 7) m = ModeId::M75NS;
+    else if (a.frames == 24 && a.d1_top == 5) m = ModeId::M75NL;
+    else return false;
+    const RxTuning& t = default_tuning();
+    if (!gate_passes(receive(rf, m, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t), m, t)) return false;
+    mode = m;
     return true;
 }
 
@@ -620,9 +693,9 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     if (!forced) {
         const std::vector<float>& in = t.excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
         const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
-        if (a.found && a.is_75 && clear_d(a, 1.1)) mode = a.mode;
+        if (takes_75(a)) mode = a.mode;
     }
-    const RxOut r = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);
+    const RxOut& r = last_rx() = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);
     res.mode = mode == ModeId::M75NS ? api::Mode::M75_SHORT : api::Mode::M75_LONG;
     if (r.preamble) {  // as the 75 bps acquisition read them: the frame locked onto is the last
         res.d1 = r.acq.d1;
@@ -640,20 +713,31 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     res.freq_offset_hz = r.acq.freq_offset_hz;
     res.snr_db = static_cast<float>(r.snr_db);
     res.ber_estimate = static_cast<float>(r.p);
-    res.quality_db = static_cast<float>(10.0 * std::log10((1.0 - r.p) / std::max(r.p, 1e-4)));
-    const double q_block = 10.0 * std::log10((1.0 - r.p_block) / std::max(r.p_block, 1e-4));
+    double quality = 0.0, q_block = 0.0;
+    const bool pass = gate_passes(r, mode, t, &quality, &q_block);
+    res.quality_db = static_cast<float>(quality);
     res.quality_threshold_db = quality_threshold_db(t);
-    res.success = res.quality_db >= res.quality_threshold_db && q_block >= t.min_block_quality_db &&
-                  (r.eom_bit >= 0 || r.blocks > 0);
+    for (double pb : r.p_blocks)
+        res.block_quality_db.push_back(static_cast<float>(10.0 * std::log10((1.0 - pb) / std::max(pb, 1e-4))));
+    res.block_quality_min_db = res.block_quality_db.empty()
+                                   ? res.quality_db
+                                   : *std::min_element(res.block_quality_db.begin(), res.block_quality_db.end());
+    const double min_block = mode == ModeId::M75NS ? t.min_block_quality_db_75s : t.min_block_quality_db;
+    res.block_quality_threshold_db = static_cast<float>(min_block);
+    res.success = pass;
     if (!res.success) {
         char buf[200];
         if (r.eom_bit < 0 && r.blocks == 0)
             snprintf(buf, sizeof buf, "Signal covers 0 whole 75 bps interleaver blocks; no bytes reported");
+        else if (res.quality_db >= res.quality_threshold_db && q_block >= min_block)
+            snprintf(buf, sizeof buf,
+                     "Decoded path within reach of others: unreliability %.2f above %.2f; bytes not trusted",
+                     r.unreliable, t.max_unreliable);
         else if (res.quality_db >= res.quality_threshold_db)
             snprintf(buf, sizeof buf,
                      "Worst interleaver block quality %.1f dB below %.1f dB (channel bits %.1f%% off the decoded "
                      "path there); bytes not trusted",
-                     q_block, t.min_block_quality_db, 100.0 * r.p_block);
+                     q_block, min_block, 100.0 * r.p_block);
         else
             snprintf(buf, sizeof buf,
                      "Decode quality %.1f dB below %.1f dB (channel bits %.1f%% off the decoded path); bytes not trusted",
