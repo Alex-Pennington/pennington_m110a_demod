@@ -402,6 +402,16 @@ inline std::vector<float> lead_in(const std::vector<float>& buffer, const std::v
 /// wrong reading cannot pass the decode gate (a 150S read as 75S decodes to garbage).
 inline bool clear_d(const Acquisition& a, double ratio = 1.25) { return a.pair_ratio >= ratio; }
 
+/// AUTO takes a found preamble as 75 bps: D1/D2 read best as 7,5 or 5,5, and either clearly
+/// (clear_d 1.1) or with the countdown they name (75S 3 frames, 75L 24). A 75S preamble
+/// gives D1 and D2 three segments each: at -9 dB one digit can sit near its runner-up while
+/// the other is clear, and the best pair then leads a pair sharing the clear digit by under
+/// 1.1 (measured: 2 of 24 at -9 dB, ratios 1.003 and 1.068, D1/D2 read right, 3 frames).
+inline bool takes_75(const Acquisition& a) {
+    if (!a.found || !a.is_75) return false;
+    return clear_d(a, 1.1) || a.frames == (a.mode == ModeId::M75NS ? 3 : 24);
+}
+
 /// Demodulate and decode the data after the preamble from matched-filter output y: fills
 /// r's sets, signal_sets, blocks, eom_bit, data, p, p_block and snr_db; returns the
 /// window shift the RAKE ended at.
@@ -631,7 +641,7 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
 inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
     const std::vector<float>& in = default_tuning().excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
     const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
-    if (!a.found || !a.is_75 || !clear_d(a, 1.1)) return false;
+    if (!takes_75(a)) return false;
     mode = a.mode;
     return true;
 }
@@ -646,7 +656,7 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
     if (!forced) {
         const std::vector<float>& in = t.excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
         const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
-        if (a.found && a.is_75 && clear_d(a, 1.1)) mode = a.mode;
+        if (takes_75(a)) mode = a.mode;
     }
     const RxOut& r = last_rx() = receive(rf, mode, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t);
     res.mode = mode == ModeId::M75NS ? api::Mode::M75_SHORT : api::Mode::M75_LONG;

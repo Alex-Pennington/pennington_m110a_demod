@@ -359,7 +359,7 @@ private:
     // m75::acquire over the M75_WINDOW before audio index t (from the last 75 bps preamble's
     // end on). Taken: a preamble found whose countdown is the length its D1/D2 name (75S 3
     // frames, 75L 24: the first frames of a 75L preamble score well as a 3-frame countdown),
-    // read clearly as 7,5 or 5,5 in AUTO, the forced mode's length when forced; and two runs
+    // read best as 7,5 or 5,5 in AUTO (m75::takes_75), the forced mode's length when forced; and two runs
     // M75_STEP apart agreeing on its end, or the end of the input.
     void m75_run(long t, bool eof) {
         const long w0 = std::max({t - M75_WINDOW, m75_floor_, audio_base_});
@@ -396,7 +396,7 @@ private:
         if (m75_forced_) {
             mode = mode_;
         } else {
-            if (!a.is_75 || !m75::clear_d(a, 1.1)) return false;
+            if (!m75::takes_75(a)) return false;
             mode = a.mode == ModeId::M75NS ? Mode::M75_SHORT : Mode::M75_LONG;
         }
         if (a.frames != preamble_frames(mode)) return false;
