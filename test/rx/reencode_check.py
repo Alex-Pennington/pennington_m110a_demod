@@ -13,9 +13,11 @@ with the received ones:
   - The receive grid comes from the probes, not from the receiver, tracked over 8-frame
     windows +-50 symbols so a timing step does not break it. The probes repeat every
     lcm(160, frame) symbols, so the data start is tried at each such period from the
-    preamble on, and the one the decoded bytes agree with best is kept.
+    preamble on where a block's frames carry probes (PROBE_FLOOR of the level at the grid found),
+    and the one the decoded bytes agree with best is kept.
   - The audio is brought to baseband at the carrier m110a_rx acquired the message at
-    (acq_foff_hz), or at the nominal 1800 Hz where the probes cohere better there; the rest
+    (acq_foff_hz), or at the nominal 1800 Hz where the probes cohere as well there or better
+    (a tie goes to the nominal carrier); the rest
     of the offset is measured from the probes (their phase step from frame to frame, to
     +-30 Hz) and removed. A frame's data are then phased from the probes around them (the
     frame before's and its own), its probes from the probes of the frames either side (never
@@ -128,13 +130,49 @@ def baseband(a, fc=FC):
     return np.convolve(a * np.exp(-2j * np.pi * fc * np.arange(len(a)) / FS) * 2, rrc(), mode='same')
 
 
-def acquired_offset(kv):
-    """The carrier offset (Hz) m110a_rx acquired the message at (acq_foff_hz), or 0 without one."""
+ACQ_RANGE = 80.0  # Hz: the receiver's coarse_search_range, the most it takes up past the dial it was told
+
+
+def acquired_offset(kv, told=0.0):
+    """The carrier offset (Hz) m110a_rx acquired the message at (acq_foff_hz), or 0 without one,
+    clamped to +-(ACQ_RANGE + |told|): the audio sits at the dial m110a_rx was told, told Hz from the
+    nominal one, and the receiver takes up at most ACQ_RANGE more."""
     try:
         f = float(kv.get('acq_foff_hz', '0'))
     except ValueError:
         return 0.0
-    return f if np.isfinite(f) else 0.0
+    if not np.isfinite(f):
+        return 0.0
+    lim = ACQ_RANGE + abs(told)
+    return float(min(lim, max(-lim, f)))
+
+
+PROBE_FLOOR = 0.5  # a data start is tried only where a block's probes reach this share of the grid's level
+
+
+def frame_cohs(bb, d, u, k, f0, f1):
+    """Each frame's probe coherence (as frame_coherence) on the grid starting at sample d, frames f0 to f1."""
+    n, ref = probes(u, k, f0 * (u + k), f1 * (u + k))
+    x = bb[np.clip(d + n * SPS, 0, len(bb) - 1)].reshape(-1, k)
+    z = np.abs((x * np.conj(ref.reshape(-1, k))).sum(1)) ** 2
+    return z / ((np.abs(x) ** 2).sum(1) * k + 1e-30)
+
+
+def probe_level(bb, d, u, k, nf):
+    """The median probe coherence of nf frames from d (a whole block: a fade inside it does not move the median)."""
+    nf = max(1, min(nf, (len(bb) - d) // ((u + k) * SPS) - 1))
+    return float(np.median(frame_cohs(bb, d, u, k, 0, nf)))
+
+
+def carries_probes(bb, d, u, k, level, nf):
+    """The block from d carries probes: the median coherence of its nf frames is PROBE_FLOOR of level (the
+    same over the block at the grid found) or more. A block mostly over the preamble does not: there all-random
+    bytes put block 1 at the preamble's start (300L, 10 dB, station -60 Hz) and it read NOT VERIFIABLE. Over a
+    whole block, not a few frames: under CCIR poor fading the 16 frames after the true start sat in a fade, under
+    half the level, and the true start was refused (right bytes NOT REAL)."""
+    if d < 0:
+        return False
+    return probe_level(bb, d, u, k, nf) >= PROBE_FLOOR * level
 
 
 def probes(u, k, n0, n1):
@@ -375,7 +413,7 @@ def window_check(pok, dok, deep_p, deep_d, u, k):
 EOM_BITS = 32 + 144  # EOM 4B65A5B2 and the coder flush, after the data (M110ACodec)
 
 
-def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, first):
+def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, first, fo=0.0):
     """With eom=1, the blocks the per-block check leaves out: the data's last, partial block, the
     EOM and flush, and zero padding to the end of the interleaver block, all of which the
     re-encoded reference carries (ModemTX, include_eom). Printed as 'tail block N' lines with
@@ -404,10 +442,13 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, f
     room = lambda dd: min((len(bb) - dd) // (p * SPS) - 1, (len(tb) - t0) // (p * SPS) - 1)
     if d is None:  # no whole block chose the start: choose it over all the blocks, as check() does
         best = None
+        level = probe_level(bb, d0, u, k, fpb)
         for m in range(-((d0 - start) // period), 2):
             dd = d0 + m * period
             if room(dd) < nframes:
                 continue
+            if m != 0 and not carries_probes(bb, dd, u, k, level, fpb):
+                continue  # the probe floor, as in check()
             off = track(bb, dd, u, k, nframes)
             score = np.mean([r[1] for r in agreement(bb, dd, tb, t0, rate, nframes, total, off, fpb)])
             if best is None or score > best[0]:
@@ -429,7 +470,7 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, f
         steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
         # indented and without the label: a second head line would read as a second message
         print(f'  tail check (eom=1, {total} block{"s" if total > 1 else ""}): data start {d / FS:.4f} s '
-              f'(probe coherence {coh:.2f}), grid steps '
+              f'(probe coherence {coh:.2f}, carrier {fo:+.1f} Hz), grid steps '
               + (', '.join(f'frame {s + 1} {(off[s + 1] - off[s]) / SPS:+.1f} sym' for s in steps) or 'none'))
     if a.frames_json:
         dumps.append({'mode': mode, 'start_s': kv.get('start_s'), 'bytes': len(payload),
@@ -563,10 +604,12 @@ def check(a, x, sr, work):
         # the receiver acquired, and at the nominal one; the probes alone choose (the higher probe
         # coherence), never the bytes. At 300L, -2 dB, a right decode told 50 Hz from its carrier read
         # probes 0.548, data 0.522 and NOT REAL at the nominal carrier, probes 0.890 = data at its own.
-        fcs = sorted({0.0, round(acquired_offset(kv), 2)}, key=abs)
+        fcs = sorted({0.0, round(acquired_offset(kv, a.offset_hz), 2)}, key=abs)
         best_f = None
         for fo in fcs:
             if fo not in bbs:
+                if len(bbs) >= 4:  # bounded: the nominal carrier's stays, the oldest other goes
+                    bbs.pop(next(f for f in bbs if f != 0.0))
                 bbs[fo] = baseband(rx, FC + fo)
             c = find_data_start(bbs[fo], start + int((pre_s - 0.3) * FS), start + int((pre_s + 0.3) * FS), u, k)
             if best_f is None or c[0] > best_f[1][0]:
@@ -579,18 +622,21 @@ def check(a, x, sr, work):
             tb = tx_symbols(a.tx, mode, pl, work)
             tbs[which] = (tb, find_data_start(tb, 0, len(tb) - 1, u, k)[1])
         if blocks == 0:
-            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, None, tbs, dumps, 0)
+            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, None, tbs, dumps, 0, fo)
             continue
         # The probe grid repeats every period, so the probes alone leave the data start open
         # by whole periods: try each from the found preamble's start on, keep the one the
         # decoded bytes agree with best; the control is scored at that same start.
         period = int(np.lcm(160, p)) * SPS
+        level = probe_level(bb, d0, u, k, nframes // blocks)
         best = None
         for m in range(-((d0 - start) // period), 2):
             d = d0 + m * period
             nf = min(nframes, (len(bb) - d) // (p * SPS) - 1)
             if nf < nframes // blocks:
                 continue
+            if m != 0 and not carries_probes(bb, d, u, k, level, nframes // blocks):
+                continue  # the probe floor: no data start where the frames carry no probes
             off = track(bb, d, u, k, nf)
             tb, t0 = tbs['decoded']
             nf = min(nf, (len(tb) - t0) // (p * SPS) - 1)
@@ -622,7 +668,7 @@ def check(a, x, sr, work):
             fpb = nf // blocks
             print_window_check(b, b * fpb, fpb, pok, dok, deep_p, deep_d, u, k, sep, rate)
         if blocks:
-            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, blocks)
+            tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, blocks, fo)
     if not found:
         print(f'{a.capture}: no message')
     if a.frames_json:
