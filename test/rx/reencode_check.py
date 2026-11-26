@@ -488,8 +488,11 @@ def one_byte_power(s, sep, rate):
     from scipy.stats import binom, ncx2
     d = CODE_WEIGHT * REPEAT[rate]
     pf = float(np.mean(ncx2.sf(2 * TAU, 2, 2 * np.asarray(sep, float)))) if len(sep) else 0.0
+    # Counted from none far off, not from the block's own count: in a block that holds a wrong byte the
+    # far-off symbols it already shows are that byte's, and counting from them called the block real
+    # (300L, 3 dB, one wrong byte: 2 far off, p 1.5e-6, 'one more would fire', power over 0.99).
     need = 1
-    while poisson_sf(s['far_data'] + need, s['expected']) >= ALPHA and need <= d:
+    while poisson_sf(need, s['expected']) >= ALPHA and need <= d:
         need += 1
     far_power = float(binom.sf(need - 1, d, pf)) if need <= d else 0.0
     pa = s['probe_ok'] / s['probes']

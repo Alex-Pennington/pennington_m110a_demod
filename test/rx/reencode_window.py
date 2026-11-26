@@ -195,6 +195,16 @@ def case_counts():
     ok &= hi and not lo
     print(f'counts one-byte power, 2400S at 20 dB: {"verifiable" if hi else "not verifiable: " + why_hi}')
     print(f'counts one-byte power, 2400S at 8 dB: {"verifiable" if lo else "not verifiable"} ({why_lo})')
+    # a 300L block at 3 dB holding one wrong byte (fixtures/one_byte_escape_300L_3dB.json: its window-check counts
+    # and per-frame sep): 2 far-off data symbols, p 1.5e-6. Counted from those 2, one more would fire and the
+    # block read real; counted from none far off, one wrong byte would not show, and it is NOT VERIFIABLE
+    import json
+    with open(os.path.join(HERE, 'fixtures', 'one_byte_escape_300L_3dB.json')) as fh:
+        fx = json.load(fh)
+    esc, why_esc = rc.one_byte_power(fx['s'], fx['sep'], fx['rate'])
+    ok &= not esc
+    print(f'counts one-byte power, 300L at 3 dB with one wrong byte (2 far off): '
+          f'{"verifiable -> real (FAIL)" if esc else "not verifiable"} ({why_esc})')
     # gale-rx's strict parse accepts the three verdict forms as the check prints them, and fails a bare
     # NOT VERIFIABLE, an unknown word and a second verdict for one block
     head = ': 2400S start 3.005 s success=1 bytes=540 sha256 0123456789ab: data start 3.6055 s'
