@@ -649,6 +649,57 @@ The power baseline's cost, on the same audio: right blocks real at 3, 6 and 10 d
 and 119 after; at 150L, 600L, 1200L and 2400S, 60 and 60. No right block went from real to NOT
 VERIFIABLE in these sets.
 
+### Past 30 Hz on fresh seeds, under fading; the probe floor (2026-11-26)
+
+The sets above shaped the power baseline, so they are development data. This set is new: seeds
+30000 and up, the station 30 to 110 Hz off with either sign (the regime the carrier fix opens),
+AWGN, CCIR moderate and CCIR poor (hfchansim presets), 300L and 150L, 600L, 1200L, 2400S. It is
+reproduced with `test/rx/reencode_calib.py` (`run` per mode, SNR and channel with `--foff-min 30
+--foff-max 110`, then `report`). Variants per input: the sent bytes (R); 1, 2 or 3 bytes changed
+(W1-W3); one whole block random (WB); all bytes random (RND); the receiver's own bytes when wrong
+(N). "before" is 0b6817e's check, and "after" is this branch: the carrier fix, the power baseline,
+and the probe floor below.
+
+**The probe floor.** The data start is tried at each probe period from the preamble on, and the
+bytes choose among them. All-random bytes at 10 dB with the station 60 Hz off (300L) chose the
+preamble's start. Block 1 then lay over the preamble and read NOT VERIFIABLE, not NOT REAL. A start
+other than the grid found is now tried only where the median probe coherence over a whole block
+from it is at least half the same median at the grid found (`PROBE_FLOOR`). Over a whole block, not
+a few frames: the first version read the 16 frames after the start, and under CCIR poor those sat
+in a fade. It refused the true start, the bytes chose one two periods late, and right bytes read
+NOT REAL in every block (15 of 60 messages on poor, 3 of 56 on moderate). `reencode_window
+preamble` carries both inputs. The random-bytes half fails on cb6dc30 and the fade half fails on
+the 16-frame floor. Both pass now.
+
+Measured (success=1 messages, as gale-rx checks; Clopper-Pearson 95 %):
+
+| Channel | Right refused, before | after | Right after: ok / NOT VERIFIABLE | Wrong messages accepted, before and after | Wrong blocks real, before and after |
+|---|---|---|---|---|---|
+| AWGN | 111/112 | 0/112 (≤ 3.2 %) | 66 / 46 | 0/560 (≤ 0.7 %) | 0/849 (≤ 0.4 %) |
+| CCIR moderate | 55/56 | 0/56 (≤ 6.4 %) | 24 / 32 | 0/280 (≤ 1.3 %) | 0/422 (≤ 0.9 %) |
+| CCIR poor | 60/60 | 0/60 (≤ 6.0 %) | 17 / 43 | 0/300 (≤ 1.2 %) | 0/435 (≤ 0.8 %) |
+| All | 226/228 | 0/228 (≤ 1.6 %) | 107 / 121 | 0/1140 (≤ 0.3 %) | 0/1706 (≤ 0.2 %) |
+
+By variant, all channels (message verdicts NOT REAL / NOT VERIFIABLE / ok):
+
+| Variant | before | after | Wrong blocks real, after |
+|---|---|---|---|
+| R | 226 / 2 / 0 | 0 / 121 / 107 | — |
+| W1 | 227 / 1 / 0 | 206 / 22 / 0 | 0/228 |
+| W2 | 227 / 1 / 0 | 211 / 17 / 0 | 0/333 |
+| W3 | 227 / 1 / 0 | 214 / 14 / 0 | 0/394 |
+| WB | 227 / 1 / 0 | 228 / 0 / 0 | 0/228 |
+| RND | 227 / 1 / 0 | 228 / 0 / 0 | 0/523 |
+
+**The receiver's own wrong decodes.** None reached success=1 in this set, so the table above has
+none. There were 24, all 2400S under CCIR moderate and poor past 30 Hz, all success=0, with 3 to
+378 wrong bytes. gale-rx does not check those. Checked anyway, all 24 are content wrong after (23
+before), and none of their 44 wrong blocks is real either way. A success=1 wrong decode past 30 Hz
+was not observed, so its rate here is open.
+
+Not covered: 2400S under fading (every decode success=0); the 1200L 6 dB chunk of the first
+held-out set, redone, gives right 0/3 refused after and 3/3 before, with 0/9 wrong accepted.
+
 ## Left open
 
 - **`signal_frames` on the hand-cut slice:** the base receiver reports 1 block (180 B).
