@@ -640,13 +640,13 @@ inline bool gate_passes(const RxOut& r, ModeId mode, const RxTuning& t, double* 
 }
 
 /// In a forced mode, the Table XI data mode a clearly read D1/D2 names instead, or ""
-/// (as ModemRXImpl::preamble_contradicts does for the other modes)
-inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
+/// (as ModemRXImpl::preamble_contradicts does for the other modes). ratio: clear_d's.
+inline std::string preamble_contradicts(const Acquisition& a, ModeId forced, double ratio = 1.25) {
     static const struct { int d1, d2; const char* name; } KNOWN[] = {
         {7, 5, "75S"}, {5, 5, "75L"}, {7, 4, "150S"}, {5, 4, "150L"}, {6, 7, "300S"}, {4, 7, "300L"},
         {6, 6, "600S"}, {4, 6, "600L"}, {6, 5, "1200S"}, {4, 5, "1200L"}, {6, 4, "2400S"}, {4, 4, "2400L"},
         {7, 6, "4800S"}};
-    if (!clear_d(a)) return "";
+    if (!clear_d(a, ratio)) return "";
     for (const auto& k : KNOWN)
         if (k.d1 == a.d1 && k.d2 == a.d2) {
             const bool same = (forced == ModeId::M75NS && k.d1 == 7 && k.d2 == 5) ||
@@ -656,15 +656,39 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced) {
     return "";
 }
 
+/// D1/D2 pair ratio (clear_d) from which AUTO takes the 75 bps acquisition's reading of
+/// another Table XI code as saying the transmission is not 75 bps (auto_contradicts): 1.1,
+/// the clarity at which AUTO takes a 75 bps reading (takes_75). No genuine 75 bps decode read
+/// another code at any ratio (1520 calibration decodes); 150S read as 75S read 7,4 at 1.17-1.84
+/// (docs/m110a-75bps.md, "AUTO: a decode the preamble says is not 75 bps").
+constexpr double AUTO_CONTRA_RATIO = 1.1;
+
+/// In AUTO, what the 75 bps acquisition, reading the whole preamble, says the transmission
+/// is instead of `mode`, or "": D1/D2 read clearly as another Table XI code, or a countdown
+/// of the other length (75S counts 3 frames, 75L 24). The mode in AUTO comes from one
+/// preamble frame (the shared acquisition) or from D1 alone (find_low_snr), and a fade or
+/// noise can misread that; the decode does not tell: a 150S or 1200L signal decoded as 75S
+/// passed the success gate (docs/m110a-75bps.md, "AUTO: a decode the preamble says is
+/// not 75 bps").
+inline std::string auto_contradicts(const Acquisition& a, ModeId mode, double ratio = AUTO_CONTRA_RATIO) {
+    const std::string other = preamble_contradicts(a, mode, ratio);
+    if (!other.empty()) return "D1/D2 " + other;
+    const int frames = mode == ModeId::M75NS ? 3 : 24;
+    if (a.frames != frames) return "a " + std::to_string(a.frames) + "-frame countdown";
+    return "";
+}
+
 /// ModemRX's AUTO pass, when the shared acquisition found no preamble: is there a 75 bps
 /// one, found and with D1/D2 read clearly as 7,5 or 5,5? Its mode in `mode`.
 ///
 /// When D2 does not read 5 but D1 reads clearly as 7 with a 3-frame countdown (or as 5 with
 /// 24 frames), the audio is received as 75S (75L), and taken as that only when the decode
 /// passes the success gate: D2's three 75S segments misread at -9 dB while D1 read clearly
-/// (measured 2 of 48: D2 read 6 and 7, D1 at 6 and 2.5 times its runner-up). Otherwise the
-/// answer is no, as before, so a 150S or 4800S preamble below the shared acquisition still
-/// reads "Mode detection failed".
+/// (measured 2 of 48: D2 read 6 and 7, D1 at 6 and 2.5 times its runner-up). Not when D1/D2
+/// read clearly as another code (auto_contradicts): a 150S preamble with D1 clearly 7 and D2
+/// clearly 4 was received as 75S and passed the gate. Otherwise the answer is no, as before,
+/// so a 150S or 4800S preamble below the shared acquisition still reads "Mode detection
+/// failed".
 inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg, ModeId& mode) {
     const std::vector<float>& in = default_tuning().excise ? excised(rf, cfg.sample_rate, cfg.carrier_freq) : rf;
     const Acquisition a = acquire_cached(in, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range);
@@ -677,6 +701,7 @@ inline bool find_low_snr(const std::vector<float>& rf, const api::RxConfig& cfg,
     if (a.frames == 3 && a.d1_top == 7) m = ModeId::M75NS;
     else if (a.frames == 24 && a.d1_top == 5) m = ModeId::M75NL;
     else return false;
+    if (!auto_contradicts(a, m).empty()) return false;
     const RxTuning& t = default_tuning();
     if (!gate_passes(receive(rf, m, cfg.sample_rate, cfg.carrier_freq, cfg.coarse_search_range, t), m, t)) return false;
     mode = m;
@@ -749,6 +774,13 @@ inline api::DecodeResult decode(const std::vector<float>& rf, const api::RxConfi
         res.success = false;
         res.error = api::Error(api::ErrorCode::RX_DECODE_FAILED,
                                "Preamble D1/D2 read " + other + ", not the forced mode; bytes not trusted");
+    }
+    const std::string instead = forced ? "" : auto_contradicts(r.acq, mode);
+    if (res.success && !instead.empty()) {
+        res.success = false;
+        res.error = api::Error(api::ErrorCode::RX_DECODE_FAILED,
+                               "Preamble read over its whole countdown gives " + instead + ", not " +
+                                   (mode == ModeId::M75NS ? "75S" : "75L") + "; bytes not trusted");
     }
     return res;
 }
