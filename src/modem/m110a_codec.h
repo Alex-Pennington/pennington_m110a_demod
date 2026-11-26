@@ -696,6 +696,10 @@ public:
     /// Soft bits per interleaver block
     int block_size() const { return interleaver_.block_size(); }
 
+    /// The Viterbi input of the last decode_soft_bits() call, every block: two soft
+    /// values per information bit (+ = 0), deinterleaved and with repeats combined
+    const std::vector<int8_t>& last_viterbi_input() const { return last_viterbi_input_; }
+
     /**
      * The Viterbi input of one interleaver block of soft bits (block_size() of them):
      * deinterleaved, and with symbol repetition each FEC bit pair's repeats combined.
@@ -828,6 +832,8 @@ public:
     }
     
 private:
+    std::vector<int8_t> last_viterbi_input_;
+
     /**
      * Detect 180° phase offset using probe symbols
      * Returns 0 if no inversion needed, 4 if 180° inversion needed
@@ -893,6 +899,8 @@ private:
             soft_for_viterbi.insert(soft_for_viterbi.end(), v.begin(), v.end());
         }
         
+        last_viterbi_input_ = soft_for_viterbi;
+
         // Step 3: Viterbi decode (except 4800 bps uncoded)
         std::vector<uint8_t> decoded_bits;
         if (config_.bps == 4800) {
