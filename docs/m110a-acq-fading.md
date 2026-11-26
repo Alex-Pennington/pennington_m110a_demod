@@ -221,6 +221,15 @@ preamble ("Mode detection failed", single-path correlation 0.62-0.68 under its 0
 branch's multipath search takes them, and the 300L threshold, lowered to 1.75 dB to keep the
 exact -2 dB decodes (worst blocks 1.97-2.01 dB), admits them. Not addressed here.
 
+`test/rx/repro_rake_escape.sh BIN_DIR OUT_DIR` rebuilds these four inputs (300L seeds 144, 208,
+211 and 150L seed 208, AWGN -2 dB, the rig above), writes each as I/Q and as a 48 kHz mono FLAC
+(m110a_rx's own audio of that I/Q, the form gale-rx records) with a closed sidecar, and prints the
+verdict and the bytes against the payload sent: on the I/Q, and through a model of gale-rx's audio
+call (8 kHz, then 96 kHz cf32 at +10 kHz). On this branch's build all four are `success=1` on the
+I/Q with every byte wrong. Through the audio model only 300L seed 211 still is (q 1.6 dB); the
+others read q 1.2-1.4 dB, under 1.5, and are refused. gale-rx's own verdict on the FLACs is gale-rx's
+to give.
+
 **A second measure, tried and dropped: the Viterbi path reliability.** The 75 bps gate's term
 (docs/m110a-75bps.md): over the message's information bits, to the end of the EOM, the sum of
 exp(-|L|/s), |L| the max-log reliability of each bit (`m75::bit_reliability`, the same K=7 code)
