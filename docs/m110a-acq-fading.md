@@ -198,6 +198,36 @@ and lies above the cap. The block quality is a channel-SNR figure; a decode one 
 and one exact read the same channel. Seed 23 is one instance of this residual, not a fault of the
 recalibration.
 
+**A second measure, tried and dropped: the Viterbi path reliability.** The 75 bps gate's term
+(docs/m110a-75bps.md): over the message's information bits, to the end of the EOM, the sum of
+exp(-|L|/s), |L| the max-log reliability of each bit (`m75::bit_reliability`, the same K=7 code)
+over the Viterbi input. It was computed in a calibration build for 150-1200 bps and swept on
+calibration seeds 1001-1100 at the knee (600L/600S at 0 dB, 1200S/1200L at 3 dB), scale s = 16
+(s = 8 gives the same picture), per transmission exact / wrong successes:
+
+| Highest sum allowed | 600L | 600S | 1200S | 1200L |
+|---|---|---|---|---|
+| no term | 94 / 4 | 96 / 4 | 77 / 1 | 69 / 0 |
+| 3.0 | 92 / 2 | 94 / 3 | 77 / 1 | 69 / 0 |
+| 1.0 | 85 / 2 | 91 / 2 | 75 / 1 | 68 / 0 |
+| 0.3 | 83 / 1 | 84 / 2 | 66 / 1 | 60 / 0 |
+| 0.1 | 75 / 0 | 69 / 0 | 48 / 1 | 55 / 0 |
+
+Clearing every wrong success costs 19 of 94 exact 600L decodes and 27 of 96 600S ones, and the
+1200S one stays at any setting: it sums 0.035, below the median exact decode (0.045). About half of
+the knee's wrong successes are decoded with a wide margin. On 600L seed 1017 (2 bytes wrong) the
+six bits with the lowest |L| are exactly the six wrong bits, but the true path lies 70 behind the
+decoded one, while exact decodes reach down to 2. The decoder followed a run of strongly wrong
+soft bits. Inference, not measured: the tracking DFE feeding its own wrong decisions back makes
+such runs (error propagation). No term over the decoder's own metrics can see an error the soft
+bits themselves assert. The measure was not kept.
+
+**What catches these: a byte check against the signal.** `test/rx/reencode_check.py`, which gale-rx
+runs on 110A decodes (greybeard-ale `tools/gale_rx.py`), re-encodes the bytes and checks them against the received symbols. On
+seed 1017's audio (the m110a_rx `--dump-audio` output) it gives block 1 NOT REAL (49 of 5720 data
+symbols far off, p 1.3e-198); on an exact 600L 0 dB decode, the control (the 54-byte MS-DMT
+reference transmission through `synth_iq.py`, seed 23), NOT VERIFIABLE (0 far off). That is one pair, not a measured rate.
+
 ## Measured
 
 The base is origin/master 018f0c6. Both builds decode the same impaired files, through munin's
