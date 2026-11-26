@@ -14,8 +14,10 @@ with the received ones:
     windows +-50 symbols so a timing step does not break it. The probes repeat every
     lcm(160, frame) symbols, so the data start is tried at each such period from the
     preamble on, and the one the decoded bytes agree with best is kept.
-  - The carrier offset is measured from the probes (their phase step from frame to frame,
-    to +-30 Hz) and removed. A frame's data are then phased from the probes around them (the
+  - The audio is brought to baseband at the carrier m110a_rx acquired the message at
+    (acq_foff_hz), or at the nominal 1800 Hz where the probes cohere better there; the rest
+    of the offset is measured from the probes (their phase step from frame to frame, to
+    +-30 Hz) and removed. A frame's data are then phased from the probes around them (the
     frame before's and its own), its probes from the probes of the frames either side (never
     their own: under multipath a gain measured on a frame's own fixed probe pattern decides
     those probes better than the data), and each symbol is decided among the mode's points
@@ -122,8 +124,17 @@ def rrc(alpha=0.35, span=6):
     return h / np.sqrt(np.sum(h ** 2))
 
 
-def baseband(a):
-    return np.convolve(a * np.exp(-2j * np.pi * FC * np.arange(len(a)) / FS) * 2, rrc(), mode='same')
+def baseband(a, fc=FC):
+    return np.convolve(a * np.exp(-2j * np.pi * fc * np.arange(len(a)) / FS) * 2, rrc(), mode='same')
+
+
+def acquired_offset(kv):
+    """The carrier offset (Hz) m110a_rx acquired the message at (acq_foff_hz), or 0 without one."""
+    try:
+        f = float(kv.get('acq_foff_hz', '0'))
+    except ValueError:
+        return 0.0
+    return f if np.isfinite(f) else 0.0
 
 
 def probes(u, k, n0, n1):
@@ -517,7 +528,7 @@ def print_window_check(b, f0, fpb, pok, dok, deep_p, deep_d, u, k, sep, rate):
 
 def check(a, x, sr, work):
     out, rx = decode(a.rx, x, sr, a.offset_hz, work, dump=True)
-    bb = baseband(rx)
+    bbs = {0.0: baseband(rx)}  # per carrier offset tried, the audio at baseband
     found = False
     dumps = []
     claimed = open(a.bytes, 'rb').read() if a.bytes else None
@@ -541,7 +552,24 @@ def check(a, x, sr, work):
                 continue
         nframes = blocks * int(round(pre_s * 2400 / p))
         start = int(float(kv['start_s']) * FS)
-        coh, d0 = find_data_start(bb, start + int((pre_s - 0.3) * FS), start + int((pre_s + 0.3) * FS), u, k)
+        # The carrier: the probes' frame-to-frame phase step (frame_agreement) is unambiguous only to
+        # +-30 Hz (a frame lasts 1/60 s), and within a frame's probes an offset of 50 Hz turns them by
+        # 150 degrees, so the grid search below loses them. m110a_rx's audio sits where the receiver
+        # was told the carrier is, and the receiver takes up to 80 Hz more itself (gale-rx's offset
+        # search tells it the dial in 50 Hz steps), so the audio is brought to baseband at the carrier
+        # the receiver acquired, and at the nominal one; the probes alone choose (the higher probe
+        # coherence), never the bytes. At 300L, -2 dB, a right decode told 50 Hz from its carrier read
+        # probes 0.548, data 0.522 and NOT REAL at the nominal carrier, probes 0.890 = data at its own.
+        fcs = sorted({0.0, round(acquired_offset(kv), 2)}, key=abs)
+        best_f = None
+        for fo in fcs:
+            if fo not in bbs:
+                bbs[fo] = baseband(rx, FC + fo)
+            c = find_data_start(bbs[fo], start + int((pre_s - 0.3) * FS), start + int((pre_s + 0.3) * FS), u, k)
+            if best_f is None or c[0] > best_f[1][0]:
+                best_f = (fo, c)
+        fo, (coh, d0) = best_f
+        bb = bbs[fo]
         tbs = {}
         rng = np.random.default_rng(1)
         for which, pl in (('decoded', payload), ('control', rng.integers(0, 256, len(payload), dtype=np.uint8).tobytes())):
@@ -580,7 +608,7 @@ def check(a, x, sr, work):
                           'deep_probe': deep_p.tolist(), 'deep_data': deep_d.tolist(),
                           'sep': [round(float(v), 2) for v in sep]})
         steps = np.flatnonzero(np.abs(np.diff(off)) >= 8 * SPS)
-        print(f'{label}: data start {d / FS:.4f} s (probe coherence {coh:.2f}), grid steps '
+        print(f'{label}: data start {d / FS:.4f} s (probe coherence {coh:.2f}, carrier {fo:+.1f} Hz), grid steps '
               + (', '.join(f'frame {s + 1} {(off[s + 1] - off[s]) / SPS:+.1f} sym' for s in steps) or 'none'))
         for b in range(blocks):
             (pa, da), ca = rows[b], ctl[b][1]
