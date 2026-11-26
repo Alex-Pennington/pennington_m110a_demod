@@ -289,6 +289,9 @@ static void auto_contradicts_rule() {
     a.d1 = 7; a.d2 = 4; a.pair_ratio = 1.76;
     report("auto_contradicts: 7,4 at ratio 1.76, 3 frames, as 75S -> 150S",
            m75::auto_contradicts(a, ModeId::M75NS) == "D1/D2 150S");
+    a.pair_ratio = 1.17;  // the held-out 150S, CCIR poor 0 dB, cut, read as 75S
+    report("auto_contradicts: 7,4 at ratio 1.17, 3 frames, as 75S -> 150S",
+           m75::auto_contradicts(a, ModeId::M75NS) == "D1/D2 150S");
     a.pair_ratio = 1.0;
     report("auto_contradicts: 7,4 at ratio 1.0 (not clear), 3 frames, as 75S -> none",
            m75::auto_contradicts(a, ModeId::M75NS).empty());

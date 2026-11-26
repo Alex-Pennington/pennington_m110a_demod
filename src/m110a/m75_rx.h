@@ -657,8 +657,11 @@ inline std::string preamble_contradicts(const Acquisition& a, ModeId forced, dou
 }
 
 /// D1/D2 pair ratio (clear_d) from which AUTO takes the 75 bps acquisition's reading of
-/// another Table XI code as saying the transmission is not 75 bps (auto_contradicts).
-constexpr double AUTO_CONTRA_RATIO = 1.25;
+/// another Table XI code as saying the transmission is not 75 bps (auto_contradicts): 1.1,
+/// the clarity at which AUTO takes a 75 bps reading (takes_75). No genuine 75 bps decode read
+/// another code at any ratio (1520 calibration decodes); 150S read as 75S read 7,4 at 1.17-1.84
+/// (docs/m110a-75bps.md, "AUTO: a decode the preamble says is not 75 bps").
+constexpr double AUTO_CONTRA_RATIO = 1.1;
 
 /// In AUTO, what the 75 bps acquisition, reading the whole preamble, says the transmission
 /// is instead of `mode`, or "": D1/D2 read clearly as another Table XI code, or a countdown
