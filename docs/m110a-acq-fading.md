@@ -198,6 +198,29 @@ and lies above the cap. The block quality is a channel-SNR figure; a decode one 
 and one exact read the same channel. Seed 23 is one instance of this residual, not a fault of the
 recalibration.
 
+**Every mode the tracking DFE runs, at its lowest AWGN point** (this branch; held-out seeds
+101-400 for 600S/600L, 101-250 for the rest; per transmission; upper bound 95 %, Wilson, or
+Clopper-Pearson at 0):
+
+| Mode, SNR | Inputs | Exact | Wrong-byte successes (upper bound) | Bytes wrong | Rejected exact |
+|---|---|---|---|---|---|
+| 600L, 0 dB | 300 | 284 | 9, 3.0 % (5.6 %) | 1-3 | 5 |
+| 600S, 0 dB | 300 | 280 | 15, 5.0 % (8.1 %) | 1-2 | 5 |
+| 1200L, 3 dB | 150 | 140 | 10, 6.7 % (11.8 %) | 1-3 | 0 |
+| 1200S, 3 dB | 150 | 103 | 6, 4.0 % (8.5 %) | 1-2 | 41 |
+| 300L, -2 dB | 150 | 96 | 3, 2.0 % (5.7 %) | all 360 | 3 |
+| 300S, -2 dB | 150 | 115 | 0 (2.4 %) | - | 0 |
+| 150L, -2 dB | 150 | 97 | 1, 0.7 % (3.7 %) | all 270 | 5 |
+| 150S, -2 dB | 150 | 120 | 0 (2.4 %) | - | 0 |
+
+At 600 and 1200 bps every wrong success is the residual above: 1-3 bytes, one error event, worst
+block just over the threshold. The 300L and 150L ones are another kind: whole blocks without an
+EOM, every byte wrong, q 1.51-1.56 dB (threshold 1.5) and worst blocks 1.91-1.94 dB (300L,
+threshold 1.75) and 1.57 dB (150L, threshold 0.5). On the same four inputs 548cc27 takes no
+preamble ("Mode detection failed", single-path correlation 0.62-0.68 under its 0.70 gate); this
+branch's multipath search takes them, and the 300L threshold, lowered to 1.75 dB to keep the
+exact -2 dB decodes (worst blocks 1.97-2.01 dB), admits them. Not addressed here.
+
 **A second measure, tried and dropped: the Viterbi path reliability.** The 75 bps gate's term
 (docs/m110a-75bps.md): over the message's information bits, to the end of the EOM, the sum of
 exp(-|L|/s), |L| the max-log reliability of each bit (`m75::bit_reliability`, the same K=7 code)
