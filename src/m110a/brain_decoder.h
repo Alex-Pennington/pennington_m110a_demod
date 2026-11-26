@@ -55,6 +55,10 @@ struct BrainDecoderConfig {
     int unknown_data_len = 32;  // Data symbols per mini-frame
     int known_data_len = 16;    // Probe symbols per mini-frame
     int preamble_symbols = 1440; // Preamble length in symbols (3 frames Ã— 480)
+    // Preamble frames known to lie between the preamble's first frame and the input's start
+    // (ModemRX took the preamble at a later frame than the cut's). Without a readable
+    // countdown, data_start() then counts the frames after the one found from it.
+    int frames_before_start = 0;
 
     // Multipath acquisition (find_preamble_multipath): when the single-path correlation
     // misses its 0.70 gate, look for the common segment through a channel of up to
@@ -418,12 +422,13 @@ public:
      * may lock onto any frame (it takes the first correlation above 0.80 in its window, so a
      * weak frame 0 hands it frame 1), so count from the frame actually found: its countdown
      * says how many frames follow. Without a readable countdown, assume the found frame is
-     * frame 0. Uses the configured preamble length (set by the caller from the known mode),
+     * frame 0, or frame frames_before_start when the caller says it started that many frames
+     * in. Uses the configured preamble length (set by the caller from the known mode),
      * which is critical for interoperability: D1/D2 may not match the configured mode.
      */
     long data_start(const BrainDecodeResult& result) const {
         int preamble_symbols = config_.preamble_symbols;
-        int frames_after = preamble_symbols / brain::P_FRAME_LENGTH;
+        int frames_after = std::max(1, preamble_symbols / brain::P_FRAME_LENGTH - config_.frames_before_start);
         if (result.countdown >= 0) frames_after = result.countdown + 1;
         return result.start_sample + frames_after * brain::P_FRAME_LENGTH * sps_;
     }

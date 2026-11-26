@@ -68,6 +68,58 @@ existing check otherwise refuses success (`preamble_contradicts`). The data prob
 quality gate still judge the decode. Before, a forced mode under the gate gave "No data symbols
 extracted".
 
+### A later preamble frame
+
+`ModemRX::decode` cuts the input where the preamble finder (`first_preamble_cut`) first crosses
+its threshold, and the AUTO detection reads only the frame at that cut. On the 11:51Z net of
+2026-11-25, a 300L burst at 11:52Z arrived with its first preamble frames faded. The finder
+crossed there, but that frame's multipath metric read 0.48, under the 0.50 gate, and the receiver
+reported "Mode detection failed" while the 23 frames after it were clean. MS-DMT decoded the burst
+to its EOM. Started 8 to 16 frames into the preamble, our receiver decoded it too, with success
+(2.3 to 2.6 dB from frame 10 on).
+
+Every frame carries the common segment, D1/D2 and its countdown. MS-DMT tests every 0.2 s block,
+one frame, and takes the preamble at the first frame whose mode agrees with the frame before and
+whose count is one less (MS-DMT modem core [1], `rxm110a.cpp:2428-2452`,
+`Cm110s::process_receive_block`). Ours, written from that description with no MS-DMT code:
+
+- When the cut's frame reads no mode, each later frame of the longest preamble (23 more, 4.8 s
+  in all) is read on its own, in a 2 s window from that frame. Reading the whole buffer instead
+  cost about 8 s a frame on a 55 s window. With the windows, the 11:52Z burst's 55 s decode
+  takes 34.7 s against the base's 20.6 s. Only a cut whose frame reads no mode pays this.
+- A mode is taken only when at least two later frames read it. It is taken at the frame of that
+  mode with the best preamble correlation. On the 11:52Z burst the first frame to pass (6 after
+  the cut) gave 1.4 dB and no EOM; the best (frame 23) gives success.
+- The decode pass places the data from that frame's countdown. When a count digit does not read
+  clearly, it counts from the frame's place after the cut (`BrainDecoderConfig::frames_before_start`).
+  That is the same frame-0 assumption the receiver already makes there. On the 11:52Z burst
+  the first frame to pass read 17 frames to come, with one digit unclear. Without the frame's
+  place, the data would have been read 6 frames late.
+
+A cut whose frame reads a mode is decoded exactly as before. 75 bps keeps its own acquisition,
+and a 75 bps reading is never taken from a later frame. `test_preamble_frames` pins this: 300L
+and 600L with their first 4 to 12 preamble frames faded by 6 to 12 dB, at 0 to 6 dB SNR.
+
+The 11:52Z burst on the FT-897D now decodes 115 bytes and the EOM with success (2.7 dB, worst
+block 2.3 dB). reencode_check fits them to the signal: probes 0.869, data 0.878, control 0.635,
+NOT VERIFIABLE at this SNR. MS-DMT's 115 bytes differ from ours in 9 bytes and fit worse
+(data 0.865).
+
+Measured against origin/master c1ee4ca, fresh Release builds of both, the same inputs, through
+`test/rx/stream_compare.py` (`ModemRX::decode()` and the streaming receiver, per transmission):
+
+| Set | Base: whole exact / wrong, stream exact / wrong | This change |
+|---|---|---|
+| CCIR moderate and poor, 5 and 10 dB, seeds 1-5 (180) | 129 / 2, 130 / 1 | 138 / 2, 139 / 1 |
+| held-out seeds 6-8 (108) | 68 / 2, 68 / 2 | 68 / 2, 68 / 2, every case the same |
+| AWGN, the gate's set with 75 bps (188) | 143 / 6, 144 / 5 | 144 / 6, 145 / 5 |
+
+The nine CCIR gains are all Watterson poor, seed 4 (1200L, 1200S twice, 300S twice, 600L twice,
+600S twice): exact on both paths, where the base read no mode. The AWGN gain is 150L at -2 dB, seed
+4. No case decoded on the base is lost, and no wrong-byte success is added. The cases where stream
+and whole decodes differ are the same cases on both builds (CCIR 18, held-out 7, AWGN 4).
+ctest: 56 of 56.
+
 ## The tracking DFE
 
 After acquiring the 01:04:15Z burst, the receiver lost block 2. The cause was not timing. Over
@@ -198,3 +250,12 @@ on all 367 for each burst. The RSP2's 01:07:17Z decode is a success (worst block
 other three are not. reencode_check (master a97e019) finds every block of 01:07:17Z, both
 receivers, fits the signal, NOT VERIFIABLE. On the RSP2's 01:06:26Z its tail block 3 does not fit
 (probe 0.752, data 0.688).
+
+## References
+
+[1] MARS Software Development Team, MS-DMT m188110a modem core, "Original Modem Core Source
+(for Qt5)", `01_MODEM_CORES/PSK_188110A/Qt_Standalone/m188110a/m188110a (Original Modem Core
+Source (for Qt5)/rxm110a.cpp`, in the repository MARS_SOURCE_CODE_LIBRARY at f591ffc,
+https://github.com/Alex-Pennington/MARS_SOURCE_CODE_LIBRARY. Licence: the MARS SDT MS-DMT
+end-user licence agreement (`02_APPLICATIONS/MS_DMT/v3_Qt/MS-DMT License.txt`), not GPL. Read
+only: no MS-DMT code is linked, shipped or copied into this repository.

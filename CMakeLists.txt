@@ -152,6 +152,13 @@ target_link_libraries(test_multipath_acq PRIVATE m110a_modem)
 add_test(NAME test_multipath_acq COMMAND test_multipath_acq)
 set_tests_properties(test_multipath_acq PROPERTIES LABELS "rx" TIMEOUT 1800)
 
+# A long preamble whose first frames are faded: the preamble taken at a later frame
+# (docs/m110a-acq-fading.md)
+add_executable(test_preamble_frames test/test_preamble_frames.cpp)
+target_link_libraries(test_preamble_frames PRIVATE m110a_modem)
+add_test(NAME test_preamble_frames COMMAND test_preamble_frames)
+set_tests_properties(test_preamble_frames PROPERTIES LABELS "rx" TIMEOUT 1800)
+
 # ModemTX output level and configuration checks (docs/TX_CHAIN.md)
 add_executable(test_modem_tx test/test_modem_tx.cpp)
 target_link_libraries(test_modem_tx PRIVATE m110a_modem)
