@@ -18,12 +18,16 @@
 //    EOM; forced mode too; lengths around set, block and byte boundaries.
 // 5. Noise after a genuine 75 bps preamble: success=0. 30 s of noise forced as 75S and
 //    as 75L: success=0. A 75L signal forced as 75S: success=0.
+// 6. AUTO: m75::auto_contradicts on set readings; a 150S (cut after one block) and a 1200L
+//    handed to the 75 bps decoder as 75S in AUTO: success=0, refused by the preamble reading.
 
 #include "api/modem.h"
 #include "m110a/brain_preamble.h"
 #include "m110a/m75_codec.h"
+#include "m110a/m75_rx.h"
 #include "modem/scrambler_fixed.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -275,6 +279,50 @@ static void forced_wrong() {
     report(buf, !r.success);
 }
 
+// 6. AUTO: a transmission of another mode handed to the 75 bps decoder as 75S (the mode a
+// misread preamble frame or find_low_snr's D1-only fallback names) is refused when the 75
+// bps acquisition, reading the whole preamble, says it is not 75 bps (m75::auto_contradicts).
+static void auto_contradicts_rule() {
+    m75::Acquisition a;
+    a.found = true;
+    a.frames = 3;
+    a.d1 = 7; a.d2 = 4; a.pair_ratio = 1.76;
+    report("auto_contradicts: 7,4 at ratio 1.76, 3 frames, as 75S -> 150S",
+           m75::auto_contradicts(a, ModeId::M75NS) == "D1/D2 150S");
+    a.pair_ratio = 1.0;
+    report("auto_contradicts: 7,4 at ratio 1.0 (not clear), 3 frames, as 75S -> none",
+           m75::auto_contradicts(a, ModeId::M75NS).empty());
+    a.d1 = 7; a.d2 = 5; a.pair_ratio = 3.0;
+    report("auto_contradicts: 7,5, 3 frames, as 75S -> none", m75::auto_contradicts(a, ModeId::M75NS).empty());
+    a.frames = 24;
+    report("auto_contradicts: 7,5, 24 frames, as 75S -> the countdown",
+           m75::auto_contradicts(a, ModeId::M75NS) == "a 24-frame countdown");
+    a.d1 = 4; a.d2 = 5; a.pair_ratio = 1.84;
+    report("auto_contradicts: 4,5 at ratio 1.84, 24 frames, as 75L -> 1200L",
+           m75::auto_contradicts(a, ModeId::M75NL) == "D1/D2 1200L");
+}
+
+static void other_mode_as_75(Mode sent, size_t keep_ms) {
+    Samples s = tx_audio(sent, "DE AAM402 THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 0123456789 ABCDEFGHIJKLMNOP");
+    if (s.empty()) { report("encode " + mode_name(sent), false); return; }
+    if (keep_ms) s.resize(std::min(s.size(), 24000 + keep_ms * 48));  // the 0.5 s lead and keep_ms of it
+    RxConfig cfg;
+    cfg.sample_rate = 48000;
+    cfg.mode = Mode::AUTO;
+    std::ofstream sink;
+    std::streambuf* out = std::cout.rdbuf(sink.rdbuf());
+    std::streambuf* err = std::cerr.rdbuf(sink.rdbuf());
+    const DecodeResult r = m75::decode(s, cfg, ModeId::M75NS, DecodeResult(), false);
+    std::cout.rdbuf(out);
+    std::cerr.rdbuf(err);
+    const std::string why = m75::auto_contradicts(m75::last_rx().acq, ModeId::M75NS);
+    char buf[300];
+    snprintf(buf, sizeof buf, "%s sent, decoded in AUTO as 75S: D1,D2 %d,%d frames %d, success=%d q=%.1f err=%s",
+             mode_name(sent).c_str(), r.d1, r.d2, m75::last_rx().acq.frames, r.success, r.quality_db,
+             r.error ? r.error->message.c_str() : "");
+    report(buf, !r.success && !why.empty());
+}
+
 int main() {
     tables();
     interleaver();
@@ -298,6 +346,9 @@ int main() {
     noise_forced(Mode::M75_SHORT);
     noise_forced(Mode::M75_LONG);
     forced_wrong();
+    auto_contradicts_rule();
+    other_mode_as_75(Mode::M150_SHORT, 1250);  // the 3-frame preamble, one 0.6 s block and 0.05 s
+    other_mode_as_75(Mode::M1200_LONG, 0);
     std::cout << "\n" << passed << "/" << (passed + failed) << " 75 bps cases passed" << std::endl;
     return failed ? 1 : 0;
 }
