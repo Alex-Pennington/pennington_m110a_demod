@@ -13,7 +13,7 @@ with the received ones:
   - The receive grid comes from the probes, not from the receiver, tracked over 8-frame
     windows +-50 symbols so a timing step does not break it. The probes repeat every
     lcm(160, frame) symbols, so the data start is tried at each such period from the
-    preamble on where the frames carry probes (PROBE_FLOOR of the level the grid found),
+    preamble on where a block's frames carry probes (PROBE_FLOOR of the level at the grid found),
     and the one the decoded bytes agree with best is kept.
   - The audio is brought to baseband at the carrier m110a_rx acquired the message at
     (acq_foff_hz), or at the nominal 1800 Hz where the probes cohere as well there or better
@@ -147,25 +147,32 @@ def acquired_offset(kv, told=0.0):
     return float(min(lim, max(-lim, f)))
 
 
-PROBE_FLOOR = 0.5  # a data start is tried only where its first frames' probes reach this share of the grid's level
-FLOOR_FRAMES = 16
+PROBE_FLOOR = 0.5  # a data start is tried only where a block's probes reach this share of the grid's level
 
 
 def frame_cohs(bb, d, u, k, f0, f1):
-    """Each frame's probe coherence (frame_coherence) on the grid starting at sample d, frames f0 to f1."""
-    p = u + k
-    return np.array([frame_coherence(bb, (d + probes(u, k, i * p, (i + 1) * p)[0] * SPS)[None, :],
-                                     probes(u, k, i * p, (i + 1) * p)[1], k)[0] for i in range(f0, f1)])
+    """Each frame's probe coherence (as frame_coherence) on the grid starting at sample d, frames f0 to f1."""
+    n, ref = probes(u, k, f0 * (u + k), f1 * (u + k))
+    x = bb[np.clip(d + n * SPS, 0, len(bb) - 1)].reshape(-1, k)
+    z = np.abs((x * np.conj(ref.reshape(-1, k))).sum(1)) ** 2
+    return z / ((np.abs(x) ** 2).sum(1) * k + 1e-30)
+
+
+def probe_level(bb, d, u, k, nf):
+    """The median probe coherence of nf frames from d (a whole block: a fade inside it does not move the median)."""
+    nf = max(1, min(nf, (len(bb) - d) // ((u + k) * SPS) - 1))
+    return float(np.median(frame_cohs(bb, d, u, k, 0, nf)))
 
 
 def carries_probes(bb, d, u, k, level, nf):
-    """The frames from d carry probes: the median coherence of the first FLOOR_FRAMES (at most nf) is
-    PROBE_FLOOR of level or more. A start the bytes choose inside the preamble does not: there all-random
-    bytes put block 1 over the preamble (300L, 10 dB, station -60 Hz), where it read NOT VERIFIABLE."""
-    n = max(1, min(FLOOR_FRAMES, nf))
-    if d < 0 or d + n * (u + k) * SPS >= len(bb):
+    """The block from d carries probes: the median coherence of its nf frames is PROBE_FLOOR of level (the
+    same over the block at the grid found) or more. A block mostly over the preamble does not: there all-random
+    bytes put block 1 at the preamble's start (300L, 10 dB, station -60 Hz) and it read NOT VERIFIABLE. Over a
+    whole block, not a few frames: under CCIR poor fading the 16 frames after the true start sat in a fade, under
+    half the level, and the true start was refused (right bytes NOT REAL)."""
+    if d < 0:
         return False
-    return float(np.median(frame_cohs(bb, d, u, k, 0, n))) >= PROBE_FLOOR * level
+    return probe_level(bb, d, u, k, nf) >= PROBE_FLOOR * level
 
 
 def probes(u, k, n0, n1):
@@ -435,7 +442,7 @@ def tail(a, bb, kv, payload, mode, rate, label, start, coh, d0, d, tbs, dumps, f
     room = lambda dd: min((len(bb) - dd) // (p * SPS) - 1, (len(tb) - t0) // (p * SPS) - 1)
     if d is None:  # no whole block chose the start: choose it over all the blocks, as check() does
         best = None
-        level = float(np.median(frame_cohs(bb, d0, u, k, 0, FLOOR_FRAMES)))
+        level = probe_level(bb, d0, u, k, fpb)
         for m in range(-((d0 - start) // period), 2):
             dd = d0 + m * period
             if room(dd) < nframes:
@@ -621,7 +628,7 @@ def check(a, x, sr, work):
         # by whole periods: try each from the found preamble's start on, keep the one the
         # decoded bytes agree with best; the control is scored at that same start.
         period = int(np.lcm(160, p)) * SPS
-        level = float(np.median(frame_cohs(bb, d0, u, k, 0, FLOOR_FRAMES)))
+        level = probe_level(bb, d0, u, k, nframes // blocks)
         best = None
         for m in range(-((d0 - start) // period), 2):
             d = d0 + m * period

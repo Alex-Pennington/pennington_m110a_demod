@@ -33,7 +33,9 @@ let wrong bytes pass, and the existing output lines keep their form.
            60 Hz off decoded at dial 0, and gale-rx's offset search telling m110a_rx +50 Hz: the sent bytes real
            in every block, one flipped bit NOT REAL (the check read the sent bytes NOT REAL in both).
   preamble all-random bytes at 10 dB, station -60 Hz (300L, 400 B): the bytes put the data start at the preamble's
-           start and block 1 read NOT VERIFIABLE; with the probe floor every block NOT REAL, the sent bytes real.
+           start and block 1 read NOT VERIFIABLE; with the probe floor every block NOT REAL, the sent bytes real. And
+           CCIR poor, 300L, 12 dB (reencode_calib seed 30005): the floor over the block's first 16 frames refused the
+           true start in a fade; over the whole block the sent bytes are never NOT REAL (needs --chan).
   sixa     1200S, 38 B, eom=1 (a stand-in for the keyed 6a dummy-load message the review read NOT REAL) at 4
            and 6 dB, read at 8 kHz and after 8 -> 48 -> 8 kHz: the sent bytes never NOT REAL on either copy,
            one flipped bit never real.
@@ -490,7 +492,22 @@ def case_preamble(a, data):
     print(f'preamble random bytes at -60 Hz: data start {m.group(1) if m else None} s, {v}; sent bytes {v2} -> '
           f'{"PASS" if ok else "FAIL"}', flush=True)
     os.remove(wav)
-    return ok
+    # The floor reads a whole block, not its first frames: CCIR poor, 300L, 12 dB, station -31 Hz (reencode_calib's
+    # input, seed 30005), where the 16 frames after the true start sit in a fade. Read over those 16 frames the
+    # floor refused the true start, and the sent bytes read NOT REAL in both blocks.
+    if not a.chan:
+        print('preamble fade: no --chan (hfchansim) -> FAIL', flush=True)
+        return False
+    import reencode_calib as cal
+    cut, sent, _, foff = cal.make_input(a.tool, a.chan, 'poor', '300L', 12.0, 30005, a.work)
+    out3 = run_check(a, cut, sent)
+    v3 = verdicts(out3)
+    m3 = re.search(r'data start ([0-9.]+) s', out3)
+    good = bool(v3) and 'NOT REAL' not in v3.values()
+    print(f'preamble fade (CCIR poor, 300L, 12 dB, station {foff:+.0f} Hz): sent bytes {v3}, data start '
+          f'{m3.group(1) if m3 else None} s -> {"PASS" if good else "FAIL"}', flush=True)
+    os.remove(cut)
+    return ok and good
 
 
 SWEEP_MODES = ('150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L')

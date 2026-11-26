@@ -91,6 +91,32 @@ def synth(x, snr, foff, seed, work, chan=None, preset=None, lead=0.5, tail=1.0):
     return y8[int((lead - 0.1) * 8000):]  # gale-rx's cut, 0.1 s before the signal
 
 
+def make_input(txp, chan_bin, chan, mode, snr, seed, work, foff_min=30.0, foff_max=110.0):
+    """One input: (cut.wav path, sent payload, {variant: claimed bytes} without N, station offset Hz).
+    chan 'awgn', or an hfchansim preset name with chan_bin. Deterministic in (chan, mode, snr, seed)."""
+    bb = block_bytes(mode)
+    rng = np.random.default_rng([seed, int(snr * 10) + 1000, sum(map(ord, mode)), sum(map(ord, chan))])
+    n = int(rng.integers(int(1.1 * bb), int(2.5 * bb) + 1))
+    payload = rng.integers(0, 256, n, dtype=np.uint8).tobytes()
+    foff = float(rng.uniform(foff_min, foff_max)) * (1 if rng.integers(2) else -1)
+    x8 = synth(tx_audio(txp, mode, payload, work), snr, foff, seed, work, chan_bin if chan != 'awgn' else None,
+               chan if chan != 'awgn' else None)
+    cut = os.path.join(work, 'cut.wav')
+    wavfile.write(cut, 8000, x8)
+    variants = {'R': payload}
+    for k in (1, 2, 3):
+        w = bytearray(payload)
+        for i in rng.choice(n, k, replace=False):
+            w[i] = (w[i] + int(rng.integers(1, 256))) % 256
+        variants[f'W{k}'] = bytes(w)
+    w = bytearray(payload)
+    b0 = int(rng.integers(0, max(1, n // bb))) * bb
+    w[b0:b0 + bb] = rng.integers(0, 256, len(w[b0:b0 + bb]), dtype=np.uint8).tobytes()
+    variants['WB'] = bytes(w)
+    variants['RND'] = rng.integers(0, 256, n, dtype=np.uint8).tobytes()
+    return cut, payload, variants, foff
+
+
 def verdicts(out):
     return {int(b): v for b, v in
             re.findall(r'^  block (\d+) window check: .*; verdict (real|NOT REAL|NOT VERIFIABLE)', out, re.M)}
@@ -121,25 +147,9 @@ def run(a):
     with open(a.out, 'a') as fo:
         for snr in a.snr:
             for seed in range(a.seeds[0], a.seeds[1]):
-                rng = np.random.default_rng([seed, int(snr * 10) + 1000, sum(map(ord, a.mode)),
-                                             sum(map(ord, chan))])
-                n = int(rng.integers(int(1.1 * bb), int(2.5 * bb) + 1))
-                payload = rng.integers(0, 256, n, dtype=np.uint8).tobytes()
-                foff = float(rng.uniform(a.foff_min, a.foff_max)) * (1 if rng.integers(2) else -1)
-                x8 = synth(tx_audio(a.tx, a.mode, payload, a.work), snr, foff, seed, a.work, a.chan, a.preset)
-                cut = os.path.join(a.work, 'cut.wav')
-                wavfile.write(cut, 8000, x8)
-                variants = {'R': payload}
-                for k in (1, 2, 3):
-                    w = bytearray(payload)
-                    for i in rng.choice(n, k, replace=False):
-                        w[i] = (w[i] + int(rng.integers(1, 256))) % 256
-                    variants[f'W{k}'] = bytes(w)
-                w = bytearray(payload)
-                b0 = int(rng.integers(0, max(1, n // bb))) * bb
-                w[b0:b0 + bb] = rng.integers(0, 256, len(w[b0:b0 + bb]), dtype=np.uint8).tobytes()
-                variants['WB'] = bytes(w)
-                variants['RND'] = rng.integers(0, 256, n, dtype=np.uint8).tobytes()
+                cut, payload, variants, foff = make_input(a.tx, a.chan, chan, a.mode, snr, seed, a.work,
+                                                          a.foff_min, a.foff_max)
+                n = len(payload)
                 sr, xr = wavfile.read(cut)
                 xf = xr.astype(float) / 32768.0
                 pick = None
