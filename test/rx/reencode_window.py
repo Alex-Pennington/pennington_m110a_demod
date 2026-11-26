@@ -32,6 +32,8 @@ let wrong bytes pass, and the existing output lines keep their form.
   offset   300L, 400 B at 10 dB with the carrier past the +-30 Hz the probes' phase step resolves: a station
            60 Hz off decoded at dial 0, and gale-rx's offset search telling m110a_rx +50 Hz: the sent bytes real
            in every block, one flipped bit NOT REAL (the check read the sent bytes NOT REAL in both).
+  preamble all-random bytes at 10 dB, station -60 Hz (300L, 400 B): the bytes put the data start at the preamble's
+           start and block 1 read NOT VERIFIABLE; with the probe floor every block NOT REAL, the sent bytes real.
   sixa     1200S, 38 B, eom=1 (a stand-in for the keyed 6a dummy-load message the review read NOT REAL) at 4
            and 6 dB, read at 8 kHz and after 8 -> 48 -> 8 kHz: the sent bytes never NOT REAL on either copy,
            one flipped bit never real.
@@ -472,6 +474,25 @@ def case_offset(a, data):
     return ok
 
 
+def case_preamble(a, data):
+    """All-random bytes, the sent message's length, at 10 dB with the station 60 Hz off (300L, 400 B): the bytes
+    chose the data start, and agreeing with none of the message they put it at the preamble's start, block 1 over
+    the preamble, where it read NOT VERIFIABLE. With the probe floor no data start is tried where the frames carry
+    no probes: every block NOT REAL, and the sent bytes still real."""
+    wav = audio(a, data, 10.0, None, 1, 'preamble', foff=-60.0)
+    rnd = bytes(random.Random('rand 1').randrange(256) for _ in range(len(data)))
+    out = run_check(a, wav, rnd)
+    v = verdicts(out)
+    v2 = verdicts(run_check(a, wav, data))
+    m = re.search(r'data start ([0-9.]+) s', out)
+    ok = len(v) == 3 and all(x == 'NOT REAL' for x in v.values()) and len(v2) == 3 and \
+        all(x == 'real' for x in v2.values())
+    print(f'preamble random bytes at -60 Hz: data start {m.group(1) if m else None} s, {v}; sent bytes {v2} -> '
+          f'{"PASS" if ok else "FAIL"}', flush=True)
+    os.remove(wav)
+    return ok
+
+
 SWEEP_MODES = ('150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L')
 
 
@@ -571,8 +592,8 @@ def main():
     ap.add_argument('--chan', default=None, help='hfchansim, for the net case')
     ap.add_argument('--fade-snr', type=float, default=10.0)
     ap.add_argument('--fade-seeds', default='4,6', help=f'noise seeds of the fade case, of {sorted(BAD)}')
-    ap.add_argument('--cases', default='counts,clean,short,tails,whole2400,fade,net,sixa,offset',
-                    help='of counts,clean,short,tails,whole2400,fade,net,sixa,offset,sweep (sweep is long and not in the '
+    ap.add_argument('--cases', default='counts,clean,short,tails,whole2400,fade,net,sixa,offset,preamble',
+                    help='of counts,clean,short,tails,whole2400,fade,net,sixa,offset,preamble,sweep (sweep is long and not in the '
                          'default; net needs --chan)')
     ap.add_argument('--sweep-snr', default='8,20')
     ap.add_argument('--sweep-n', type=int, default=4, help='messages per mode and SNR')
@@ -588,6 +609,7 @@ def main():
                'short': lambda: case_short(a), 'tails': lambda: case_tails(a), 'whole2400': lambda: case_whole2400(a),
                'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')]),
                'net': lambda: case_net(a), 'sixa': lambda: case_sixa(a), 'offset': lambda: case_offset(a, data),
+               'preamble': lambda: case_preamble(a, data),
                'sweep': lambda: case_sweep(a)}[c]()
     print('reencode_window: all cases pass' if ok else 'reencode_window: FAILED')
     return 0 if ok else 1
