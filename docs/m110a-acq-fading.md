@@ -138,6 +138,66 @@ wrong-byte transmissions, then the fewest rejected exact ones. Two thresholds mo
 The quality_db thresholds were set from a reference set this branch does not reproduce, and are
 unchanged.
 
+## 600L at the knee: a wrong success the block rule cannot stop
+
+An independent review of this change against 548cc27 found one new wrong-byte success: AWGN 600L at
+0 dB, seed 23 of its held-out set, 2 bytes wrong with `success=1`, q 3.1 dB, worst block 3.1 dB
+against the 3.00 dB threshold. On the same input 548cc27 decoded exact at the same q 3.1 and worst
+block 3.1. The tracking DFE changed the bytes, not the quality figure.
+
+**The rig.** The review's harness (`ab.py`, munin's) did not survive, so every figure below comes
+from a rig rebuilt from repo tools: a 200-byte payload drawn from numpy `default_rng([seed, mode
+index])`; `modem_tx_wav --lead 0 --tail 0`; for CCIR, `hfchansim --preset moderate|poor --snr inf
+--seed seed` (the fading only); `test/rx/synth_iq.py --snr S --seed seed --lead 0.5 --tail 0` (AWGN
+in 3 kHz, 0.5 s of noise first); `m110a_rx` in AUTO on the I/Q. Its noise draws are not the
+review's: at the same nominal SNR it reads about 0.3 dB easier (600L at 0 dB, q 3.2-3.5 dB against
+the review's 3.1), and seed 23 decodes exact on both builds. The q and block figures come from
+calibration builds that print them to 3 decimals; their verdicts and bytes are the release
+builds'.
+
+**The rule, re-applied.** The block-threshold cap (the worst block of any exact AWGN success that
+clears `quality_db`, on the documented AWGN set, seeds 1-4) is, per build:
+
+| Mode | 548cc27 cap (dB) | this branch cap (dB) | Threshold (dB) |
+|---|---|---|---|
+| 600L | 3.231 | 3.165 | 3.00 |
+| 600S | 3.129 | 3.040 | 2.75 |
+| 1200L | 5.205 | 5.105 | 4.5 |
+| 1200S | 4.943 | 4.884 | 4.5 |
+| 2400L | 8.423 | 8.423 | 8.25 |
+| 2400S | 7.961 | 7.961 | 8.0 |
+
+The tracking DFE lowers the 600L cap by 0.07 dB, and 3.00 dB stays under it. On CCIR at 5 and 10 dB
+(the review's rows, seeds 1-8 and 21-25) no 600L success scores a worst block under 3.6 dB, so the
+rule's second step, the fewest CCIR wrong-byte transmissions, has nothing to move 600L for. **The
+rule leaves 600L at 3.00 dB.** (2400S's 8.0 dB is above its cap on this rig, 7.961; the 8PSK
+modes keep the earlier DFE and are outside this change.)
+
+**The knee.** 600L at 0 dB, held-out seeds 101-310 (210 inputs, the same for both builds):
+
+| Build | Exact successes | Wrong-byte successes (95% upper bound, Wilson) | Rejected exact |
+|---|---|---|---|
+| 548cc27 | 200 | 2 (3.4 %) | 0 |
+| this branch | 199 | 7 (6.7 %) | 2 |
+
+Every wrong success is 1-3 bytes wrong, one Viterbi error event. Paired by input, 6 are wrong on
+this branch only, 1 on 548cc27 only and 1 on both: a sign test gives p = 0.125 for "this branch is
+worse at the knee", suggestive and not established. This branch's wrong decodes score worst blocks
+of 3.140 to 3.224 dB, among the exact ones; raising the threshold over this branch's decodes:
+
+| 600L block threshold (dB) | Exact | Wrong | Rejected exact |
+|---|---|---|---|
+| 3.00 | 199 | 7 | 2 |
+| 3.10 | 176 | 7 | 25 |
+| 3.15 | 128 | 6 | 73 |
+| 3.20 | 42 | 1 | 159 |
+| 3.25 | 10 | 0 | 191 |
+
+No block threshold separates them: 3.25 dB removes the 7 at the cost of 189 of 199 exact decodes,
+and lies above the cap. The block quality is a channel-SNR figure; a decode one error event wrong
+and one exact read the same channel. Seed 23 is one instance of this residual, not a fault of the
+recalibration.
+
 ## Measured
 
 The base is origin/master 018f0c6. Both builds decode the same impaired files, through munin's
