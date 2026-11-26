@@ -597,6 +597,58 @@ after:
   block 1 window check: far off (over 15 noise powers) 0/680 probes, 0/680 data, expected for right bytes 0.00, p 1 (not real under 1e-06); verdict real
 ```
 
+### Carrier offset, and the one-byte power baseline (2026-11-26)
+
+**The false refusal.** A gale-rx check of a right 300L decode (test/rx/repro_rake_escape.sh's seed 144,
+AWGN −2 dB, the receiver told the dial is +50 Hz off) read "content wrong": block 2 NOT REAL, "data
+below the probes", with all 200 bytes right. The check measured the carrier only from the probes'
+phase step frame to frame, which is unambiguous to ±30 Hz (a frame lasts 1/60 s). m110a_rx's dumped
+audio sits where the receiver was told the carrier is, and the receiver takes up to 80 Hz more itself
+(`coarse_search_range`); gale-rx's offset search tells it the dial in 50 Hz steps. Past 30 Hz the check
+lost the probe grid: data start 1.30 s, inside the preamble, against 4.90 s; probes 0.548. On the same
+samples at the right carrier: probes 0.890, data 0.890. Any station more than 30 Hz off did the same at
+dial 0. Neither the margin, the probe phasing nor the SNR caused it.
+
+**The fix.** Each message is brought to baseband at the carrier m110a_rx acquired it at (`acq_foff_hz`)
+and at the nominal one, and the higher probe coherence chooses: the probes alone, never the bytes. The
+head line names the carrier chosen. The repro now reads NOT VERIFIABLE (at −2 dB one wrong byte would
+not show), not NOT REAL.
+
+**What the fix uncovered.** With the grid found, one wrong byte in a 300L block at 3 dB read real.
+`one_byte_power()` counted the far-off symbols one wrong byte must add from the block's own far-off
+count. A block that holds a wrong byte already shows that byte's far-off symbols: here 2 (p 1.5e−6,
+just above `ALPHA`), so "one more would fire", power 0.99, real. It now counts from none far off (the
+right-byte baseline): power 0.86, NOT VERIFIABLE. That can only turn real into NOT VERIFIABLE.
+`reencode_window` counts carries the block (`test/rx/fixtures/one_byte_escape_300L_3dB.json`), and its
+`offset` case carries the carrier.
+
+**Measured.** gale-rx's path: ModemTX, AWGN in 3 kHz, station offset uniform in ±110 Hz, 48 → 8 kHz,
+cut 0.1 s before the signal, the first dial offset of 0, −50, 50, −100, 100 with a success. Per input: the
+sent bytes, the sent bytes with 1, 2 and 3 bytes changed, and the receiver's bytes when wrong. success=1
+messages only, as gale-rx checks. "Refused" is content wrong (any block NOT REAL); "accepted" is content
+ok (every block real). Bounds are Clopper-Pearson 95 %. Calibration seeds 1000-1011, held-out 5000-5011
+(300L) and 5000-5005 (other modes). "after" is the carrier fix; "+power" adds the baseline fix. +power
+was re-run on every row with a real verdict (300L 3, 6 and 10 dB, and the other modes); at 300L −2 and
+0 dB "after" has no real verdict, and +power can only turn real into NOT VERIFIABLE, so it reads the same.
+One held-out chunk (1200L 6 dB, seeds 5003-5005) was stopped part-way; its finished rows are counted.
+
+| Set | Right bytes refused, before | after | Wrong messages accepted, before / after / +power | Wrong blocks real, after | +power |
+|---|---|---|---|---|---|
+| Calibration, 300L −2 to 10 dB | 45/60 (62-85 %) | 0/60 (≤ 6.0 %) | 0/180 each (≤ 2.0 %) | 1/254 | 0/254 |
+| Held-out, 300L −2 to 10 dB | 42/60 (57-81 %) | 0/60 (≤ 6.0 %) | 0/180 each (≤ 2.0 %) | 1/263 | 0/263 |
+| Held-out, 150L, 600L, 1200L, 2400S | 33/45 (58-85 %) | 0/45 (≤ 7.9 %) | 0/147 each (≤ 2.5 %) | 0/194 | 0/194 |
+
+Every right-byte refusal before had a receiver-acquired offset over 30 Hz (87/87 at 300L); none at or
+under 30 Hz (0/33). Per SNR (300L, calibration + held-out, 24 right messages each), right bytes refused
+before → after: −2 dB 16 → 0, 0 dB 17 → 0, 3 dB 21 → 0, 6 dB 18 → 0, 10 dB 15 → 0. At −2 and 0 dB the
+right messages are NOT VERIFIABLE, at 3 dB NOT VERIFIABLE, at 6 and 10 dB 47 of 48 real. Wrong messages
+caught (NOT REAL) after: 1 and 15 of 72 at −2 and 0 dB, 71 of 72 at 3 dB, all at 6 and 10 dB; the rest
+NOT VERIFIABLE. Before reads higher (most of it the false NOT REAL that refused right bytes too).
+
+The power baseline's cost, on the same audio: right blocks real at 3, 6 and 10 dB, 300L, 119 before
+and 119 after; at 150L, 600L, 1200L and 2400S, 60 and 60. No right block went from real to NOT
+VERIFIABLE in these sets.
+
 ## Left open
 
 - **`signal_frames` on the hand-cut slice:** the base receiver reports 1 block (180 B).
