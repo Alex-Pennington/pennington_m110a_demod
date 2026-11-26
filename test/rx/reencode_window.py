@@ -29,6 +29,9 @@ let wrong bytes pass, and the existing output lines keep their form.
            resampled 48 -> 8 kHz as gale-rx does: 1200L 800 B at 6 dB seed 3, and 150S 100 B at 18 dB seed 2,
            where the check read the right bytes NOT REAL (data below the probes, the probes phased from their
            own frame). The sent bytes never NOT REAL; one flipped bit never real in its block.
+  offset   300L, 400 B at 10 dB with the carrier past the +-30 Hz the probes' phase step resolves: a station
+           60 Hz off decoded at dial 0, and gale-rx's offset search telling m110a_rx +50 Hz: the sent bytes real
+           in every block, one flipped bit NOT REAL (the check read the sent bytes NOT REAL in both).
   sixa     1200S, 38 B, eom=1 (a stand-in for the keyed 6a dummy-load message the review read NOT REAL) at 4
            and 6 dB, read at 8 kHz and after 8 -> 48 -> 8 kHz: the sent bytes never NOT REAL on either copy,
            one flipped bit never real.
@@ -51,7 +54,7 @@ import sys
 
 import numpy as np
 from scipy.io import wavfile
-from scipy.signal import resample_poly
+from scipy.signal import hilbert, resample_poly
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -92,7 +95,7 @@ def payload():
     return (head + bytes(r.randrange(256) for _ in range(NBYTES)))[:NBYTES]
 
 
-def audio(a, data, snr, fade, seed, tag, mode=MODE):
+def audio(a, data, snr, fade, seed, tag, mode=MODE, foff=0.0):
     b, w = (os.path.join(a.work, tag + e) for e in ('.bin', '.tx.wav'))
     with open(b, 'wb') as f:
         f.write(data)
@@ -101,6 +104,8 @@ def audio(a, data, snr, fade, seed, tag, mode=MODE):
     os.remove(b)
     os.remove(w)
     x = x.astype(float)
+    if foff:  # the station's carrier foff Hz off
+        x = np.real(hilbert(x) * np.exp(2j * np.pi * foff * np.arange(len(x)) / SR))
     ps = np.mean(x ** 2)
     if fade:
         f0, dur, db = fade
@@ -113,9 +118,11 @@ def audio(a, data, snr, fade, seed, tag, mode=MODE):
     return out
 
 
-def run_check(a, wav, claimed=None):
+def run_check(a, wav, claimed=None, offset_hz=None):
     cmd = [sys.executable, '-I', getattr(a, 'check', None) or os.path.join(HERE, 'reencode_check.py'), wav, '--rx', a.rx,
            '--tx', a.tool, '--work', a.work]
+    if offset_hz is not None:
+        cmd += ['--offset-hz', str(offset_hz)]
     if claimed is not None:
         cb = os.path.join(a.work, 'claimed.bin')
         with open(cb, 'wb') as f:
@@ -431,6 +438,30 @@ def case_sixa(a):
     return ok
 
 
+def case_offset(a, data):
+    """The carrier away from where the check's m110a_rx is told it is, by more than the probes' frame-to-frame
+    phase step resolves (+-30 Hz): a station 60 Hz off, decoded at dial 0 (the receiver takes it up), and a
+    station on the dial that gale-rx's offset search tells m110a_rx is 50 Hz off. 300L, 400 bytes, 10 dB.
+    The check read the sent bytes NOT REAL in both (the probe grid lost: data start inside the preamble).
+    Now the sent bytes are never NOT REAL and real in every block, and one flipped bit is NOT REAL in its
+    block."""
+    ok = True
+    for tag, foff, told in (('station +60 Hz, dial 0', 60.0, None), ('station on the dial, told +50 Hz', 0.0, 50.0)):
+        wav = audio(a, data, 10.0, None, 1, 'offset', foff=foff)
+        out = run_check(a, wav, data, told)
+        v = verdicts(out)
+        bad = bytearray(data)
+        bad[100] ^= 0x10
+        v2 = verdicts(run_check(a, wav, bytes(bad), told))
+        good = form_ok(out, f'offset {tag}') and len(v) == 3 and all(x == 'real' for x in v.values()) \
+            and v2.get(1) == 'NOT REAL'
+        ok &= good
+        print(f'offset {tag}: sent bytes {v}; one flipped bit in block 1: {v2.get(1)} -> '
+              f'{"PASS" if good else "FAIL"}', flush=True)
+        os.remove(wav)
+    return ok
+
+
 SWEEP_MODES = ('150S', '150L', '300S', '300L', '600S', '600L', '1200S', '1200L', '2400S', '2400L')
 
 
@@ -530,8 +561,8 @@ def main():
     ap.add_argument('--chan', default=None, help='hfchansim, for the net case')
     ap.add_argument('--fade-snr', type=float, default=10.0)
     ap.add_argument('--fade-seeds', default='4,6', help=f'noise seeds of the fade case, of {sorted(BAD)}')
-    ap.add_argument('--cases', default='counts,clean,short,tails,whole2400,fade,net,sixa',
-                    help='of counts,clean,short,tails,whole2400,fade,net,sixa,sweep (sweep is long and not in the '
+    ap.add_argument('--cases', default='counts,clean,short,tails,whole2400,fade,net,sixa,offset',
+                    help='of counts,clean,short,tails,whole2400,fade,net,sixa,offset,sweep (sweep is long and not in the '
                          'default; net needs --chan)')
     ap.add_argument('--sweep-snr', default='8,20')
     ap.add_argument('--sweep-n', type=int, default=4, help='messages per mode and SNR')
@@ -546,7 +577,7 @@ def main():
         ok &= {'counts': lambda: case_counts(), 'clean': lambda: case_clean(a, data),
                'short': lambda: case_short(a), 'tails': lambda: case_tails(a), 'whole2400': lambda: case_whole2400(a),
                'fade': lambda: all([case_fade(a, data, int(sd)) for sd in a.fade_seeds.split(',')]),
-               'net': lambda: case_net(a), 'sixa': lambda: case_sixa(a),
+               'net': lambda: case_net(a), 'sixa': lambda: case_sixa(a), 'offset': lambda: case_offset(a, data),
                'sweep': lambda: case_sweep(a)}[c]()
     print('reencode_window: all cases pass' if ok else 'reencode_window: FAILED')
     return 0 if ok else 1
