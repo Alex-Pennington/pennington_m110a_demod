@@ -105,6 +105,21 @@ block 2.3 dB). reencode_check fits them to the signal: probes 0.869, data 0.878,
 NOT VERIFIABLE at this SNR. MS-DMT's 115 bytes differ from ours in 9 bytes and fit worse
 (data 0.865).
 
+Measured against origin/master c1ee4ca, fresh Release builds of both, the same inputs, through
+`test/rx/stream_compare.py` (`ModemRX::decode()` and the streaming receiver, per transmission):
+
+| Set | Base: whole exact / wrong, stream exact / wrong | This change |
+|---|---|---|
+| CCIR moderate and poor, 5 and 10 dB, seeds 1-5 (180) | 129 / 2, 130 / 1 | 138 / 2, 139 / 1 |
+| held-out seeds 6-8 (108) | 68 / 2, 68 / 2 | 68 / 2, 68 / 2, every case the same |
+| AWGN, the gate's set with 75 bps (188) | 143 / 6, 144 / 5 | 144 / 6, 145 / 5 |
+
+The nine CCIR gains are all Watterson poor, seed 4 (1200L, 1200S twice, 300S twice, 600L twice,
+600S twice): exact on both paths, where the base read no mode. The AWGN gain is 150L at -2 dB, seed
+4. No case decoded on the base is lost, and no wrong-byte success is added. The cases where stream
+and whole decodes differ are the same cases on both builds (CCIR 18, held-out 7, AWGN 4).
+ctest: 56 of 56.
+
 ## The tracking DFE
 
 After acquiring the 01:04:15Z burst, the receiver lost block 2. The cause was not timing. Over
