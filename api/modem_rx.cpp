@@ -392,7 +392,7 @@ public:
         // The DFE and the adaptive MLSE report their own a-priori probe error per frame
         const bool eq_probes = config_.equalizer == Equalizer::DFE || config_.equalizer == Equalizer::MLSE_ADAPTIVE;
         judge(result, decoded, eom_bit, mode_cfg, mode_id, block_frames_, sig, whole, blocks_seen,
-              equalized_symbols, dfe_probe_frames_, eq_probes, other, codec.last_viterbi_input());
+              equalized_symbols, dfe_probe_frames_, eq_probes, other);
         result.snr_db = estimate_snr_from_symbols(brain_result.data_symbols);
         result.freq_offset_hz = freq_offset_hz;
 
@@ -829,39 +829,6 @@ private:
         }
     }
 
-    /// Highest DecodeResult::path_unreliability per mode (docs/m110a-quality-gate.md): the
-    /// coded modes the tracking DFE runs. Infinity: no such term.
-    static float path_unreliability_threshold(ModeId mode) {
-        switch (mode) {
-            default: return std::numeric_limits<float>::infinity();
-        }
-    }
-
-    /// path_unreliability: |L| is divided by this before exp(-|L| / scale) is summed
-    static constexpr double PATH_RELIABILITY_SCALE = 8.0;
-
-    /// The modes whose decode path_unreliability scores: 150-1200 bps, S and L
-    static bool path_scored(ModeId mode) {
-        switch (mode) {
-            case ModeId::M150S: case ModeId::M150L: case ModeId::M300S: case ModeId::M300L:
-            case ModeId::M600S: case ModeId::M600L: case ModeId::M1200S: case ModeId::M1200L:
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    /// Sum over the first nbits information bits of exp(-|L| / scale), |L| the max-log
-    /// reliability of each (m75::bit_reliability) over vit_in, the Viterbi input (two soft
-    /// values per information bit); terminated: the trellis ends in state 0 (EOM and flush)
-    static double path_unreliability(const std::vector<int8_t>& vit_in, size_t nbits, bool terminated,
-                                     double scale) {
-        const auto rel = m75::bit_reliability(vit_in, terminated);
-        double u = 0.0;
-        for (size_t i = 0; i < std::min(nbits, rel.size()); i++) u += std::exp(-rel[i] / scale);
-        return u;
-    }
-
     /// fill_block_quality: the worst fraction of a block's frames set aside as erasures, and
     /// the margin the rest must clear by to stand for the block (docs/m110a-quality-gate.md).
     static constexpr double BLOCK_TRIM_FRACTION = 0.25;
@@ -1002,17 +969,8 @@ private:
                       size_t sig, size_t whole, size_t blocks_seen,
                       const std::vector<complex_t>& equalized_symbols,
                       const std::vector<std::array<double, 3>>& probe_frames, bool dfe,
-                      const std::string& other, const std::vector<int8_t>& vit_in) {
+                      const std::string& other) {
         const size_t pattern = static_cast<size_t>(mode_cfg.unknown_data_len + mode_cfg.known_data_len);
-        // How near the decoded path came to another, over the message's bits: to the end of
-        // the EOM, or every bit decoded without one (before any padding is stripped)
-        result.path_unreliability = 0.0f;
-        result.path_unreliability_threshold = path_unreliability_threshold(mode_id);
-        if (path_scored(mode_id) && !vit_in.empty()) {
-            const size_t nbits = eom_bit >= 0 ? static_cast<size_t>(eom_bit) + 32 : decoded.size() * 8;
-            result.path_unreliability = static_cast<float>(
-                path_unreliability(vit_in, nbits, eom_bit >= 0, PATH_RELIABILITY_SCALE));
-        }
         result.eom_sequence = eom_bit >= 0;
         result.eom_detected = result.eom_sequence;
         if (!result.eom_detected) {
@@ -1051,14 +1009,6 @@ private:
         if (result.success && result.block_quality_min_db < result.block_quality_threshold_db) {
             result.success = false;
             result.error = low_block_quality_error(result);
-        }
-        if (result.success && result.path_unreliability > result.path_unreliability_threshold) {
-            result.success = false;
-            char buf[160];
-            snprintf(buf, sizeof(buf),
-                     "Decoded path within reach of others: unreliability %.3f above %.3f; bytes not trusted",
-                     result.path_unreliability, result.path_unreliability_threshold);
-            result.error = Error(ErrorCode::RX_DECODE_FAILED, buf);
         }
         if (result.success && eom_bit < 0 && decoded.empty()) {
             result.success = false;
@@ -2092,8 +2042,7 @@ private:
         size_t blocks_fed = 0;
         ViterbiDecoder vit;
         std::vector<uint8_t> bits;    // decided info bits
-        std::vector<int8_t> vin;      // the Viterbi input fed, every block
-        struct Snap { size_t block; ViterbiDecoder vit; size_t bits; size_t vin; };
+        struct Snap { size_t block; ViterbiDecoder vit; size_t bits; };
         std::deque<Snap> snaps;       // the decoder before each block not yet reported + 1
         size_t eom_scan = 0;
         long eom_bit = -1;
@@ -2327,9 +2276,8 @@ private:
         std::vector<soft_bit_t> soft;
         S.codec->demap_frames(E, f0, f1, S.phase_offset, opts, soft);
         soft.resize(static_cast<size_t>(S.codec->block_size()), 0);
-        S.snaps.push_back({S.blocks_fed, S.vit, S.bits.size(), S.vin.size()});
+        S.snaps.push_back({S.blocks_fed, S.vit, S.bits.size()});
         const auto v = S.codec->block_viterbi_input(soft);
-        S.vin.insert(S.vin.end(), v.begin(), v.end());
         if (S.codec->uncoded()) {
             M110ACodec::hard_bits(v, S.bits);
         } else {
@@ -2431,7 +2379,7 @@ private:
             if (msg_frames > eframes && !S.eof) return;
             std::vector<uint8_t> decoded = M110ACodec::bits_to_bytes(S.bits);
             const long eom_bit = cut_at_eom(decoded);
-            stream_complete(std::move(decoded), eom_bit, 0, 0, 0, S.vin);
+            stream_complete(std::move(decoded), eom_bit, 0, 0, 0);
             return;
         }
         const int span = QUALITY_SPAN_SYMBOLS;
@@ -2465,17 +2413,15 @@ private:
         const size_t whole = (sig + 4) / bf * bf;
         const size_t blocks_seen = (PC.size() / S.p + bf - 1) / bf;
         std::vector<uint8_t> fbits;
-        std::vector<int8_t> fvin;
         if (whole * S.p < E.size()) {
             const size_t K = whole / bf;
             if (K > 0) {
                 ViterbiDecoder v = S.vit;
-                size_t nb = S.bits.size(), nv = S.vin.size();
+                size_t nb = S.bits.size();
                 if (K < S.blocks_fed) {
-                    for (const auto& sn : S.snaps) if (sn.block == K) { v = sn.vit; nb = sn.bits; nv = sn.vin; }
+                    for (const auto& sn : S.snaps) if (sn.block == K) { v = sn.vit; nb = sn.bits; }
                 }
                 fbits.assign(S.bits.begin(), S.bits.begin() + static_cast<long>(nb));
-                fvin.assign(S.vin.begin(), S.vin.begin() + static_cast<long>(nv));
                 if (S.codec->uncoded()) fbits.resize(std::min(fbits.size(), K * S.ib));
                 else for (uint8_t b : v.flush_decoder()) fbits.push_back(b);
             }
@@ -2483,24 +2429,23 @@ private:
             const size_t nframes = E.size() / S.p;
             if (nframes > S.blocks_fed * bf) stream_feed_block(S.blocks_fed * bf, nframes);
             fbits = S.bits;
-            fvin = S.vin;
             if (!S.codec->uncoded()) for (uint8_t b : S.vit.flush_decoder()) fbits.push_back(b);
         }
         std::vector<uint8_t> decoded = M110ACodec::bits_to_bytes(fbits);
         decoded.resize(std::min(decoded.size(), info_bytes(S.mcfg, whole)));
         const long eom_bit = cut_at_eom(decoded);
-        stream_complete(std::move(decoded), eom_bit, sig, whole, blocks_seen, fvin);
+        stream_complete(std::move(decoded), eom_bit, sig, whole, blocks_seen);
     }
 
     /// Judge the message as decode() judges it and report its remaining blocks
     void stream_complete(std::vector<uint8_t> decoded, long eom_bit, size_t sig, size_t whole,
-                         size_t blocks_seen, const std::vector<int8_t>& vit_in) {
+                         size_t blocks_seen) {
         StreamState& S = *st_;
         DecodeResult& result = S.result;
         const auto& E = S.eqv();
         const std::string other = S.cfg.mode == Mode::AUTO ? "" : preamble_contradicts(S.br, S.mode_id);
         judge(result, std::move(decoded), eom_bit, S.mcfg, S.mode_id, S.bf, sig, whole, blocks_seen,
-              E, S.eq.probe_frames, S.cfg.equalizer == Equalizer::DFE, other, vit_in);
+              E, S.eq.probe_frames, S.cfg.equalizer == Equalizer::DFE, other);
         result.snr_db = estimate_snr_from_symbols(S.data);
         result.freq_offset_hz = S.pt ? S.pt->frequency() : S.br.freq_offset_hz;
         // the blocks of the message: up to the EOM's, or the whole blocks the signal covers

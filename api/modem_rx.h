@@ -92,19 +92,6 @@ struct DecodeResult {
     /// off (its probes still line up) scores as well as a right one.
     float block_quality_threshold_db = 0.0f;
 
-    /// How near the decoded path came to another, for the coded modes the tracking DFE
-    /// runs (150-1200 bps): over the message's information bits (to the end of the EOM, or
-    /// every bit decoded without one), the sum of exp(-|L| / 8), |L| the max-log
-    /// reliability of the bit, how far the best path with that bit flipped lies behind the
-    /// decoded one (as the 75 bps gate reads it). A Viterbi error event is a runner-up path
-    /// that won, so its bits sit at small |L|. 0 where it is not scored.
-    float path_unreliability = 0.0f;
-
-    /// Highest path_unreliability for the decoded mode; success also needs
-    /// path_unreliability <= path_unreliability_threshold. Infinity where the mode has no
-    /// such term (docs/m110a-quality-gate.md).
-    float path_unreliability_threshold = 0.0f;
-
     /// Preamble as read in AUTO mode (-1 when not read): D1, D2 (0-7) and
     /// the countdown of the frame the receiver locked onto. countdown_raw is
     /// the three count digits as read, even when ambiguous or out of range.
