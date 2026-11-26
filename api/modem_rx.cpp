@@ -1084,8 +1084,8 @@ private:
                                  "Preamble D1/D2 read " + other + ", not the forced mode; bytes not trusted");
         }
         // A preamble the single-path search did not take (the multipath search took it, or a
-        // later preamble frame): its data start is not confirmed until the EOM word is found
-        // where it places the data. A start whole frames off keeps the probes in line, so
+        // later preamble frame) and whose countdown was not read: its data start is not
+        // confirmed until the EOM word is found where it places the data. A start whole frames off keeps the probes in line, so
         // the probe quality passes while every data byte is wrong (docs/m110a-acq-fading.md).
         if (result.success && acq_needs_eom(result) && eom_bit < 0) {
             result.success = false;
@@ -1097,9 +1097,12 @@ private:
     }
 
     /// The decodes judge() holds to the EOM: preamble taken by the multipath search or at a
-    /// later preamble frame (DecodeResult::acq_multipath, acq_later_frame)
+    /// later preamble frame (DecodeResult::acq_multipath, acq_later_frame) whose countdown
+    /// the AUTO pass did not read (countdown -1; always so for a forced mode, which has no
+    /// AUTO pass). On the calibration set this refuses as many whole wrong messages as
+    /// holding every such decode to the EOM and half as many right ones that end without it.
     static bool acq_needs_eom(const DecodeResult& r) {
-        return r.acq_multipath || r.acq_later_frame > 0;
+        return (r.acq_multipath || r.acq_later_frame > 0) && r.countdown < 0;
     }
 
     ModemStats stats_;
