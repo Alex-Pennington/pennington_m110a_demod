@@ -120,6 +120,89 @@ The nine CCIR gains are all Watterson poor, seed 4 (1200L, 1200S twice, 300S twi
 and whole decodes differ are the same cases on both builds (CCIR 18, held-out 7, AWGN 4).
 ctest: 56 of 56.
 
+### A preamble the single-path search did not take needs its EOM
+
+On AWGN at -2 dB, c1ee4ca decodes some inputs as whole messages with every byte wrong, no EOM, and
+`success=1`: 300L 3 of 150 and 150L 1 of 150 on held-out seeds 101-250 (300L seeds 144, 208 and
+211, 150L seed 208; `test/rx/repro_rake_escape.sh` on fix/m110a-600l-gate-escape rebuilds them).
+548cc27 takes no preamble on any of the four (single-path correlation 0.62-0.68, under the 0.70
+gate). Here the multipath search takes them, and their probes score q 1.51-1.56 dB and worst
+blocks 1.91-1.94 dB (300L, threshold 1.75 dB). On all four the AUTO pass reads no countdown.
+Inference, not measured: with the count unread the data start is placed by the frame-0 assumption
+above, so a preamble found a few frames in puts the data whole frames late. The probes repeat
+every frame, so they still line up and the probe quality passes, while every data byte is wrong.
+
+**The rule.** When the multipath search took the preamble (`DecodeResult::acq_multipath`) or a
+later preamble frame did (`acq_later_frame`), and the AUTO pass read no countdown, success needs
+the EOM word where the data start puts it (`ModemRX::acq_needs_eom`). A forced mode has no AUTO
+pass, so all its multipath decodes need the EOM. A refused decode keeps its bytes and its line in
+m110a_rx's output, with the error "Preamble taken by the multipath search or at a later frame and
+no EOM: data start not confirmed; bytes not trusted", so reencode_check can still judge it. The
+change only removes successes. It does not touch acquisition, so it cannot add a detection in
+noise, 2G ALE, 110D or the T5/T8/T9 sets.
+
+**The rig** is the one of docs on fix/m110a-600l-gate-escape ("600L at the knee": a seeded
+200-byte payload, `modem_tx_wav`, `hfchansim` for CCIR, `synth_iq.py`, `m110a_rx` in AUTO), with
+the I/Q at 96 kHz and the dial at +10 kHz (2 MS/s took too long for the sets here). Cut messages
+are the same transmission with its audio cut after the preamble and one interleaver block (plus
+0.05 s): the right decode is that block, a prefix without the EOM, which is what an EOM rule
+costs. Per transmission; whole = a success with more than half its bytes wrong; good = exact or a
+right prefix.
+
+**Calibration** (fresh seeds 3001-3060; 150S, 150L, 300S, 300L, 600S, 600L at -2, -1 and 0 dB;
+each whole and cut, 2160 transmissions; the 6299cdf calibration build, with the rules applied offline to its verdicts):
+
+| Rule | Good | Whole wrong | Good lost |
+|---|---|---|---|
+| none (6299cdf) | 1534 | 6 | - |
+| every decode needs the EOM | 858 | 0 | 676 |
+| multipath or later frame needs the EOM | 1244 | 0 | 290 |
+| **that, and the AUTO countdown unread (chosen)** | **1400** | **0** | **134** |
+
+The 6 are three inputs, each whole and cut (150L -1 dB seed 3004; 300L -2 dB seed 3052, -1 dB
+seed 3004), all from the multipath search with the countdown unread. Every good decode lost is a
+cut message: whole messages keep all their successes. Cut messages, good of 360 by SNR: -2 dB
+153 → 81, -1 dB 230 → 174, 0 dB 352 → 346.
+
+**Held-out** (the same inputs through two calibration builds, 6299cdf and this change, each printing the acquisition path besides its own verdicts and bytes):
+
+| Set | Transmissions | 6299cdf: exact / prefix / whole / few-byte wrong | This change |
+|---|---|---|---|
+| AWGN whole messages, seeds 101-150 (150S 101-200) | 1053 | 811 / 0 / 1 / 5 | 811 / 0 / 0 / 5 |
+| AWGN, the review's seeds 21-25 | 90 | 70 / 0 / 0 / 0 | 70 / 0 / 0 / 0 |
+| AWGN cut messages, seeds 101-120 | 360 | 18 / 230 / 0 / 3 | 18 / 188 / 0 / 3 |
+
+Whole wrong successes on held-out: 0 of 1503 (95 % upper bound 0.25 %, Clopper-Pearson). The 1 on
+6299cdf is 300L at -2 dB. The few-byte wrong ones are the knee residual (docs on
+fix/m110a-600l-gate-escape), which this rule does not address. Cut messages lose 42 right prefixes
+of 230: at -2 dB 54 → 26, at -1 dB 77 → 63, at 0 dB none.
+
+**CCIR** (Watterson moderate and poor, the modes the tracking DFE runs: 150S, 150L, 300S, 300L,
+600S, 600L, 1200S, 1200L; the same two builds):
+
+| Set | Transmissions | 6299cdf: exact / whole / few-byte wrong | This change |
+|---|---|---|---|
+| 5 and 10 dB, seeds 1-3 and 21-23 | 192 | 160 / 0 / 2 | 160 / 0 / 2 |
+| 0 and 2 dB, seeds 21-23 | 96 | 36 / 0 / 3 | 36 / 0 / 3 |
+
+Every success is the same on both builds. 24 of these decodes lost their EOM in a fade; 7 fall
+under the rule, and none of the 7 was a success on 6299cdf, so the rule cost nothing here. One
+transmission reports a different message, `success=0` on both: moderate 2 dB 1200L seed 23, where
+6299cdf reports a 300L chain (179 of 180 bytes wrong) refused by the chain corroboration, and this
+change refuses that chain by the rule, so the chain merge reports the 1200L chain, which fails its
+quality threshold.
+
+ctest: 56 of 56 on a fresh Release build of this change.
+
+**Not addressed, found on the way.** Two whole wrong successes in the calibration set are 75S,
+from the 75 bps path: 150S at -2 dB, cut after one block (audio cut at 1.25 s: the 3-frame
+preamble, one 0.6 s block and 0.05 s), seeds 3049 and 3051, 96 kHz I/Q. m110a_rx reports a 75S
+message of 4 bytes, every byte wrong, no EOM, `success=1`, at q 18.9 dB (seed 3049, worst block
+18.9 dB) and q 11.2 dB (seed 3051, blocks 10.8 and 11.2 dB), against the 75S thresholds (quality
+10.5 dB, worst block 7.0 dB). Both builds give the same. On CCIR, Watterson poor 5 dB, 1200L seed
+22 (no cut), m110a_rx also reports a 75S message of 38 bytes, every byte wrong, no EOM,
+`success=1`, at q 40 dB and every block 40 dB, on both builds.
+
 ## The tracking DFE
 
 After acquiring the 01:04:15Z burst, the receiver lost block 2. The cause was not timing. Over

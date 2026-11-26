@@ -100,6 +100,12 @@ struct DecodeResult {
     int countdown = -1;
     int countdown_raw = -1;
 
+    /// How the preamble was taken: acq_multipath when the multipath (rake) search took it
+    /// because the single-path correlation missed its 0.70 gate; acq_later_frame, the
+    /// preamble frames after the first one found where the AUTO pass took it (0: that one).
+    bool acq_multipath = false;
+    int acq_later_frame = 0;
+
     /// Error information (if !success)
     std::optional<Error> error;
     

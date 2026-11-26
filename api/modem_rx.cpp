@@ -228,6 +228,8 @@ public:
 
         BrainDecoder decoder(decode_cfg);
         auto brain_result = decoder.decode(samples);
+        result.acq_multipath = brain_result.multipath;
+        result.acq_later_frame = later_frame;
         
         // DEBUG: Trace mode detection and symbol extraction
         std::cerr << "[RX DEBUG] Mode: " << mode_cfg.name 
@@ -1081,7 +1083,26 @@ private:
             result.error = Error(ErrorCode::RX_DECODE_FAILED,
                                  "Preamble D1/D2 read " + other + ", not the forced mode; bytes not trusted");
         }
+        // A preamble the single-path search did not take (the multipath search took it, or a
+        // later preamble frame) and whose countdown was not read: its data start is not
+        // confirmed until the EOM word is found where it places the data. A start whole frames off keeps the probes in line, so
+        // the probe quality passes while every data byte is wrong (docs/m110a-acq-fading.md).
+        if (result.success && acq_needs_eom(result) && eom_bit < 0) {
+            result.success = false;
+            result.error = Error(ErrorCode::RX_DECODE_FAILED,
+                                 "Preamble taken by the multipath search or at a later frame and no EOM: "
+                                 "data start not confirmed; bytes not trusted");
+        }
         result.data = std::move(decoded);
+    }
+
+    /// The decodes judge() holds to the EOM: preamble taken by the multipath search or at a
+    /// later preamble frame (DecodeResult::acq_multipath, acq_later_frame) whose countdown
+    /// the AUTO pass did not read (countdown -1; always so for a forced mode, which has no
+    /// AUTO pass). On the calibration set this refuses as many whole wrong messages as
+    /// holding every such decode to the EOM and half as many right ones that end without it.
+    static bool acq_needs_eom(const DecodeResult& r) {
+        return (r.acq_multipath || r.acq_later_frame > 0) && r.countdown < 0;
     }
 
     ModemStats stats_;
@@ -2258,6 +2279,7 @@ private:
         if (F.size() < need && !S.eof) { S.hdr_wait = need; return; }
         if (!automode) report_sync(r);
         S.br = std::move(r);
+        S.result.acq_multipath = S.br.multipath;
         // the data
         S.mcfg = mode_cfg;
         S.u = mode_cfg.unknown_data_len;
