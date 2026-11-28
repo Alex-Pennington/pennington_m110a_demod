@@ -1,3 +1,7 @@
+> **Frozen.** This repository is no longer developed. The modem source moved into
+> greybeard-ale (`third_party/m110-modem/`) on 2026-11-28, imported from commit 9f73309,
+> and all modem work continues there. Nothing here changes after this notice.
+
 # Phoenix Nest Modem
 
 **MIL-STD-188-110A HF Data Modem**
